@@ -1,2 +1,2 @@
 # Deliberately minimal: MkDocs Material brings its compatible MkDocs runtime.
-mkdocs-material==9.7.5
+mkdocs-material==9.7.7

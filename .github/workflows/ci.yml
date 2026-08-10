@@ -95,6 +95,11 @@ jobs:
     name: Container builds
     needs: [api, web, docs]
     runs-on: ubuntu-24.04
+    # Compose parses every service during a build, including deferred stateful
+    # services. These placeholders are not secrets and those services are not run.
+    env:
+      POSTGRES_PASSWORD: ci-not-used
+      REDIS_PASSWORD: ci-not-used
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

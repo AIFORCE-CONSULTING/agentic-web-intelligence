@@ -1,0 +1,1 @@
+--8<-- "TECH_STACK.md"

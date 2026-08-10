@@ -1,0 +1,32 @@
+name: Capability proposal
+description: Propose an enterprise platform capability or improvement.
+title: "proposal: "
+labels: ["proposal", "triage"]
+body:
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Intended outcome
+      description: What problem should this solve, and for whom?
+    validations:
+      required: true
+  - type: textarea
+    id: approach
+    attributes:
+      label: Proposed approach
+      description: Include constraints, alternatives, and integration boundaries where known.
+    validations:
+      required: true
+  - type: textarea
+    id: security
+    attributes:
+      label: Security, privacy, and operational considerations
+      description: Identify data sources, privileges, external services, and failure modes.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Acceptance criteria
+    validations:
+      required: true

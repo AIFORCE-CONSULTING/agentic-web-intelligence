@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability reporting
+    url: https://github.com/enterprise-agent-platform/enterprise-agent-platform/security/advisories/new
+    about: Do not report suspected vulnerabilities in a public issue.

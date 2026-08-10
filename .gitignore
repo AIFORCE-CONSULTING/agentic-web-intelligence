@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+site/
+
+# Node / React
+node_modules/
+dist/
+.vite/
+*.tsbuildinfo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# Docker and local runtime data
+.docker/
+postgres-data/
+redis-data/
+
+# Editor and operating system files
+.vscode/*.local.json
+.idea/
+*.log
+~$*
+
+# User-provided reference materials and internal review artifacts
+*.docx
+.docx-review-*/

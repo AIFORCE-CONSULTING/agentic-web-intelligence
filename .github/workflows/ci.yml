@@ -36,7 +36,7 @@ jobs:
 
       - name: Test
         working-directory: apps/api
-        run: pytest
+        run: PYTHONPATH=. pytest
 
   web:
     name: Web quality

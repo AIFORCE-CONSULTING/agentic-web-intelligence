@@ -28,7 +28,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install hash-locked development dependencies
-        run: python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements-dev.lock
+        run: "python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements-dev.lock"
 
       - name: Lint
         working-directory: apps/api
@@ -83,7 +83,7 @@ jobs:
           python-version: "3.12"
 
       - name: Install hash-locked documentation dependencies
-        run: python -m pip install --require-hashes --only-binary=:all: -r docs/requirements.lock
+        run: "python -m pip install --require-hashes --only-binary=:all: -r docs/requirements.lock"
 
       - name: Build documentation strictly
         run: mkdocs build --strict

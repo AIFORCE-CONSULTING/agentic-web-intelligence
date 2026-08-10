@@ -12,7 +12,7 @@ COPY ARCHITECTURE.md REPOSITORIES.md DECISIONS.md CONTRIBUTING.md STYLE_GUIDE.md
 
 RUN mkdocs build --strict
 
-FROM nginx:1.27-alpine AS runtime
+FROM nginx:1.31-alpine AS runtime
 
 COPY docker/nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /workspace/site /usr/share/nginx/html

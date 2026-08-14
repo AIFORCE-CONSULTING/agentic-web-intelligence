@@ -7,6 +7,7 @@ RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r docs/requ
 
 COPY mkdocs.yml ./
 COPY docs ./docs
+COPY diagrams ./diagrams
 COPY PROJECT.md PRINCIPLES.md TECH_STACK.md ROADMAP.md ./
 COPY ARCHITECTURE.md REPOSITORIES.md DECISIONS.md CONTRIBUTING.md STYLE_GUIDE.md ./
 

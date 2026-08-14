@@ -43,8 +43,18 @@ markdown_extensions:
       base_path:
         - .
       check_paths: true
-  - pymdownx.superfences
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
   - tables
+
+# Mermaid is pinned to an exact release so documentation rendering does not
+# drift with a mutable CDN tag. It will be self-hosted before production docs.
+extra_javascript:
+  - https://unpkg.com/mermaid@11.12.1/dist/mermaid.min.js
+  - javascripts/mermaid-init.js
 
 nav:
   - Home: index.md
@@ -55,6 +65,7 @@ nav:
       - Roadmap: foundation/roadmap.md
   - Architecture:
       - Platform architecture: architecture.md
+      - Architecture diagrams: diagrams/index.md
       - Repository organization: repositories.md
       - Decisions (ADRs): decisions.md
       - ADR 0001 — Monorepo: adr/0001-monorepo.md

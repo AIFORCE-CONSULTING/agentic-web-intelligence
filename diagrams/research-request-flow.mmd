@@ -1,0 +1,17 @@
+flowchart TB
+    Request["1. Operator submits a research objective"] --> UI["2. React console sends an authenticated request"]
+    UI --> API["3. FastAPI validates the request and session context"]
+    API --> Runtime["4. Agent runtime plans the approved web operation"]
+    Runtime --> Host["5. MCP host receives web.search, web.fetch, or web.extract"]
+    Host --> Policy["6. Policy validates identity, URL, egress rules, and quota"]
+    Policy --> Tool["7. Approved MCP web service retrieves public content"]
+    Tool --> Content["8. Returned content is untrusted input"]
+    Content --> Provenance["9. Normalize output with provider, URL, time, method, and hash"]
+    Provenance --> Evidence["10. Return evidence-backed result for operator review"]
+
+    classDef platform fill:#e8eaf6,stroke:#3949ab,stroke-width:2px,color:#111827;
+    classDef untrusted fill:#fef2f2,stroke:#dc2626,stroke-width:2px,color:#111827;
+    classDef outcome fill:#ecfdf5,stroke:#059669,stroke-width:2px,color:#111827;
+    class UI,API,Runtime,Host,Policy,Tool,Provenance platform;
+    class Content untrusted;
+    class Request,Evidence outcome;

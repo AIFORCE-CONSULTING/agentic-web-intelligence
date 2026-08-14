@@ -1,0 +1,17 @@
+flowchart TB
+    Operator["Operator"] --> Console["React operator console"]
+    Console --> API["FastAPI gateway"]
+    API --> Runtime["Agent runtime and orchestrator"]
+    Runtime --> Host["MCP host and policy layer"]
+    Host --> Search["Search adapter"]
+    Host --> Fetch["Fetch and extract adapter"]
+    Host --> Crawl["Crawl adapter"]
+    Search --> Web["Public web"]
+    Fetch --> Web
+    Crawl --> Web
+    Host --> Enterprise["Approved enterprise systems"]
+
+    classDef boundary fill:#e8eaf6,stroke:#3949ab,stroke-width:2px,color:#111827;
+    classDef external fill:#fff7ed,stroke:#c2410c,stroke-width:2px,color:#111827;
+    class Console,API,Runtime,Host boundary;
+    class Web,Enterprise external;

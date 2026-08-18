@@ -35,3 +35,8 @@ Foundation work is in progress. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](
 - MCP + LangGraph
 - Docker Compose, PostgreSQL, Redis
 - Observability and evaluation designed in from the outset
+
+## License and community
+
+This project is licensed under the [Apache License 2.0](LICENSE). Participation
+is governed by the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).

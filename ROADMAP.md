@@ -8,11 +8,13 @@
 - MkDocs Material documentation site
 - Architecture Decision Records
 - CI validation and repository templates
-- First governed web-search and extraction MCP integration
 
 ## Phase 2 - MCP Fundamentals
 
-Build MCP servers, clients, host, tool discovery, and multiple transports.
+Build MCP servers, clients, a host, tool discovery, and multiple transports.
+
+- First governed web-search and extraction MCP integration
+- Publish the MkDocs documentation site with GitHub Pages
 
 ## Phase 3 - Agent Runtime
 

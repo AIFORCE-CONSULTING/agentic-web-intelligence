@@ -27,6 +27,9 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify source and lockfile alignment
+        run: python scripts/check_python_lock_consistency.py
+
       - name: Install hash-locked development dependencies
         run: "python -m pip install --require-hashes --only-binary=:all: -r apps/api/requirements-dev.lock"
 

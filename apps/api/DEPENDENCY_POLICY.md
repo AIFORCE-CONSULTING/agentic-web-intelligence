@@ -23,7 +23,12 @@ Installation uses only the appropriate reviewed lockfile with `--require-hashes`
 Before a dependency change is accepted:
 
 1. Pin the direct requirement exactly in `pyproject.toml`.
-2. Resolve a new Python 3.12 lockfile.
+2. Run scripts/update-python-locks.ps1 -Target api to resolve new Python 3.12
+   lockfiles.
 3. Review all added packages, versions, hashes, and source indexes.
 4. Run a vulnerability audit without applying automatic fixes.
 5. Install only from the approved lockfile and run the API test suite.
+
+The repository CI check verifies that every direct pin in pyproject.toml matches
+the appropriate committed lockfile. See docs/dependency-management.md for the
+full workflow.

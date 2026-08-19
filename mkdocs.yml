@@ -63,6 +63,7 @@ nav:
       - Engineering principles: foundation/principles.md
       - Technology stack: foundation/tech-stack.md
       - Roadmap: foundation/roadmap.md
+      - Dependency management: dependency-management.md
   - Architecture:
       - Platform architecture: architecture.md
       - Architecture diagrams: diagrams/index.md

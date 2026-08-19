@@ -10,6 +10,8 @@
 
 - Format, lint, test, and build the affected component.
 - Add or update documentation with behavior changes.
+- For Python and documentation dependency changes, follow the
+  [dependency management workflow](dependency-management.md).
 - Add an ADR for material architectural decisions.
 - Preserve provenance when working with web-derived content.
 - Design agent tools with least privilege and explicit failure behavior.

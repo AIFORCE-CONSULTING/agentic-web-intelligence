@@ -4,8 +4,15 @@ import httpx
 import pytest
 
 from app.main import create_app
-from app.web_research.contracts import Evidence, ToolPolicyError
+from app.web_research.contracts import (
+    Evidence,
+    SearchResponse,
+    SearchResult,
+    ToolPolicyError,
+    ToolProviderError,
+)
 from app.web_research.extractor import WebExtractor
+from app.web_research.search import SearxngSearchProvider
 
 
 def test_extractor_rejects_download_attachment() -> None:
@@ -93,3 +100,56 @@ def test_extract_endpoint_returns_policy_errors_as_unprocessable(
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Attachments and file downloads are not permitted."
+
+
+def test_searxng_provider_normalizes_and_bounds_results() -> None:
+    async def search() -> SearchResponse:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {"title": "Private", "url": "http://127.0.0.1/private"},
+                        {
+                            "title": "Public source",
+                            "url": "https://example.com/evidence",
+                            "content": "A source summary.",
+                            "engine": "example-engine",
+                        },
+                        {"title": "Second source", "url": "https://example.org/second"},
+                    ]
+                },
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await SearxngSearchProvider(client, "http://searxng:8080").search("evidence", 1)
+
+    response = asyncio.run(search())
+
+    assert response.query == "evidence"
+    assert response.results == [
+        SearchResult(
+            title="Public source",
+            url="https://example.com/evidence",
+            snippet="A source summary.",
+            engine="example-engine",
+        )
+    ]
+
+
+def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def unavailable(_: str, __: int) -> SearchResponse:
+        raise ToolProviderError("The search provider is unavailable.")
+
+    monkeypatch.setattr("app.main.run_search_workflow", unavailable)
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/v1/research/search", json={"query": "evidence"})
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "The search provider is unavailable."

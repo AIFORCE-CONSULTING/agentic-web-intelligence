@@ -5,8 +5,10 @@ from typing import TypedDict
 import httpx
 from langgraph.graph import END, START, StateGraph
 
-from app.web_research.contracts import Evidence
+from app.settings import get_settings
+from app.web_research.contracts import Evidence, SearchResponse, ToolProviderError
 from app.web_research.extractor import WebExtractor
+from app.web_research.search import SearxngSearchProvider
 
 
 class ExtractWorkflowState(TypedDict, total=False):
@@ -42,3 +44,15 @@ async def run_extract_workflow(url: str) -> Evidence:
 
     result = await build_extract_workflow().compile().ainvoke({"url": url})
     return result["evidence"]
+
+
+async def run_search_workflow(query: str, max_results: int) -> SearchResponse:
+    """Run discovery through the configured, internal search provider."""
+
+    settings = get_settings()
+    if not settings.searxng_base_url:
+        raise ToolProviderError("Web search is not configured for this environment.")
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await SearxngSearchProvider(client, settings.searxng_base_url).search(
+            query, max_results
+        )

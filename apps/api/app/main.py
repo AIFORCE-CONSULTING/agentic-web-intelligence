@@ -1,10 +1,13 @@
 """HTTP entry point for Agentic Web Intelligence."""
 
 from fastapi import FastAPI
+from fastapi import HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.settings import get_settings
+from app.web_research.contracts import Evidence, ExtractRequest, ToolPolicyError
+from app.web_research.workflow import run_extract_workflow
 
 
 class HealthResponse(BaseModel):
@@ -54,6 +57,15 @@ def create_app() -> FastAPI:
             service="agentic-web-intelligence-api",
             environment=settings.app_environment,
         )
+
+    @app.post("/v1/research/extract", response_model=Evidence, tags=["research"])
+    async def extract_public_page(request: ExtractRequest) -> Evidence:
+        """Return bounded evidence from one approved public HTML page."""
+
+        try:
+            return await run_extract_workflow(request.url)
+        except ToolPolicyError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     return app
 

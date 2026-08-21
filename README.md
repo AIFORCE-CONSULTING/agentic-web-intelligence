@@ -4,9 +4,13 @@ An open-source, production-quality platform for governed web discovery, extracti
 
 The platform helps teams turn web-derived evidence into documented, governed, observable, and deployable AI solutions. It is inspired by the operating model of a Forward Deployed Engineer: discover, design, prototype, validate, and deliver without sacrificing enterprise standards.
 
-## Phase 1 focus
+## Phase 1: Foundation
 
-Phase 1 establishes the engineering foundation and the first practical vertical slice: governed web intelligence through Model Context Protocol (MCP). The stack uses React for operator-facing experiences and FastAPI for APIs, agent services, and orchestration.
+Phase 1 establishes the engineering foundation: repository standards, React and FastAPI application boundaries, a Docker-first local environment, versioned documentation, and continuous integration.
+
+## Phase 2: Governed web intelligence
+
+Phase 2 delivers the first practical vertical slice: an evidence-producing web-research workflow that reaches approved search and extraction tools through Model Context Protocol (MCP). React remains the operator experience and FastAPI the platform boundary.
 
 ## Planned components
 
@@ -26,7 +30,7 @@ docs/                  Documentation-site source
 
 ## Status
 
-Foundation work is in progress. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [ROADMAP.md](ROADMAP.md) for the project contract and delivery plan.
+Phase 1 is complete. Phase 2 is the current focus. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [ROADMAP.md](ROADMAP.md) for the project contract and delivery plan.
 
 ## Technology direction
 

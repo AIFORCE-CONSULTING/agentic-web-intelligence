@@ -9,11 +9,12 @@
 - Architecture Decision Records
 - CI validation and repository templates
 
-## Phase 2 - MCP Fundamentals
+## Phase 2 - Governed Web Intelligence
 
-Build MCP servers, clients, a host, tool discovery, and multiple transports.
+Deliver an evidence-producing web-research workflow through a governed MCP boundary.
 
-- First governed web-search and extraction MCP integration
+- LangGraph workflow with approved web-search and extraction tools
+- MCP host, source provenance, basic tool policy, and execution audit history
 - Publish the MkDocs documentation site with GitHub Pages
 
 ## Phase 3 - Agent Runtime

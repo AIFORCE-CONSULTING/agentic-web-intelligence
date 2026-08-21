@@ -9,14 +9,16 @@ description = "FastAPI gateway and platform API for Agentic Web Intelligence."
 requires-python = ">=3.12,<3.13"
 dependencies = [
   "fastapi==0.136.3",
+  "httpx==0.28.1",
+  "langgraph==1.2.10",
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
+  "trafilatura==2.2.0",
   "uvicorn==0.47.0",
 ]
 
 [project.optional-dependencies]
 dev = [
-  "httpx==0.28.1",
   "pytest==9.0.3",
   "ruff==0.9.10",
 ]

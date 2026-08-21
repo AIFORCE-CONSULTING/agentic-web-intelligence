@@ -38,12 +38,12 @@ export function App() {
         evidence-backed delivery.
       </p>
 
-      <section aria-labelledby="foundation-heading">
-        <h2 id="foundation-heading">Phase 1 foundation</h2>
+      <section aria-labelledby="platform-heading">
+        <h2 id="platform-heading">Platform foundation</h2>
         <ul>
           <li>React operator console and FastAPI platform boundary</li>
-          <li>Governed web-intelligence tools through MCP</li>
-          <li>Source provenance, policy controls, and delivery documentation</li>
+          <li>Docker-first local environment and continuous validation</li>
+          <li>Versioned architecture, decisions, and delivery documentation</li>
         </ul>
       </section>
 

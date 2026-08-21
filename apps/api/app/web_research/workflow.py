@@ -19,7 +19,9 @@ class ExtractWorkflowState(TypedDict, total=False):
 async def retrieve_evidence(state: ExtractWorkflowState) -> ExtractWorkflowState:
     """Invoke the governed extraction implementation, not a raw browser tool."""
 
-    async with httpx.AsyncClient(timeout=10.0, headers={"User-Agent": "AgenticWebIntel/0.1"}) as client:
+    async with httpx.AsyncClient(
+        timeout=10.0, headers={"User-Agent": "AgenticWebIntel/0.1"}
+    ) as client:
         evidence = await WebExtractor(client).extract(state["url"])
     return {"evidence": evidence}
 
@@ -27,9 +29,12 @@ async def retrieve_evidence(state: ExtractWorkflowState) -> ExtractWorkflowState
 def build_extract_workflow() -> StateGraph:
     """Build the default orchestration adapter for the Phase 2 extraction slice."""
 
-    return StateGraph(ExtractWorkflowState).add_node("retrieve_evidence", retrieve_evidence).add_edge(
-        START, "retrieve_evidence"
-    ).add_edge("retrieve_evidence", END)
+    return (
+        StateGraph(ExtractWorkflowState)
+        .add_node("retrieve_evidence", retrieve_evidence)
+        .add_edge(START, "retrieve_evidence")
+        .add_edge("retrieve_evidence", END)
+    )
 
 
 async def run_extract_workflow(url: str) -> Evidence:

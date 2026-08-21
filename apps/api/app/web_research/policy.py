@@ -5,7 +5,6 @@ from urllib.parse import urlparse
 
 from app.web_research.contracts import ToolPolicyError
 
-
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "text/plain"})
 MAX_RESPONSE_BYTES = 2_000_000

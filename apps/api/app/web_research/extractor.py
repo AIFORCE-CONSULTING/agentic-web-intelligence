@@ -7,7 +7,12 @@ import httpx
 import trafilatura
 
 from app.web_research.contracts import Evidence, ToolPolicyError
-from app.web_research.policy import MAX_REDIRECTS, MAX_RESPONSE_BYTES, validate_public_url, validate_response_headers
+from app.web_research.policy import (
+    MAX_REDIRECTS,
+    MAX_RESPONSE_BYTES,
+    validate_public_url,
+    validate_response_headers,
+)
 
 
 class WebExtractor:
@@ -39,7 +44,9 @@ class WebExtractor:
                 try:
                     declared_size = int(content_length)
                 except ValueError as error:
-                    raise ToolPolicyError("The response declared an invalid content length.") from error
+                    raise ToolPolicyError(
+                        "The response declared an invalid content length."
+                    ) from error
                 if declared_size > MAX_RESPONSE_BYTES:
                     raise ToolPolicyError("The response exceeds the maximum permitted size.")
             if len(response.content) > MAX_RESPONSE_BYTES:

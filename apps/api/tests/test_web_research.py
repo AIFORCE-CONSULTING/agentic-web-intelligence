@@ -3,7 +3,8 @@ import asyncio
 import httpx
 import pytest
 
-from app.web_research.contracts import ToolPolicyError
+from app.main import create_app
+from app.web_research.contracts import Evidence, ToolPolicyError
 from app.web_research.extractor import WebExtractor
 
 
@@ -47,10 +48,48 @@ def test_extractor_returns_normalized_plain_text_evidence() -> None:
     assert evidence.extraction_method == "plain-text"
 
 
+def test_extractor_returns_main_text_from_html() -> None:
+    async def extract():
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/html; charset=utf-8"},
+                content=b"<html><body><article><p>Public evidence.</p></article></body></html>",
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            return await WebExtractor(client).extract("https://example.com/evidence")
+
+    evidence = asyncio.run(extract())
+
+    assert evidence.text == "Public evidence."
+    assert evidence.extraction_method == "trafilatura"
+
+
 def test_extractor_rejects_private_network_addresses() -> None:
     async def extract() -> None:
         async with httpx.AsyncClient() as client:
-            await WebExtractor(client).extract("http://127.0.0.1:8000/private")
+            await WebExtractor(client).extract("http://127.0.0.1/private")
 
     with pytest.raises(ToolPolicyError, match="Non-public network addresses"):
         asyncio.run(extract())
+
+
+def test_extract_endpoint_returns_policy_errors_as_unprocessable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def reject(_: str) -> Evidence:
+        raise ToolPolicyError("Attachments and file downloads are not permitted.")
+
+    monkeypatch.setattr("app.main.run_extract_workflow", reject)
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/v1/research/extract", json={"url": "https://example.com/data.zip"})
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Attachments and file downloads are not permitted."

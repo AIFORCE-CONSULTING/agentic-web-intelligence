@@ -10,6 +10,7 @@ services:
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
       SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
     ports:
       - "8000:8000"
     healthcheck:
@@ -61,7 +62,7 @@ services:
       - platform
 
   postgres:
-    profiles: ["stateful-services"]
+    profiles: ["stateful-services", "web-research"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-enterprise_agent_platform}

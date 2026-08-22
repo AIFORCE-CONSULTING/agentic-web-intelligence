@@ -1,6 +1,7 @@
 """Stable contracts between agent workflows and governed web tools."""
 
 from datetime import datetime
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -45,9 +46,47 @@ class Evidence(BaseModel):
     extraction_method: str
 
 
+class ResearchRunRequest(BaseModel):
+    """Create a durable, discovery-first research run."""
+
+    question: str = Field(min_length=1, max_length=512)
+    max_results: int = Field(default=5, ge=1, le=10)
+
+
+class SourceCandidate(SearchResult):
+    """A discovered source associated with one research run."""
+
+    rank: int = Field(ge=1)
+
+
+class AuditEvent(BaseModel):
+    """An append-only event describing a run decision or outcome."""
+
+    event_type: str
+    occurred_at: datetime
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class ResearchRun(BaseModel):
+    """Durable research record returned to operators and future agents."""
+
+    id: UUID
+    question: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    sources: list[SourceCandidate] = Field(default_factory=list)
+    evidence: list[Evidence] = Field(default_factory=list)
+    audit_events: list[AuditEvent] = Field(default_factory=list)
+
+
 class ToolPolicyError(ValueError):
     """Raised when a request is outside the read-only web-tool policy."""
 
 
 class ToolProviderError(RuntimeError):
     """Raised when a configured web-tool provider cannot complete a request."""
+
+
+class ResearchStoreUnavailable(RuntimeError):
+    """Raised when the durable research store is not configured or reachable."""

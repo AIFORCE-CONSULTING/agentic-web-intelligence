@@ -1,4 +1,6 @@
 import asyncio
+from datetime import UTC, datetime
+from uuid import uuid4
 
 import httpx
 import pytest
@@ -6,6 +8,7 @@ import pytest
 from app.main import create_app
 from app.web_research.contracts import (
     Evidence,
+    ResearchRun,
     SearchResponse,
     SearchResult,
     ToolPolicyError,
@@ -153,3 +156,54 @@ def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.Mon
 
     assert response.status_code == 503
     assert response.json()["detail"] == "The search provider is unavailable."
+
+
+def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.sources: list[SearchResult] = []
+
+        async def create_run(self, question: str) -> ResearchRun:
+            return ResearchRun(
+                id=run_id,
+                question=question,
+                status="searching",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+
+        async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
+            self.sources = sources
+
+        async def get_run(self, _: object) -> ResearchRun:
+            return ResearchRun(
+                id=run_id,
+                question="evidence",
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                sources=self.sources,
+            )
+
+    async def search(_: str, __: int) -> SearchResponse:
+        return SearchResponse(
+            query="evidence",
+            results=[SearchResult(title="Source", url="https://example.com", snippet="Summary")],
+        )
+
+    monkeypatch.setattr("app.main.run_search_workflow", search)
+    app = create_app()
+    app.state.research_store = FakeStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/v1/research/runs", json={"question": "evidence"})
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "ready"
+    assert response.json()["sources"][0]["rank"] == 1

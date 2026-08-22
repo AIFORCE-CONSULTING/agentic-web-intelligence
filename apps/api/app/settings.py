@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     app_log_level: str = "INFO"
     web_origin: str = "http://localhost:5173"
     searxng_base_url: str | None = None
+    database_url: str | None = None
 
 
 @lru_cache

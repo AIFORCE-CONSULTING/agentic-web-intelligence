@@ -8,6 +8,11 @@ Phase 2 provides two read-only web capabilities through the platform API:
 The agent-facing contract stays small. SearXNG and Trafilatura are internal
 implementations selected by the platform, not raw tools exposed to a workflow.
 
+Research is durable when it uses the run endpoints. A run keeps the question,
+ranked source candidates, extracted evidence, and an append-only audit trail in
+Postgres. This makes results inspectable and reusable without giving agents
+direct database or browser access.
+
 ## Run locally
 
 Set a long random `SEARXNG_SECRET` in your local `.env` file. The committed
@@ -33,6 +38,31 @@ Invoke-RestMethod -Method Post `
 
 The platform caps the number of returned results, normalizes source fields, and
 filters results that point to non-public network destinations.
+
+## Persistent research run
+
+Create a research run instead of using the transient search endpoint:
+
+~~~powershell
+$run = Invoke-RestMethod -Method Post `
+  -Uri http://localhost:8000/v1/research/runs `
+  -ContentType application/json `
+  -Body '{"question":"agentic web intelligence","max_results":2}'
+$run.id
+~~~
+
+The response contains its sources and audit events. Attach approved text
+evidence to that same run with:
+
+~~~powershell
+Invoke-RestMethod -Method Post `
+  -Uri "http://localhost:8000/v1/research/runs/$($run.id)/extract" `
+  -ContentType application/json `
+  -Body '{"url":"https://example.com"}'
+~~~
+
+Retrieve it later with `GET /v1/research/runs/{run_id}`. The default local
+`web-research` Compose profile starts Postgres with the API and SearXNG.
 
 ## Extraction policy
 

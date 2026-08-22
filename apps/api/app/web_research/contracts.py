@@ -80,6 +80,24 @@ class ResearchRun(BaseModel):
     audit_events: list[AuditEvent] = Field(default_factory=list)
 
 
+class ResearchRunSummary(BaseModel):
+    """A bounded library entry for reopening a durable research run."""
+
+    id: UUID
+    question: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    source_count: int = Field(ge=0)
+    evidence_count: int = Field(ge=0)
+
+
+class ResearchRunList(BaseModel):
+    """Most recently updated runs, deliberately bounded for an operator console."""
+
+    runs: list[ResearchRunSummary]
+
+
 class ToolPolicyError(ValueError):
     """Raised when a request is outside the read-only web-tool policy."""
 

@@ -11,6 +11,11 @@ type ResearchRun = {
   id: string; question: string; status: string; sources: Source[]; evidence: Evidence[];
   audit_events: AuditEvent[];
 };
+type ResearchRunSummary = {
+  id: string; question: string; status: string; created_at: string; updated_at: string;
+  source_count: number; evidence_count: number;
+};
+type ResearchRunList = { runs: ResearchRunSummary[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 
@@ -28,6 +33,7 @@ export function App() {
   const [question, setQuestion] = useState("What is agentic web intelligence?");
   const [url, setUrl] = useState("");
   const [run, setRun] = useState<ResearchRun | null>(null);
+  const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -43,6 +49,34 @@ export function App() {
     return () => controller.abort();
   }, []);
 
+  async function refreshRunLibrary() {
+    try {
+      const response = await apiRequest<ResearchRunList>("/v1/research/runs");
+      setRunLibrary(response.runs);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to load saved research runs.");
+    }
+  }
+
+  useEffect(() => {
+    if (health) void refreshRunLibrary();
+  }, [health]);
+
+  async function reopenRun(runId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const reopened = await apiRequest<ResearchRun>(`/v1/research/runs/${runId}`);
+      setRun(reopened);
+      setQuestion(reopened.question);
+      setUrl(reopened.sources[0]?.url ?? "");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   async function createRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setBusy(true);
@@ -55,6 +89,7 @@ export function App() {
       });
       setRun(created);
       setUrl(created.sources[0]?.url ?? "");
+      await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
     } finally {
@@ -74,6 +109,7 @@ export function App() {
         body: JSON.stringify({ url }),
       });
       setRun(await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`));
+      await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to extract evidence.");
     } finally {
@@ -102,6 +138,16 @@ export function App() {
 
       {error && <p className="error" role="alert">{error}</p>}
 
+      <section aria-labelledby="library-heading">
+        <div className="section-heading"><div><p className="eyebrow">Persistent resources</p><h2 id="library-heading">Research run library</h2></div><button type="button" className="secondary" onClick={() => void refreshRunLibrary()} disabled={busy || !health}>Refresh</button></div>
+        {runLibrary.length ? <ol className="run-library">{runLibrary.map((item) => (
+          <li key={item.id}><button type="button" className="run-card" onClick={() => void reopenRun(item.id)} disabled={busy}>
+            <span><strong>{item.question}</strong><small>Run {item.id.slice(0, 8)} · {new Date(item.updated_at).toLocaleString()}</small></span>
+            <span className="run-counts">{item.source_count} sources · {item.evidence_count} evidence</span>
+          </button></li>
+        ))}</ol> : <p>No saved research runs yet. Start one above to create a durable resource.</p>}
+      </section>
+
       {run && <>
         <section aria-labelledby="sources-heading">
           <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Review source candidates</h2></div><span className="badge">{run.status}</span></div>
@@ -123,13 +169,13 @@ export function App() {
           <p className="hint">Only public HTML or plain-text pages are allowed. Downloads, private URLs, and browser interaction remain blocked.</p>
         </section>
 
-        <section aria-labelledby="evidence-heading">
-          <h2 id="evidence-heading">Stored evidence</h2>
+          <section aria-labelledby="evidence-heading">
+            <h2 id="evidence-heading">Extracted source data</h2>
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
               <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><p>{item.text}</p>
             </article>
-          )) : <p>No evidence has been extracted for this run yet.</p>}
+          )) : <p>No source data has been extracted for this run yet.</p>}
         </section>
 
         <section aria-labelledby="audit-heading"><h2 id="audit-heading">Audit trail</h2><ol className="audit">{run.audit_events.map((event) => (

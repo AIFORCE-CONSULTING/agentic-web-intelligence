@@ -9,6 +9,7 @@ from app.main import create_app
 from app.web_research.contracts import (
     Evidence,
     ResearchRun,
+    ResearchRunSummary,
     SearchResponse,
     SearchResult,
     ToolPolicyError,
@@ -207,3 +208,35 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.status_code == 201
     assert response.json()["status"] == "ready"
     assert response.json()["sources"][0]["rank"] == 1
+
+
+def test_run_library_lists_bounded_summaries() -> None:
+    run_id = uuid4()
+
+    class FakeStore:
+        async def list_runs(self, limit: int) -> list[ResearchRunSummary]:
+            assert limit == 25
+            return [
+                ResearchRunSummary(
+                    id=run_id,
+                    question="evidence",
+                    status="ready",
+                    created_at=datetime.now(UTC),
+                    updated_at=datetime.now(UTC),
+                    source_count=2,
+                    evidence_count=1,
+                )
+            ]
+
+    app = create_app()
+    app.state.research_store = FakeStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/v1/research/runs")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["runs"][0]["evidence_count"] == 1

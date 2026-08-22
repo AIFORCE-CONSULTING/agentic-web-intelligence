@@ -9,6 +9,7 @@ from app.web_research.contracts import (
     AuditEvent,
     Evidence,
     ResearchRun,
+    ResearchRunSummary,
     ResearchStoreUnavailable,
     SourceCandidate,
 )
@@ -192,6 +193,25 @@ class ResearchStore:
                 for row in events
             ],
         )
+
+    async def list_runs(self, limit: int) -> list[ResearchRunSummary]:
+        """Return a bounded run library without loading evidence text into the list view."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT runs.id, runs.question, runs.status, runs.created_at, runs.updated_at,
+                          COUNT(DISTINCT sources.id)::integer AS source_count,
+                          COUNT(DISTINCT evidence.id)::integer AS evidence_count
+                   FROM research_runs AS runs
+                   LEFT JOIN research_sources AS sources ON sources.run_id = runs.id
+                   LEFT JOIN research_evidence AS evidence ON evidence.run_id = runs.id
+                   GROUP BY runs.id
+                   ORDER BY runs.updated_at DESC
+                   LIMIT $1""",
+                limit,
+            )
+        return [ResearchRunSummary(**dict(row)) for row in rows]
 
     @staticmethod
     async def _append_audit(

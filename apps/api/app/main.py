@@ -1,6 +1,6 @@
 """HTTP entry point for Agentic Web Intelligence."""
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -9,6 +9,7 @@ from app.web_research.contracts import (
     Evidence,
     ExtractRequest,
     ResearchRun,
+    ResearchRunList,
     ResearchRunRequest,
     ResearchStoreUnavailable,
     SearchRequest,
@@ -129,6 +130,18 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Research run was not found.")
         return run
+
+    @app.get("/v1/research/runs", response_model=ResearchRunList, tags=["research"])
+    async def list_research_runs(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=50)
+    ) -> ResearchRunList:
+        """List recent durable runs without returning the potentially large evidence bodies."""
+
+        store: ResearchStore = http_request.app.state.research_store
+        try:
+            return ResearchRunList(runs=await store.list_runs(limit))
+        except ResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post("/v1/research/runs/{run_id}/extract", response_model=Evidence, tags=["research"])
     async def extract_run_evidence(

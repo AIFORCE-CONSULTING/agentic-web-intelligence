@@ -9,7 +9,7 @@ The agent-facing contract stays small. SearXNG and Trafilatura are internal
 implementations selected by the platform, not raw tools exposed to a workflow.
 
 Research is durable when it uses the run endpoints. A run keeps the question,
-ranked source candidates, extracted evidence, and an append-only audit trail in
+ranked source candidates, extracted source data, and an append-only audit trail in
 Postgres. This makes results inspectable and reusable without giving agents
 direct database or browser access.
 
@@ -51,8 +51,8 @@ $run = Invoke-RestMethod -Method Post `
 $run.id
 ~~~
 
-The response contains its sources and audit events. Attach approved text
-evidence to that same run with:
+The response contains its sources and audit events. Attach approved extracted
+source data to that same run with:
 
 ~~~powershell
 Invoke-RestMethod -Method Post `
@@ -63,6 +63,10 @@ Invoke-RestMethod -Method Post `
 
 Retrieve it later with `GET /v1/research/runs/{run_id}`. The default local
 `web-research` Compose profile starts Postgres with the API and SearXNG.
+
+`GET /v1/research/runs` returns the 25 most recently updated runs by default,
+including source and evidence counts but not full evidence text. The operator
+console uses this bounded library to reopen a run without re-running discovery.
 
 ## Extraction policy
 

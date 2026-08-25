@@ -150,6 +150,32 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def run_exists(self, run_id: UUID) -> bool:
+        """Confirm a run exists before invoking an external retrieval action for it."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return bool(
+                await connection.fetchval("SELECT 1 FROM research_runs WHERE id = $1", run_id)
+            )
+
+    async def record_policy_denial(
+        self, run_id: UUID, requested_url: str, reason: str
+    ) -> None:
+        """Append a denial event without storing untrusted response content."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.extract.denied",
+                {"requested_url": requested_url, "reason": reason},
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def mark_failed(self, run_id: UUID, reason: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():

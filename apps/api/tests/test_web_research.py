@@ -1,4 +1,5 @@
 import asyncio
+import ipaddress
 from datetime import UTC, datetime
 from uuid import uuid4
 
@@ -16,7 +17,12 @@ from app.web_research.contracts import (
     ToolProviderError,
 )
 from app.web_research.extractor import WebExtractor
+from app.web_research.policy import validate_public_destination
 from app.web_research.search import SearxngSearchProvider
+
+
+async def permit_public_destination(_: str) -> None:
+    """Avoid external DNS in unit tests whose focus is extraction behavior."""
 
 
 def test_extractor_rejects_download_attachment() -> None:
@@ -33,7 +39,9 @@ def test_extractor_rejects_download_attachment() -> None:
             )
         )
         async with httpx.AsyncClient(transport=transport) as client:
-            await WebExtractor(client).extract("https://example.com/data.zip")
+            await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/data.zip"
+            )
 
     with pytest.raises(ToolPolicyError, match="Attachments and file downloads"):
         asyncio.run(extract())
@@ -50,7 +58,9 @@ def test_extractor_returns_normalized_plain_text_evidence() -> None:
             )
         )
         async with httpx.AsyncClient(transport=transport) as client:
-            return await WebExtractor(client).extract("https://example.com/evidence")
+            return await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/evidence"
+            )
 
     evidence = asyncio.run(extract())
 
@@ -70,7 +80,9 @@ def test_extractor_returns_main_text_from_html() -> None:
             )
         )
         async with httpx.AsyncClient(transport=transport) as client:
-            return await WebExtractor(client).extract("https://example.com/evidence")
+            return await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/evidence"
+            )
 
     evidence = asyncio.run(extract())
 
@@ -84,6 +96,65 @@ def test_extractor_rejects_private_network_addresses() -> None:
             await WebExtractor(client).extract("http://127.0.0.1/private")
 
     with pytest.raises(ToolPolicyError, match="Non-public network addresses"):
+        asyncio.run(extract())
+
+
+def test_destination_rejects_hostname_resolving_to_private_address() -> None:
+    async def private_resolver(_: str, __: int) -> set[ipaddress.IPv4Address]:
+        return {ipaddress.IPv4Address("10.0.0.8")}
+
+    with pytest.raises(ToolPolicyError, match="resolves to a non-public"):
+        asyncio.run(validate_public_destination("https://internal.example", private_resolver))
+
+
+def test_extractor_revalidates_each_redirect_target() -> None:
+    async def extract() -> list[str]:
+        validated_urls: list[str] = []
+
+        async def destination_validator(url: str) -> None:
+            validated_urls.append(url)
+            if "private.example" in url:
+                raise ToolPolicyError(
+                    "The destination hostname resolves to a non-public network address."
+                )
+
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                302,
+                headers={"location": "https://private.example/metadata"},
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(ToolPolicyError, match="resolves to a non-public"):
+                await WebExtractor(client, destination_validator).extract(
+                    "https://example.com/start"
+                )
+        return validated_urls
+
+    assert asyncio.run(extract()) == [
+        "https://example.com/start",
+        "https://private.example/metadata",
+    ]
+
+
+def test_extractor_limits_normalized_text_size(monkeypatch: pytest.MonkeyPatch) -> None:
+    async def extract() -> None:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                content=b"This content is intentionally too long.",
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/evidence"
+            )
+
+    monkeypatch.setattr("app.web_research.extractor.MAX_EXTRACTED_TEXT_CHARS", 10)
+    with pytest.raises(ToolPolicyError, match="extracted text exceeds"):
         asyncio.run(extract())
 
 
@@ -104,6 +175,44 @@ def test_extract_endpoint_returns_policy_errors_as_unprocessable(
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Attachments and file downloads are not permitted."
+
+
+def test_run_extraction_records_policy_denial(monkeypatch: pytest.MonkeyPatch) -> None:
+    run_id = uuid4()
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.denials: list[tuple[object, str, str]] = []
+
+        async def run_exists(self, _: object) -> bool:
+            return True
+
+        async def record_policy_denial(
+            self, stored_run_id: object, url: str, reason: str
+        ) -> None:
+            self.denials.append((stored_run_id, url, reason))
+
+    async def reject(_: str) -> Evidence:
+        raise ToolPolicyError("Non-public network addresses are not permitted.")
+
+    monkeypatch.setattr("app.main.run_extract_workflow", reject)
+    app = create_app()
+    store = FakeStore()
+    app.state.research_store = store
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/extract", json={"url": "http://127.0.0.1"}
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
+    assert store.denials == [
+        (run_id, "http://127.0.0.1", "Non-public network addresses are not permitted.")
+    ]
 
 
 def test_searxng_provider_normalizes_and_bounds_results() -> None:

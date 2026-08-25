@@ -153,15 +153,19 @@ def create_app() -> FastAPI:
         try:
             from uuid import UUID
 
-            evidence = await run_extract_workflow(request.url)
-            await store.save_evidence(UUID(run_id), evidence)
-            return evidence
+            parsed_run_id = UUID(run_id)
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        except KeyError as error:
-            raise HTTPException(status_code=404, detail="Research run was not found.") from error
-        except ToolPolicyError as error:
-            raise HTTPException(status_code=422, detail=str(error)) from error
+        try:
+            if not await store.run_exists(parsed_run_id):
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            try:
+                evidence = await run_extract_workflow(request.url)
+            except ToolPolicyError as error:
+                await store.record_policy_denial(parsed_run_id, request.url, str(error))
+                raise HTTPException(status_code=422, detail=str(error)) from error
+            await store.save_evidence(parsed_run_id, evidence)
+            return evidence
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 

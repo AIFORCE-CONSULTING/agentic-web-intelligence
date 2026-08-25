@@ -70,10 +70,12 @@ console uses this bounded library to reopen a run without re-running discovery.
 
 ## Extraction policy
 
-`/v1/research/extract` accepts one HTTP(S) URL and returns extracted evidence
-only. It rejects local/private literal IP addresses, embedded credentials,
-nonstandard ports, attachments, file downloads, unsupported content types,
-oversized responses, and excessive redirects.
+`/v1/research/extract` accepts one HTTP(S) URL and returns extracted source data
+only. It rejects local/private literal IP addresses, hostnames that resolve to
+non-public addresses, embedded credentials, nonstandard ports, attachments,
+file downloads, unsupported content types, oversized responses or extracted
+text, and excessive redirects. Every redirect target is revalidated before a
+request is made.
 
 The Phase 2 default permits only `text/html` and `text/plain`. Authenticated
 systems, PDFs, browser interaction, and crawling are separate future

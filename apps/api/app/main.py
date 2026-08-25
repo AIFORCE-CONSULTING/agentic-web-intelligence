@@ -4,6 +4,14 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.prompt_templates import (
+    GovernedResearchPromptRequest,
+    PromptTemplateInfo,
+    PromptTemplateList,
+    RenderedPrompt,
+    governed_research_template_info,
+    render_governed_research_prompt,
+)
 from app.settings import get_settings
 from app.web_research.contracts import (
     Evidence,
@@ -70,6 +78,30 @@ def create_app() -> FastAPI:
             service="agentic-web-intelligence-api",
             environment=settings.app_environment,
         )
+
+    @app.get("/v1/prompts", response_model=PromptTemplateList, tags=["prompts"])
+    async def list_prompt_templates() -> PromptTemplateList:
+        """List stable prompt declarations without rendering caller inputs."""
+
+        return PromptTemplateList(prompts=[governed_research_template_info()])
+
+    @app.get(
+        "/v1/prompts/governed-research", response_model=PromptTemplateInfo, tags=["prompts"]
+    )
+    async def get_governed_research_template() -> PromptTemplateInfo:
+        """Return the prompt declaration that future MCP clients can discover."""
+
+        return governed_research_template_info()
+
+    @app.post(
+        "/v1/prompts/governed-research/render", response_model=RenderedPrompt, tags=["prompts"]
+    )
+    async def render_governed_research_template(
+        request: GovernedResearchPromptRequest,
+    ) -> RenderedPrompt:
+        """Render an auditable, versioned research instruction without calling a model."""
+
+        return render_governed_research_prompt(request)
 
     @app.post("/v1/research/extract", response_model=Evidence, tags=["research"])
     async def extract_public_page(request: ExtractRequest) -> Evidence:

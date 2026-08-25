@@ -15,6 +15,7 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 
 - LangGraph workflow with approved web-search and extraction tools
 - MCP host, source provenance, basic tool policy, and execution audit history
+- Developer and operator portal for the console, API reference, documentation, and service health
 - Publish the MkDocs documentation site with GitHub Pages
 
 ## Phase 3 - Agent Runtime

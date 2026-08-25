@@ -18,6 +18,7 @@ type ResearchRunSummary = {
 type ResearchRunList = { runs: ResearchRunSummary[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
+const isDeveloperRoute = window.location.pathname === "/developer";
 
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, options);
@@ -26,6 +27,41 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(payload?.detail ?? "The platform request could not be completed.");
   }
   return (await response.json()) as T;
+}
+
+function PrimaryNavigation() {
+  return (
+    <nav className="primary-nav" aria-label="Primary navigation">
+      <a className={!isDeveloperRoute ? "active" : ""} href="/">Research workspace</a>
+      <a className={isDeveloperRoute ? "active" : ""} href="/developer">Developer hub</a>
+    </nav>
+  );
+}
+
+function DeveloperHub({ health }: { health: Health | null }) {
+  return (
+    <>
+      <header>
+        <p className="eyebrow">Platform access</p>
+        <PrimaryNavigation />
+        <h1>Developer hub</h1>
+        <p className="lead">One local starting point for the platform console, API contract, documentation, and service health.</p>
+      </header>
+      <section aria-labelledby="developer-services-heading">
+        <div className="section-heading"><div><p className="eyebrow">Local services</p><h2 id="developer-services-heading">Platform entry points</h2></div><span className={`connection ${health ? "online" : "offline"}`}>{health ? "API ready" : "API unavailable"}</span></div>
+        <div className="developer-grid">
+          <a className="developer-card" href="/"><strong>Research workspace</strong><span>Create, reopen, and inspect governed research runs.</span><small>localhost:3000</small></a>
+          <a className="developer-card" href={`${apiBaseUrl}/docs`} target="_blank" rel="noreferrer"><strong>API reference</strong><span>Explore and execute the FastAPI OpenAPI contract.</span><small>{apiBaseUrl}/docs</small></a>
+          <a className="developer-card" href={`${apiBaseUrl}/openapi.json`} target="_blank" rel="noreferrer"><strong>OpenAPI schema</strong><span>Use the machine-readable API contract for integrations.</span><small>{apiBaseUrl}/openapi.json</small></a>
+          <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · start the documentation profile</small></a>
+        </div>
+      </section>
+      <section aria-labelledby="developer-guidance-heading">
+        <h2 id="developer-guidance-heading">Local guidance</h2>
+        <p>Run <code>docker compose --profile documentation up --build</code> to make the documentation site available. SearXNG remains internal-only; all web research goes through the governed API.</p>
+      </section>
+    </>
+  );
 }
 
 export function App() {
@@ -117,12 +153,17 @@ export function App() {
     }
   }
 
+  if (isDeveloperRoute) {
+    return <main><DeveloperHub health={health} /></main>;
+  }
+
   return (
     <main>
       <header>
         <p className="eyebrow">Agentic Web Intelligence</p>
+        <PrimaryNavigation />
         <h1>Research with a durable evidence trail.</h1>
-        <p className="lead">Discover public sources, extract bounded evidence, and keep an inspectable record of every platform decision.</p>
+        <p className="lead">Discover public sources, extract bounded source data, and keep an inspectable record of every platform decision.</p>
         <p className={`connection ${health ? "online" : "offline"}`}>{health ? `API ${health.status}` : "API unavailable"}</p>
       </header>
 

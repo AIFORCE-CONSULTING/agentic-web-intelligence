@@ -25,6 +25,7 @@ from app.web_research.contracts import (
     SourceCandidate,
     ToolPolicyError,
     ToolProviderError,
+    ToolRetrievalError,
 )
 from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
@@ -111,6 +112,8 @@ def create_app() -> FastAPI:
             return await run_extract_workflow(request.url)
         except ToolPolicyError as error:
             raise HTTPException(status_code=422, detail=str(error)) from error
+        except ToolRetrievalError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/v1/research/search", response_model=SearchResponse, tags=["research"])
     async def search_public_web(request: SearchRequest) -> SearchResponse:
@@ -196,6 +199,11 @@ def create_app() -> FastAPI:
             except ToolPolicyError as error:
                 await store.record_policy_denial(parsed_run_id, request.url, str(error))
                 raise HTTPException(status_code=422, detail=str(error)) from error
+            except ToolRetrievalError as error:
+                await store.record_extraction_failure(
+                    parsed_run_id, request.url, str(error), error.upstream_status
+                )
+                raise HTTPException(status_code=502, detail=str(error)) from error
             await store.save_evidence(parsed_run_id, evidence)
             return evidence
         except ResearchStoreUnavailable as error:

@@ -15,6 +15,7 @@ from app.web_research.contracts import (
     SearchResult,
     ToolPolicyError,
     ToolProviderError,
+    ToolRetrievalError,
 )
 from app.web_research.extractor import WebExtractor
 from app.web_research.policy import validate_public_destination
@@ -192,6 +193,22 @@ def test_extractor_limits_normalized_text_size(monkeypatch: pytest.MonkeyPatch) 
         asyncio.run(extract())
 
 
+def test_extractor_maps_upstream_forbidden_to_retrieval_error() -> None:
+    async def extract() -> None:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(403, request=request)
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/protected"
+            )
+
+    with pytest.raises(ToolRetrievalError, match="rejected automated access") as error:
+        asyncio.run(extract())
+
+    assert error.value.upstream_status == 403
+
+
 def test_extract_endpoint_returns_policy_errors_as_unprocessable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -209,6 +226,25 @@ def test_extract_endpoint_returns_policy_errors_as_unprocessable(
 
     assert response.status_code == 422
     assert response.json()["detail"] == "Attachments and file downloads are not permitted."
+
+
+def test_extract_endpoint_returns_upstream_failures_as_bad_gateway(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def rejected(_: str) -> Evidence:
+        raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
+
+    monkeypatch.setattr("app.main.run_extract_workflow", rejected)
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/v1/research/extract", json={"url": "https://example.com"})
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 502
+    assert response.json()["detail"] == "The selected source rejected automated access (HTTP 403)."
 
 
 def test_run_extraction_records_policy_denial(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,6 +282,51 @@ def test_run_extraction_records_policy_denial(monkeypatch: pytest.MonkeyPatch) -
     assert response.status_code == 422
     assert store.denials == [
         (run_id, "http://127.0.0.1", "Non-public network addresses are not permitted.")
+    ]
+
+
+def test_run_extraction_records_source_retrieval_failure(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = uuid4()
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.failures: list[tuple[object, str, str, int | None]] = []
+
+        async def run_exists(self, _: object) -> bool:
+            return True
+
+        async def record_extraction_failure(
+            self, stored_run_id: object, url: str, reason: str, status: int | None
+        ) -> None:
+            self.failures.append((stored_run_id, url, reason, status))
+
+    async def rejected(_: str) -> Evidence:
+        raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
+
+    monkeypatch.setattr("app.main.run_extract_workflow", rejected)
+    app = create_app()
+    store = FakeStore()
+    app.state.research_store = store
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/extract", json={"url": "https://example.com/protected"}
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 502
+    assert store.failures == [
+        (
+            run_id,
+            "https://example.com/protected",
+            "The selected source rejected automated access (HTTP 403).",
+            403,
+        )
     ]
 
 

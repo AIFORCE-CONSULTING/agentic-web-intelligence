@@ -7,7 +7,7 @@ from hashlib import sha256
 import httpx
 import trafilatura
 
-from app.web_research.contracts import Evidence, ToolPolicyError
+from app.web_research.contracts import Evidence, ToolPolicyError, ToolRetrievalError
 from app.web_research.policy import (
     MAX_EXTRACTED_TEXT_CHARS,
     MAX_REDIRECTS,
@@ -34,37 +34,48 @@ class WebExtractor:
         current_url = requested_url
         for _ in range(MAX_REDIRECTS + 1):
             await self._destination_validator(current_url)
-            async with self._client.stream("GET", current_url, follow_redirects=False) as response:
-                if response.is_redirect:
-                    location = response.headers.get("location")
-                    if not location:
-                        raise ToolPolicyError(
-                            "The redirect response did not provide a destination."
-                        )
-                    current_url = str(response.url.join(location))
-                    continue
+            try:
+                async with self._client.stream(
+                    "GET", current_url, follow_redirects=False
+                ) as response:
+                    if response.is_redirect:
+                        location = response.headers.get("location")
+                        if not location:
+                            raise ToolPolicyError(
+                                "The redirect response did not provide a destination."
+                            )
+                        current_url = str(response.url.join(location))
+                        continue
 
-                response.raise_for_status()
-                content_type = validate_response_headers(
-                    response.headers.get("content-type"),
-                    response.headers.get("content-disposition"),
-                )
-                content_length = response.headers.get("content-length")
-                if content_length:
-                    try:
-                        declared_size = int(content_length)
-                    except ValueError as error:
-                        raise ToolPolicyError(
-                            "The response declared an invalid content length."
-                        ) from error
-                    if declared_size > MAX_RESPONSE_BYTES:
-                        raise ToolPolicyError("The response exceeds the maximum permitted size.")
-                content = bytearray()
-                async for chunk in response.aiter_bytes():
-                    content.extend(chunk)
-                    if len(content) > MAX_RESPONSE_BYTES:
-                        raise ToolPolicyError("The response exceeds the maximum permitted size.")
-                return self._to_evidence(response, content_type, bytes(content))
+                    response.raise_for_status()
+                    content_type = validate_response_headers(
+                        response.headers.get("content-type"),
+                        response.headers.get("content-disposition"),
+                    )
+                    content_length = response.headers.get("content-length")
+                    if content_length:
+                        try:
+                            declared_size = int(content_length)
+                        except ValueError as error:
+                            raise ToolPolicyError(
+                                "The response declared an invalid content length."
+                            ) from error
+                        if declared_size > MAX_RESPONSE_BYTES:
+                            raise ToolPolicyError(
+                                "The response exceeds the maximum permitted size."
+                            )
+                    content = bytearray()
+                    async for chunk in response.aiter_bytes():
+                        content.extend(chunk)
+                        if len(content) > MAX_RESPONSE_BYTES:
+                            raise ToolPolicyError(
+                                "The response exceeds the maximum permitted size."
+                            )
+                    return self._to_evidence(response, content_type, bytes(content))
+            except httpx.HTTPStatusError as error:
+                raise self._retrieval_error_for_status(error.response.status_code) from error
+            except httpx.HTTPError as error:
+                raise ToolRetrievalError("The selected source could not be retrieved.") from error
 
         raise ToolPolicyError("The request exceeded the maximum number of redirects.")
 
@@ -97,3 +108,13 @@ class WebExtractor:
             content_hash=f"sha256:{sha256(raw_content).hexdigest()}",
             extraction_method=extraction_method,
         )
+
+    @staticmethod
+    def _retrieval_error_for_status(status_code: int) -> ToolRetrievalError:
+        if status_code in (401, 403):
+            message = f"The selected source rejected automated access (HTTP {status_code})."
+        elif status_code == 404:
+            message = "The selected source was not found (HTTP 404)."
+        else:
+            message = f"The selected source could not be retrieved (HTTP {status_code})."
+        return ToolRetrievalError(message, upstream_status=status_code)

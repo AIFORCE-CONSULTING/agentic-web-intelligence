@@ -106,5 +106,13 @@ class ToolProviderError(RuntimeError):
     """Raised when a configured web-tool provider cannot complete a request."""
 
 
+class ToolRetrievalError(ToolProviderError):
+    """Raised when an approved public source cannot be retrieved safely."""
+
+    def __init__(self, message: str, upstream_status: int | None = None) -> None:
+        super().__init__(message)
+        self.upstream_status = upstream_status
+
+
 class ResearchStoreUnavailable(RuntimeError):
     """Raised when the durable research store is not configured or reachable."""

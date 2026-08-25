@@ -13,6 +13,11 @@ ranked source candidates, extracted source data, and an append-only audit trail 
 Postgres. This makes results inspectable and reusable without giving agents
 direct database or browser access.
 
+When a public source rejects automated retrieval—for example, with HTTP 403—the
+platform returns a clear extraction failure instead of saving misleading source
+data. The run receives a `research.extract.failed` audit event with the requested
+URL, safe failure reason, and upstream status when available.
+
 ## Run locally
 
 Set a long random `SEARXNG_SECRET` in your local `.env` file. The committed

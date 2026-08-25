@@ -70,6 +70,7 @@ export function App() {
   const [url, setUrl] = useState("");
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
+  const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -104,6 +105,7 @@ export function App() {
     try {
       const reopened = await apiRequest<ResearchRun>(`/v1/research/runs/${runId}`);
       setRun(reopened);
+      setSelectedAuditIndex(null);
       setQuestion(reopened.question);
       setUrl(reopened.sources[0]?.url ?? "");
     } catch (reason) {
@@ -124,6 +126,7 @@ export function App() {
         body: JSON.stringify({ question, max_results: 5 }),
       });
       setRun(created);
+      setSelectedAuditIndex(null);
       setUrl(created.sources[0]?.url ?? "");
       await refreshRunLibrary();
     } catch (reason) {
@@ -200,7 +203,7 @@ export function App() {
         </section>
 
         <section aria-labelledby="extract-heading">
-          <h2 id="extract-heading">3. Extract governed evidence</h2>
+          <h2 id="extract-heading">3. Extract governed source data</h2>
           <form onSubmit={extractEvidence} className="form-row">
             <label>Public source URL
               <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} required />
@@ -219,9 +222,20 @@ export function App() {
           )) : <p>No source data has been extracted for this run yet.</p>}
         </section>
 
-        <section aria-labelledby="audit-heading"><h2 id="audit-heading">Audit trail</h2><ol className="audit">{run.audit_events.map((event) => (
-          <li key={`${event.event_type}-${event.occurred_at}`}><strong>{event.event_type}</strong><span>{new Date(event.occurred_at).toLocaleString()}</span></li>
-        ))}</ol></section>
+        <section aria-labelledby="audit-heading">
+          <h2 id="audit-heading">Audit trail</h2>
+          <p className="hint">Select an event to inspect its recorded metadata.</p>
+          <ol className="audit">{run.audit_events.map((event, index) => {
+            const selected = selectedAuditIndex === index;
+            return <li className={selected ? "selected" : ""} key={`${event.event_type}-${event.occurred_at}`}>
+              <button className="audit-event" type="button" onClick={() => setSelectedAuditIndex(selected ? null : index)}>
+                <span><strong>{event.event_type}</strong><small>{selected ? "Hide metadata" : "View metadata"}</small></span>
+                <span>{new Date(event.occurred_at).toLocaleString()}</span>
+              </button>
+              {selected && <pre className="audit-details">{JSON.stringify(event.details, null, 2)}</pre>}
+            </li>;
+          })}</ol>
+        </section>
       </>}
     </main>
   );

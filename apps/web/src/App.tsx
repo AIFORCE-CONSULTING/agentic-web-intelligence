@@ -16,6 +16,7 @@ type ResearchRunSummary = {
   source_count: number; evidence_count: number;
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
+type ExtractionAttempt = { url: string; outcome: "failed" | "succeeded"; detail?: string };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -27,6 +28,24 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(payload?.detail ?? "The platform request could not be completed.");
   }
   return (await response.json()) as T;
+}
+
+function latestExtractionAttemptFor(run: ResearchRun): ExtractionAttempt | null {
+  const event = [...run.audit_events].reverse().find((candidate) => (
+    candidate.event_type === "research.extract.failed" ||
+    candidate.event_type === "research.evidence.extracted"
+  ));
+  if (!event) return null;
+  const url = event.details.requested_url ?? event.details.url;
+  if (typeof url !== "string") return null;
+  if (event.event_type === "research.extract.failed") {
+    return {
+      url,
+      outcome: "failed",
+      detail: typeof event.details.reason === "string" ? event.details.reason : "Source retrieval failed.",
+    };
+  }
+  return { url, outcome: "succeeded" };
 }
 
 function PrimaryNavigation() {
@@ -71,6 +90,7 @@ export function App() {
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
+  const [lastExtractionAttempt, setLastExtractionAttempt] = useState<ExtractionAttempt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -106,6 +126,7 @@ export function App() {
       const reopened = await apiRequest<ResearchRun>(`/v1/research/runs/${runId}`);
       setRun(reopened);
       setSelectedAuditIndex(null);
+      setLastExtractionAttempt(latestExtractionAttemptFor(reopened));
       setQuestion(reopened.question);
       setUrl(reopened.sources[0]?.url ?? "");
     } catch (reason) {
@@ -127,6 +148,7 @@ export function App() {
       });
       setRun(created);
       setSelectedAuditIndex(null);
+      setLastExtractionAttempt(null);
       setUrl(created.sources[0]?.url ?? "");
       await refreshRunLibrary();
     } catch (reason) {
@@ -141,6 +163,7 @@ export function App() {
     if (!run) return;
     setBusy(true);
     setError(null);
+    const requestedUrl = url;
     try {
       await apiRequest<Evidence>(`/v1/research/runs/${run.id}/extract`, {
         method: "POST",
@@ -148,9 +171,20 @@ export function App() {
         body: JSON.stringify({ url }),
       });
       setRun(await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`));
+      setLastExtractionAttempt({ url: requestedUrl, outcome: "succeeded" });
       await refreshRunLibrary();
     } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to extract evidence.");
+      const detail = reason instanceof Error ? reason.message : "Unable to extract source data.";
+      setLastExtractionAttempt({ url: requestedUrl, outcome: "failed", detail });
+      setError(detail);
+      try {
+        const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
+        setRun(refreshedRun);
+        setLastExtractionAttempt(latestExtractionAttemptFor(refreshedRun));
+        await refreshRunLibrary();
+      } catch {
+        // The source failure remains visible even if the post-failure refresh is unavailable.
+      }
     } finally {
       setBusy(false);
     }
@@ -213,8 +247,18 @@ export function App() {
           <p className="hint">Only public HTML or plain-text pages are allowed. Downloads, private URLs, and browser interaction remain blocked.</p>
         </section>
 
-          <section aria-labelledby="evidence-heading">
-            <h2 id="evidence-heading">Extracted source data</h2>
+        <section aria-labelledby="evidence-heading">
+          <h2 id="evidence-heading">Stored extracted source data</h2>
+          {lastExtractionAttempt?.outcome === "failed" && <aside className="extraction-status failure" role="alert">
+            <strong>Latest extraction failed</strong>
+            <p>{lastExtractionAttempt.url}</p>
+            <span>{lastExtractionAttempt.detail}</span>
+            <small>Previously stored source data is retained below and does not represent this failed request.</small>
+          </aside>}
+          {lastExtractionAttempt?.outcome === "succeeded" && <aside className="extraction-status success">
+            <strong>Latest extraction succeeded</strong>
+            <p>{lastExtractionAttempt.url}</p>
+          </aside>}
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
               <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><p>{item.text}</p>

@@ -17,6 +17,10 @@ type ResearchRunSummary = {
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
 type ExtractionAttempt = { url: string; outcome: "failed" | "succeeded"; detail?: string };
+type BatchExtractionOutcome = {
+  url: string; status: "succeeded" | "failed" | "denied"; reason?: string | null;
+};
+type BatchExtractResponse = { run_id: string; outcomes: BatchExtractionOutcome[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -86,10 +90,11 @@ function DeveloperHub({ health }: { health: Health | null }) {
 export function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [question, setQuestion] = useState("What is agentic web intelligence?");
-  const [url, setUrl] = useState("");
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
+  const [selectedSourceUrls, setSelectedSourceUrls] = useState<string[]>([]);
+  const [batchOutcomes, setBatchOutcomes] = useState<BatchExtractionOutcome[]>([]);
   const [lastExtractionAttempt, setLastExtractionAttempt] = useState<ExtractionAttempt | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -128,7 +133,8 @@ export function App() {
       setSelectedAuditIndex(null);
       setLastExtractionAttempt(latestExtractionAttemptFor(reopened));
       setQuestion(reopened.question);
-      setUrl(reopened.sources[0]?.url ?? "");
+      setSelectedSourceUrls(reopened.sources.map((source) => source.url));
+      setBatchOutcomes([]);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
     } finally {
@@ -149,7 +155,8 @@ export function App() {
       setRun(created);
       setSelectedAuditIndex(null);
       setLastExtractionAttempt(null);
-      setUrl(created.sources[0]?.url ?? "");
+      setSelectedSourceUrls(created.sources.map((source) => source.url));
+      setBatchOutcomes([]);
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
@@ -158,25 +165,31 @@ export function App() {
     }
   }
 
-  async function extractEvidence(event: FormEvent<HTMLFormElement>) {
+  function toggleSource(url: string) {
+    setSelectedSourceUrls((selected) => (
+      selected.includes(url) ? selected.filter((item) => item !== url) : [...selected, url]
+    ));
+  }
+
+  async function extractSelectedSources(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!run) return;
+    if (!run || !selectedSourceUrls.length) return;
     setBusy(true);
     setError(null);
-    const requestedUrl = url;
+    setBatchOutcomes([]);
     try {
-      await apiRequest<Evidence>(`/v1/research/runs/${run.id}/extract`, {
+      const batch = await apiRequest<BatchExtractResponse>(`/v1/research/runs/${run.id}/extract-batch`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ url }),
+        body: JSON.stringify({ urls: selectedSourceUrls }),
       });
-      setRun(await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`));
-      setLastExtractionAttempt({ url: requestedUrl, outcome: "succeeded" });
+      const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
+      setRun(refreshedRun);
+      setLastExtractionAttempt(latestExtractionAttemptFor(refreshedRun));
+      setBatchOutcomes(batch.outcomes);
       await refreshRunLibrary();
     } catch (reason) {
-      const detail = reason instanceof Error ? reason.message : "Unable to extract source data.";
-      setLastExtractionAttempt({ url: requestedUrl, outcome: "failed", detail });
-      setError(detail);
+      setError(reason instanceof Error ? reason.message : "Unable to extract selected source data.");
       try {
         const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
         setRun(refreshedRun);
@@ -228,23 +241,25 @@ export function App() {
 
       {run && <>
         <section aria-labelledby="sources-heading">
-          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Review source candidates</h2></div><span className="badge">{run.status}</span></div>
+          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Select source candidates</h2></div><span className="badge">{selectedSourceUrls.length} selected</span></div>
           {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
-            <li key={`${source.rank}-${source.url}`}><button className="source" type="button" onClick={() => setUrl(source.url)}>
+            <li key={`${source.rank}-${source.url}`}><label className="source">
+              <input type="checkbox" checked={selectedSourceUrls.includes(source.url)} onChange={() => toggleSource(source.url)} disabled={busy} />
               <span className="rank">{source.rank}</span><span><strong>{source.title}</strong><small>{source.url}</small>{source.snippet && <span>{source.snippet}</span>}</span>
-            </button></li>
+            </label></li>
           ))}</ol> : <p>No public source candidates were returned for this question.</p>}
         </section>
 
         <section aria-labelledby="extract-heading">
           <h2 id="extract-heading">3. Extract governed source data</h2>
-          <form onSubmit={extractEvidence} className="form-row">
-            <label>Public source URL
-              <input type="url" value={url} onChange={(event) => setUrl(event.target.value)} required />
-            </label>
-            <button type="submit" disabled={busy || !url}>{busy ? "Extracting…" : "Extract"}</button>
+          <form onSubmit={extractSelectedSources} className="form-row">
+            <p className="selection-summary">{selectedSourceUrls.length} of {run.sources.length} candidates selected. Sources are extracted sequentially and each outcome is recorded.</p>
+            <button type="submit" disabled={busy || !selectedSourceUrls.length}>{busy ? "Extracting selected sources…" : `Extract ${selectedSourceUrls.length} selected source${selectedSourceUrls.length === 1 ? "" : "s"}`}</button>
           </form>
           <p className="hint">Only public HTML or plain-text pages are allowed. Downloads, private URLs, and browser interaction remain blocked.</p>
+          {batchOutcomes.length > 0 && <ol className="batch-outcomes" aria-label="Batch extraction results">{batchOutcomes.map((outcome) => (
+            <li className={outcome.status} key={outcome.url}><strong>{outcome.status}</strong><span>{outcome.url}</span>{outcome.reason && <small>{outcome.reason}</small>}</li>
+          ))}</ol>}
         </section>
 
         <section aria-labelledby="evidence-heading">

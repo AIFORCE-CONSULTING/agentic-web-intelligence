@@ -14,6 +14,9 @@ from app.prompt_templates import (
 )
 from app.settings import get_settings
 from app.web_research.contracts import (
+    BatchExtractRequest,
+    BatchExtractResponse,
+    BatchExtractionOutcome,
     Evidence,
     ExtractRequest,
     ResearchRun,
@@ -206,6 +209,72 @@ def create_app() -> FastAPI:
                 raise HTTPException(status_code=502, detail=str(error)) from error
             await store.save_evidence(parsed_run_id, evidence)
             return evidence
+        except ResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.post(
+        "/v1/research/runs/{run_id}/extract-batch",
+        response_model=BatchExtractResponse,
+        tags=["research"],
+    )
+    async def extract_run_evidence_batch(
+        run_id: str, request: BatchExtractRequest, http_request: Request
+    ) -> BatchExtractResponse:
+        """Sequentially extract selected candidates and preserve every outcome."""
+
+        store: ResearchStore = http_request.app.state.research_store
+        try:
+            from uuid import UUID
+
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        try:
+            run = await store.get_run(parsed_run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            if len(set(request.urls)) != len(request.urls):
+                raise HTTPException(status_code=422, detail="Each selected source URL must be unique.")
+            candidate_urls = {source.url for source in run.sources}
+            unknown_urls = [url for url in request.urls if url not in candidate_urls]
+            if unknown_urls:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Batch extraction accepts only source candidates from this research run.",
+                )
+
+            await store.record_batch_extraction_started(parsed_run_id, request.urls)
+            outcomes: list[BatchExtractionOutcome] = []
+            for url in request.urls:
+                try:
+                    evidence = await run_extract_workflow(url)
+                except ToolPolicyError as error:
+                    await store.record_policy_denial(parsed_run_id, url, str(error))
+                    outcomes.append(BatchExtractionOutcome(url=url, status="denied", reason=str(error)))
+                except ToolRetrievalError as error:
+                    await store.record_extraction_failure(
+                        parsed_run_id, url, str(error), error.upstream_status
+                    )
+                    outcomes.append(
+                        BatchExtractionOutcome(
+                            url=url,
+                            status="failed",
+                            reason=str(error),
+                            upstream_status=error.upstream_status,
+                        )
+                    )
+                except ToolProviderError as error:
+                    await store.record_extraction_failure(parsed_run_id, url, str(error), None)
+                    outcomes.append(BatchExtractionOutcome(url=url, status="failed", reason=str(error)))
+                else:
+                    await store.save_evidence(parsed_run_id, evidence)
+                    outcomes.append(BatchExtractionOutcome(url=url, status="succeeded", evidence=evidence))
+
+            succeeded = sum(outcome.status == "succeeded" for outcome in outcomes)
+            failed = sum(outcome.status == "failed" for outcome in outcomes)
+            denied = sum(outcome.status == "denied" for outcome in outcomes)
+            await store.record_batch_extraction_completed(parsed_run_id, succeeded, failed, denied)
+            return BatchExtractResponse(run_id=parsed_run_id, outcomes=outcomes)
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 

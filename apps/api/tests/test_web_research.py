@@ -13,6 +13,7 @@ from app.web_research.contracts import (
     ResearchRunSummary,
     SearchResponse,
     SearchResult,
+    SourceCandidate,
     ToolPolicyError,
     ToolProviderError,
     ToolRetrievalError,
@@ -328,6 +329,120 @@ def test_run_extraction_records_source_retrieval_failure(
             403,
         )
     ]
+
+
+def test_batch_run_extraction_is_sequential_and_records_each_outcome(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run_id = uuid4()
+    first_url = "https://example.com/first"
+    second_url = "https://example.com/second"
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.events: list[tuple[object, ...]] = []
+
+        async def get_run(self, _: object) -> ResearchRun:
+            return ResearchRun(
+                id=run_id,
+                question="evidence",
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                sources=[
+                    SourceCandidate(title="First", url=first_url, rank=1),
+                    SourceCandidate(title="Second", url=second_url, rank=2),
+                ],
+            )
+
+        async def record_batch_extraction_started(self, _: object, urls: list[str]) -> None:
+            self.events.append(("started", urls))
+
+        async def save_evidence(self, _: object, evidence: Evidence) -> None:
+            self.events.append(("succeeded", evidence.url))
+
+        async def record_extraction_failure(
+            self, _: object, url: str, reason: str, status: int | None
+        ) -> None:
+            self.events.append(("failed", url, reason, status))
+
+        async def record_policy_denial(self, *_: object) -> None:
+            raise AssertionError("No policy denial expected")
+
+        async def record_batch_extraction_completed(
+            self, _: object, succeeded: int, failed: int, denied: int
+        ) -> None:
+            self.events.append(("completed", succeeded, failed, denied))
+
+    calls: list[str] = []
+
+    async def extract(url: str) -> Evidence:
+        calls.append(url)
+        if url == second_url:
+            raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
+        return Evidence(
+            url=url,
+            retrieved_at=datetime.now(UTC),
+            content_type="text/plain",
+            text="Public source data.",
+            content_hash="sha256:test",
+            extraction_method="plain-text",
+        )
+
+    monkeypatch.setattr("app.main.run_extract_workflow", extract)
+    app = create_app()
+    store = FakeStore()
+    app.state.research_store = store
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/extract-batch", json={"urls": [first_url, second_url]}
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert calls == [first_url, second_url]
+    assert [outcome["status"] for outcome in response.json()["outcomes"]] == ["succeeded", "failed"]
+    assert store.events == [
+        ("started", [first_url, second_url]),
+        ("succeeded", first_url),
+        ("failed", second_url, "The selected source rejected automated access (HTTP 403).", 403),
+        ("completed", 1, 1, 0),
+    ]
+
+
+def test_batch_run_extraction_rejects_urls_outside_candidates() -> None:
+    run_id = uuid4()
+
+    class FakeStore:
+        async def get_run(self, _: object) -> ResearchRun:
+            return ResearchRun(
+                id=run_id,
+                question="evidence",
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                sources=[SourceCandidate(title="Candidate", url="https://example.com/candidate", rank=1)],
+            )
+
+    app = create_app()
+    app.state.research_store = FakeStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/extract-batch",
+                json={"urls": ["https://example.com/not-a-candidate"]},
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "Batch extraction accepts only source candidates from this research run."
 
 
 def test_searxng_provider_normalizes_and_bounds_results() -> None:

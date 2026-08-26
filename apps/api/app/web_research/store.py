@@ -197,6 +197,43 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def record_batch_extraction_started(self, run_id: UUID, urls: list[str]) -> None:
+        """Record the ordered candidate selection before retrieval begins."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.batch.extract.started",
+                {"selected_count": len(urls), "urls": urls},
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
+    async def record_batch_extraction_completed(
+        self, run_id: UUID, succeeded: int, failed: int, denied: int
+    ) -> None:
+        """Record the batch summary after every selected source has been attempted."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.batch.extract.completed",
+                {
+                    "selected_count": succeeded + failed + denied,
+                    "succeeded_count": succeeded,
+                    "failed_count": failed,
+                    "denied_count": denied,
+                },
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def mark_failed(self, run_id: UUID, reason: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():

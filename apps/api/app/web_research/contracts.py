@@ -1,6 +1,7 @@
 """Stable contracts between agent workflows and governed web tools."""
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, Field
@@ -10,6 +11,12 @@ class ExtractRequest(BaseModel):
     """A request for text evidence from one public webpage."""
 
     url: str = Field(min_length=1, max_length=2_048)
+
+
+class BatchExtractRequest(BaseModel):
+    """A bounded, ordered selection of discovered sources to extract."""
+
+    urls: list[str] = Field(min_length=1, max_length=10)
 
 
 class SearchRequest(BaseModel):
@@ -44,6 +51,23 @@ class Evidence(BaseModel):
     text: str = Field(min_length=1)
     content_hash: str
     extraction_method: str
+
+
+class BatchExtractionOutcome(BaseModel):
+    """The durable outcome of one source in a sequential batch."""
+
+    url: str
+    status: Literal["succeeded", "failed", "denied"]
+    evidence: Evidence | None = None
+    reason: str | None = None
+    upstream_status: int | None = None
+
+
+class BatchExtractResponse(BaseModel):
+    """A completed batch with an outcome for every requested source."""
+
+    run_id: UUID
+    outcomes: list[BatchExtractionOutcome]
 
 
 class ResearchRunRequest(BaseModel):

@@ -1,5 +1,9 @@
 """HTTP entry point for Agentic Web Intelligence."""
 
+import asyncio
+from typing import Literal
+
+import httpx
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -14,9 +18,9 @@ from app.prompt_templates import (
 )
 from app.settings import get_settings
 from app.web_research.contracts import (
+    BatchExtractionOutcome,
     BatchExtractRequest,
     BatchExtractResponse,
-    BatchExtractionOutcome,
     Evidence,
     ExtractRequest,
     ResearchRun,
@@ -30,6 +34,7 @@ from app.web_research.contracts import (
     ToolProviderError,
     ToolRetrievalError,
 )
+from app.web_research.mcp_host import GovernedWebMcpHost
 from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
 
@@ -42,6 +47,20 @@ class HealthResponse(BaseModel):
     environment: str
 
 
+class DependencyHealth(BaseModel):
+    """A safe, operator-facing status for one platform dependency."""
+
+    name: str
+    status: Literal["ready", "unavailable", "unconfigured"]
+    detail: str
+
+
+class ServiceHealthResponse(HealthResponse):
+    """Readiness plus bounded dependency health for the developer portal."""
+
+    services: list[DependencyHealth]
+
+
 def create_app() -> FastAPI:
     """Create the platform API with explicit cross-origin policy."""
 
@@ -52,6 +71,7 @@ def create_app() -> FastAPI:
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
     )
     app.state.research_store = ResearchStore(settings.database_url)
+    app.state.mcp_host = GovernedWebMcpHost()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -82,6 +102,72 @@ def create_app() -> FastAPI:
             service="agentic-web-intelligence-api",
             environment=settings.app_environment,
         )
+
+    @app.get("/health/services", response_model=ServiceHealthResponse, tags=["health"])
+    async def service_health(http_request: Request) -> ServiceHealthResponse:
+        """Report whether the Phase 2 persistence and discovery dependencies are usable."""
+
+        store: ResearchStore = http_request.app.state.research_store
+
+        async def persistence_health() -> DependencyHealth:
+            try:
+                await store.healthcheck()
+            except ResearchStoreUnavailable:
+                return DependencyHealth(
+                    name="Research persistence",
+                    status="unavailable" if settings.database_url else "unconfigured",
+                    detail="Postgres is not available for durable research runs.",
+                )
+            return DependencyHealth(
+                name="Research persistence",
+                status="ready",
+                detail="Postgres is available for durable research runs and audit history.",
+            )
+
+        async def discovery_health() -> DependencyHealth:
+            if not settings.searxng_base_url:
+                return DependencyHealth(
+                    name="Governed discovery",
+                    status="unconfigured",
+                    detail="No internal search provider is configured.",
+                )
+            try:
+                async with httpx.AsyncClient(timeout=3.0) as client:
+                    response = await client.get(f"{settings.searxng_base_url.rstrip('/')}/healthz")
+                    response.raise_for_status()
+            except httpx.HTTPError:
+                return DependencyHealth(
+                    name="Governed discovery",
+                    status="unavailable",
+                    detail="The internal search provider is unavailable.",
+                )
+            return DependencyHealth(
+                name="Governed discovery",
+                status="ready",
+                detail="The internal search provider is available through the governed boundary.",
+            )
+
+        services = await asyncio.gather(persistence_health(), discovery_health())
+        return ServiceHealthResponse(
+            status="ready" if all(service.status == "ready" for service in services) else "degraded",
+            service="agentic-web-intelligence-api",
+            environment=settings.app_environment,
+            services=services,
+        )
+
+    @app.get("/v1/mcp/tools", tags=["mcp"])
+    async def list_mcp_tools(http_request: Request) -> dict[str, object]:
+        """List the small, platform-owned tool registry visible to agents."""
+
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        return {"tools": host.list_tools()}
+
+    @app.post("/mcp", tags=["mcp"])
+    async def serve_mcp(payload: dict[str, object], http_request: Request) -> dict[str, object]:
+        """Serve the Phase 2 MCP JSON-RPC tool protocol over HTTP."""
+
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        return await host.handle(payload)
 
     @app.get("/v1/prompts", response_model=PromptTemplateList, tags=["prompts"])
     async def list_prompt_templates() -> PromptTemplateList:
@@ -234,13 +320,17 @@ def create_app() -> FastAPI:
             if run is None:
                 raise HTTPException(status_code=404, detail="Research run was not found.")
             if len(set(request.urls)) != len(request.urls):
-                raise HTTPException(status_code=422, detail="Each selected source URL must be unique.")
+                raise HTTPException(
+                    status_code=422, detail="Each selected source URL must be unique."
+                )
             candidate_urls = {source.url for source in run.sources}
             unknown_urls = [url for url in request.urls if url not in candidate_urls]
             if unknown_urls:
                 raise HTTPException(
                     status_code=422,
-                    detail="Batch extraction accepts only source candidates from this research run.",
+                    detail=(
+                        "Batch extraction accepts only source candidates from this research run."
+                    ),
                 )
 
             await store.record_batch_extraction_started(parsed_run_id, request.urls)
@@ -250,7 +340,9 @@ def create_app() -> FastAPI:
                     evidence = await run_extract_workflow(url)
                 except ToolPolicyError as error:
                     await store.record_policy_denial(parsed_run_id, url, str(error))
-                    outcomes.append(BatchExtractionOutcome(url=url, status="denied", reason=str(error)))
+                    outcomes.append(
+                        BatchExtractionOutcome(url=url, status="denied", reason=str(error))
+                    )
                 except ToolRetrievalError as error:
                     await store.record_extraction_failure(
                         parsed_run_id, url, str(error), error.upstream_status
@@ -265,10 +357,14 @@ def create_app() -> FastAPI:
                     )
                 except ToolProviderError as error:
                     await store.record_extraction_failure(parsed_run_id, url, str(error), None)
-                    outcomes.append(BatchExtractionOutcome(url=url, status="failed", reason=str(error)))
+                    outcomes.append(
+                        BatchExtractionOutcome(url=url, status="failed", reason=str(error))
+                    )
                 else:
                     await store.save_evidence(parsed_run_id, evidence)
-                    outcomes.append(BatchExtractionOutcome(url=url, status="succeeded", evidence=evidence))
+                    outcomes.append(
+                        BatchExtractionOutcome(url=url, status="succeeded", evidence=evidence)
+                    )
 
             succeeded = sum(outcome.status == "succeeded" for outcome in outcomes)
             failed = sum(outcome.status == "failed" for outcome in outcomes)

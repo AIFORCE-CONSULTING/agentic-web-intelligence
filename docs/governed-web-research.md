@@ -5,6 +5,12 @@ Phase 2 provides two read-only web capabilities through the platform API:
 - `POST /v1/research/search` discovers public source candidates.
 - `POST /v1/research/extract` returns bounded text evidence from one public page.
 
+The agent-facing boundary is the MCP host at `POST /mcp`. It implements the
+MCP JSON-RPC methods `initialize`, `tools/list`, and `tools/call` and exposes
+only `web.search` and `web.extract`. `GET /v1/mcp/tools` is a convenient
+operator-readable view of that same allow-listed registry. Provider-specific
+tools are never advertised to agents.
+
 The agent-facing contract stays small. SearXNG and Trafilatura are internal
 implementations selected by the platform, not raw tools exposed to a workflow.
 
@@ -31,6 +37,11 @@ docker compose --profile web-research up --build
 
 SearXNG is available only on the Compose network. The browser and workflows
 call the platform API, not SearXNG directly.
+
+Open `http://localhost:3000/developer` for the operator-facing developer hub.
+It shows the API, durable-research persistence, and governed-discovery health,
+and links to the API reference, OpenAPI schema, MCP tool catalog, and the
+documentation site. The `web-research` profile includes that site on port 8001.
 
 ## Search example
 

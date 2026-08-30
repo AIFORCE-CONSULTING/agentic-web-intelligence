@@ -99,6 +99,13 @@ class ResearchStore:
             )
         return ResearchRun(**dict(row))
 
+    async def healthcheck(self) -> None:
+        """Confirm that the configured persistence store accepts a trivial query."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.fetchval("SELECT 1")
+
     async def save_sources(self, run_id: UUID, sources: list[SourceCandidate]) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():

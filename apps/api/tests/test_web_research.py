@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.settings import Settings
 from app.web_research.contracts import (
     Evidence,
     ResearchRun,
@@ -19,12 +20,125 @@ from app.web_research.contracts import (
     ToolRetrievalError,
 )
 from app.web_research.extractor import WebExtractor
+from app.web_research.mcp_host import MCP_PROTOCOL_VERSION
 from app.web_research.policy import validate_public_destination
 from app.web_research.search import SearxngSearchProvider
 
 
 async def permit_public_destination(_: str) -> None:
     """Avoid external DNS in unit tests whose focus is extraction behavior."""
+
+
+def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
+    class FakeStore:
+        async def healthcheck(self) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.main.get_settings",
+        lambda: Settings(database_url="postgresql://test", searxng_base_url=None),
+    )
+    app = create_app()
+    app.state.research_store = FakeStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/health/services")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert response.json()["services"] == [
+        {
+            "name": "Research persistence",
+            "status": "ready",
+            "detail": "Postgres is available for durable research runs and audit history.",
+        },
+        {
+            "name": "Governed discovery",
+            "status": "unconfigured",
+            "detail": "No internal search provider is configured.",
+        },
+    ]
+
+
+def test_mcp_host_advertises_only_governed_read_only_tools() -> None:
+    async def request() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            catalog = await client.get("/v1/mcp/tools")
+            listing = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": "tools", "method": "tools/list"},
+            )
+            return catalog, listing
+
+    catalog, listing = asyncio.run(request())
+
+    assert catalog.status_code == 200
+    assert catalog.json() == listing.json()["result"]
+    tools = catalog.json()["tools"]
+    assert [tool["name"] for tool in tools] == ["web.search", "web.extract"]
+    assert all(tool["annotations"]["readOnlyHint"] for tool in tools)
+    assert all(tool["annotations"]["destructiveHint"] is False for tool in tools)
+
+
+def test_mcp_host_initializes_and_dispatches_only_approved_tools(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def search(query: str, max_results: int) -> SearchResponse:
+        assert (query, max_results) == ("governed research", 2)
+        return SearchResponse(
+            query=query,
+            results=[SearchResult(title="Source", url="https://example.com", snippet="Evidence")],
+        )
+
+    monkeypatch.setattr("app.web_research.mcp_host.run_search_workflow", search)
+
+    async def request() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=create_app())
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            initialized = await client.post(
+                "/mcp",
+                json={"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            )
+            called = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 2,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "web.search",
+                        "arguments": {"query": "governed research", "max_results": 2},
+                    },
+                },
+            )
+            rejected = await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 3,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "browser.navigate",
+                        "arguments": {"url": "https://example.com"},
+                    },
+                },
+            )
+            return initialized, called, rejected
+
+    initialized, called, rejected = asyncio.run(request())
+
+    assert initialized.status_code == 200
+    assert initialized.json()["result"]["protocolVersion"] == MCP_PROTOCOL_VERSION
+    assert initialized.json()["result"]["capabilities"] == {"tools": {"listChanged": False}}
+    result = called.json()["result"]["structuredContent"]
+    assert result["results"][0]["url"] == "https://example.com"
+    assert rejected.json()["result"]["isError"] is True
+    assert "not permitted by the platform policy" in rejected.json()["result"]["content"][0]["text"]
 
 
 def test_governed_research_prompt_catalog_and_renderer() -> None:
@@ -379,7 +493,9 @@ def test_batch_run_extraction_is_sequential_and_records_each_outcome(
     async def extract(url: str) -> Evidence:
         calls.append(url)
         if url == second_url:
-            raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
+            raise ToolRetrievalError(
+                "The selected source rejected automated access (HTTP 403).", 403
+            )
         return Evidence(
             url=url,
             retrieved_at=datetime.now(UTC),
@@ -425,7 +541,9 @@ def test_batch_run_extraction_rejects_urls_outside_candidates() -> None:
                 status="ready",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-                sources=[SourceCandidate(title="Candidate", url="https://example.com/candidate", rank=1)],
+                sources=[
+                    SourceCandidate(title="Candidate", url="https://example.com/candidate", rank=1)
+                ],
             )
 
     app = create_app()
@@ -442,7 +560,9 @@ def test_batch_run_extraction_rejects_urls_outside_candidates() -> None:
     response = asyncio.run(request())
 
     assert response.status_code == 422
-    assert response.json()["detail"] == "Batch extraction accepts only source candidates from this research run."
+    assert response.json()["detail"] == (
+        "Batch extraction accepts only source candidates from this research run."
+    )
 
 
 def test_searxng_provider_normalizes_and_bounds_results() -> None:

@@ -35,7 +35,7 @@ services:
       - platform
 
   docs:
-    profiles: ["documentation"]
+    profiles: ["documentation", "web-research"]
     build:
       context: .
       dockerfile: docker/docs.Dockerfile

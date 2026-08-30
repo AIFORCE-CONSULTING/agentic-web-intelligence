@@ -1,6 +1,10 @@
 import { FormEvent, useEffect, useState } from "react";
 
 type Health = { status: string; service: string; environment: string };
+type DependencyHealth = {
+  name: string; status: "ready" | "unavailable" | "unconfigured"; detail: string;
+};
+type ServiceHealth = Health & { services: DependencyHealth[] };
 type Source = { rank: number; title: string; url: string; snippet: string; engine?: string | null };
 type Evidence = {
   url: string; retrieved_at: string; content_type: string; text: string; content_hash: string;
@@ -61,7 +65,15 @@ function PrimaryNavigation() {
   );
 }
 
-function DeveloperHub({ health }: { health: Health | null }) {
+function DeveloperHub({
+  health,
+  serviceHealth,
+  onRefresh,
+}: {
+  health: Health | null;
+  serviceHealth: ServiceHealth | null;
+  onRefresh: () => void;
+}) {
   return (
     <>
       <header>
@@ -71,17 +83,26 @@ function DeveloperHub({ health }: { health: Health | null }) {
         <p className="lead">One local starting point for the platform console, API contract, documentation, and service health.</p>
       </header>
       <section aria-labelledby="developer-services-heading">
-        <div className="section-heading"><div><p className="eyebrow">Local services</p><h2 id="developer-services-heading">Platform entry points</h2></div><span className={`connection ${health ? "online" : "offline"}`}>{health ? "API ready" : "API unavailable"}</span></div>
+        <div className="section-heading"><div><p className="eyebrow">Local services</p><h2 id="developer-services-heading">Platform health</h2></div><button type="button" className="secondary" onClick={onRefresh}>Refresh status</button></div>
+        <p className={`connection ${health && serviceHealth?.status === "ready" ? "online" : "offline"}`}>{health ? `API ${serviceHealth?.status ?? health.status}` : "API unavailable"}</p>
+        <div className="health-grid">
+          <article className={`service-card ${health ? "ready" : "unavailable"}`}><div><strong>Platform API</strong><span>{health ? "ready" : "unavailable"}</span></div><p>{health ? `Serving ${health.environment} requests.` : "The API readiness probe did not respond."}</p></article>
+          {serviceHealth?.services.map((service) => <article className={`service-card ${service.status}`} key={service.name}><div><strong>{service.name}</strong><span>{service.status}</span></div><p>{service.detail}</p></article>)}
+        </div>
+      </section>
+      <section aria-labelledby="developer-access-heading">
+        <div className="section-heading"><div><p className="eyebrow">Interfaces</p><h2 id="developer-access-heading">Platform entry points</h2></div><span className="badge">governed access</span></div>
         <div className="developer-grid">
           <a className="developer-card" href="/"><strong>Research workspace</strong><span>Create, reopen, and inspect governed research runs.</span><small>localhost:3000</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/docs`} target="_blank" rel="noreferrer"><strong>API reference</strong><span>Explore and execute the FastAPI OpenAPI contract.</span><small>{apiBaseUrl}/docs</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/openapi.json`} target="_blank" rel="noreferrer"><strong>OpenAPI schema</strong><span>Use the machine-readable API contract for integrations.</span><small>{apiBaseUrl}/openapi.json</small></a>
-          <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · start the documentation profile</small></a>
+          <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/tools`} target="_blank" rel="noreferrer"><strong>MCP tool catalog</strong><span>Inspect the only agent-visible, read-only web tools.</span><small>{apiBaseUrl}/v1/mcp/tools</small></a>
+          <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · included with the web-research stack</small></a>
         </div>
       </section>
       <section aria-labelledby="developer-guidance-heading">
         <h2 id="developer-guidance-heading">Local guidance</h2>
-        <p>Run <code>docker compose --profile documentation up --build</code> to make the documentation site available. SearXNG remains internal-only; all web research goes through the governed API.</p>
+        <p>The documentation site starts with the <code>web-research</code> profile. SearXNG remains internal-only; all web research goes through the governed API.</p>
       </section>
     </>
   );
@@ -89,6 +110,7 @@ function DeveloperHub({ health }: { health: Health | null }) {
 
 export function App() {
   const [health, setHealth] = useState<Health | null>(null);
+  const [serviceHealth, setServiceHealth] = useState<ServiceHealth | null>(null);
   const [question, setQuestion] = useState("What is agentic web intelligence?");
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
@@ -99,6 +121,17 @@ export function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  async function refreshServiceHealth() {
+    try {
+      const response = await apiRequest<ServiceHealth>("/health/services");
+      setHealth(response);
+      setServiceHealth(response);
+    } catch {
+      setHealth(null);
+      setServiceHealth(null);
+    }
+  }
+
   useEffect(() => {
     const controller = new AbortController();
     fetch(`${apiBaseUrl}/health/ready`, { signal: controller.signal })
@@ -108,6 +141,7 @@ export function App() {
       })
       .then(setHealth)
       .catch(() => setHealth(null));
+    void refreshServiceHealth();
     return () => controller.abort();
   }, []);
 
@@ -204,7 +238,7 @@ export function App() {
   }
 
   if (isDeveloperRoute) {
-    return <main><DeveloperHub health={health} /></main>;
+    return <main><DeveloperHub health={health} serviceHealth={serviceHealth} onRefresh={() => void refreshServiceHealth()} /></main>;
   }
 
   return (

@@ -23,6 +23,6 @@ Invoke-RestMethod -Method Post `
   -Body '{"question":"What is agentic web intelligence?"}'
 ~~~
 
-The response includes the template ID and version. A later MCP server will map
-this same declaration and renderer to the MCP `prompts/list` and `prompts/get`
-operations, rather than maintaining a second prompt catalog.
+The response includes the template ID and version. The current MCP host exposes
+only the governed web tools; mapping this declaration to MCP `prompts/list` and
+`prompts/get` remains a future extension rather than a second prompt catalog.

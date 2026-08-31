@@ -11,6 +11,11 @@ only `web.search` and `web.extract`. `GET /v1/mcp/tools` is a convenient
 operator-readable view of that same allow-listed registry. Provider-specific
 tools are never advertised to agents.
 
+Every direct `tools/call` outcome is stored in Postgres without retaining the
+retrieved page text. Operators can inspect the 25 most recent outcomes through
+`GET /v1/mcp/audit`; it records the tool, success/failure/denial outcome, and
+safe provenance such as a retrieved URL and content hash.
+
 The agent-facing contract stays small. SearXNG and Trafilatura are internal
 implementations selected by the platform, not raw tools exposed to a workflow.
 

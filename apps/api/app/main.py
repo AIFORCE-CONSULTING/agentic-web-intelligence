@@ -23,6 +23,7 @@ from app.web_research.contracts import (
     BatchExtractResponse,
     Evidence,
     ExtractRequest,
+    McpToolAuditList,
     ResearchRun,
     ResearchRunList,
     ResearchRunRequest,
@@ -71,7 +72,9 @@ def create_app() -> FastAPI:
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
     )
     app.state.research_store = ResearchStore(settings.database_url)
-    app.state.mcp_host = GovernedWebMcpHost()
+    app.state.mcp_host = GovernedWebMcpHost(
+        audit_recorder=app.state.research_store.record_mcp_tool_event
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -149,7 +152,9 @@ def create_app() -> FastAPI:
 
         services = await asyncio.gather(persistence_health(), discovery_health())
         return ServiceHealthResponse(
-            status="ready" if all(service.status == "ready" for service in services) else "degraded",
+            status=(
+                "ready" if all(service.status == "ready" for service in services) else "degraded"
+            ),
             service="agentic-web-intelligence-api",
             environment=settings.app_environment,
             services=services,
@@ -161,6 +166,18 @@ def create_app() -> FastAPI:
 
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return {"tools": host.list_tools()}
+
+    @app.get("/v1/mcp/audit", response_model=McpToolAuditList, tags=["mcp"])
+    async def list_mcp_tool_audit(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> McpToolAuditList:
+        """List bounded, durable outcomes from direct MCP tool calls."""
+
+        store: ResearchStore = http_request.app.state.research_store
+        try:
+            return McpToolAuditList(events=await store.list_mcp_tool_events(limit))
+        except ResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post("/mcp", tags=["mcp"])
     async def serve_mcp(payload: dict[str, object], http_request: Request) -> dict[str, object]:

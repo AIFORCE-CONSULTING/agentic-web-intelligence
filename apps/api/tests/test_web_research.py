@@ -20,7 +20,7 @@ from app.web_research.contracts import (
     ToolRetrievalError,
 )
 from app.web_research.extractor import WebExtractor
-from app.web_research.mcp_host import MCP_PROTOCOL_VERSION
+from app.web_research.mcp_host import MCP_PROTOCOL_VERSION, GovernedWebMcpHost
 from app.web_research.policy import validate_public_destination
 from app.web_research.search import SearxngSearchProvider
 
@@ -96,9 +96,11 @@ def test_mcp_host_initializes_and_dispatches_only_approved_tools(
         )
 
     monkeypatch.setattr("app.web_research.mcp_host.run_search_workflow", search)
+    app = create_app()
+    app.state.mcp_host = GovernedWebMcpHost()
 
     async def request() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
-        transport = httpx.ASGITransport(app=create_app())
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             initialized = await client.post(
                 "/mcp",
@@ -139,6 +141,40 @@ def test_mcp_host_initializes_and_dispatches_only_approved_tools(
     assert result["results"][0]["url"] == "https://example.com"
     assert rejected.json()["result"]["isError"] is True
     assert "not permitted by the platform policy" in rejected.json()["result"]["content"][0]["text"]
+
+
+def test_mcp_host_records_direct_tool_execution(monkeypatch: pytest.MonkeyPatch) -> None:
+    records: list[tuple[str | None, str, str, dict[str, object]]] = []
+
+    async def search(_: str, __: int) -> SearchResponse:
+        return SearchResponse(query="evidence", results=[])
+
+    async def record(
+        request_id: str | None, tool_name: str, outcome: str, details: dict[str, object]
+    ) -> None:
+        records.append((request_id, tool_name, outcome, details))
+
+    monkeypatch.setattr("app.web_research.mcp_host.run_search_workflow", search)
+    app = create_app()
+    app.state.mcp_host = GovernedWebMcpHost(audit_recorder=record)
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": "execution-1",
+                    "method": "tools/call",
+                    "params": {"name": "web.search", "arguments": {"query": "evidence"}},
+                },
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert records == [("execution-1", "web.search", "succeeded", {"result_count": 0})]
 
 
 def test_governed_research_prompt_catalog_and_renderer() -> None:
@@ -335,7 +371,9 @@ def test_extract_endpoint_returns_policy_errors_as_unprocessable(
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=create_app())
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post("/v1/research/extract", json={"url": "https://example.com/data.zip"})
+            return await client.post(
+                "/v1/research/extract", json={"url": "https://example.com/data.zip"}
+            )
 
     response = asyncio.run(request())
 

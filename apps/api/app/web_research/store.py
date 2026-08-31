@@ -8,6 +8,7 @@ import asyncpg
 from app.web_research.contracts import (
     AuditEvent,
     Evidence,
+    McpToolAuditEvent,
     ResearchRun,
     ResearchRunSummary,
     ResearchStoreUnavailable,
@@ -49,10 +50,20 @@ CREATE TABLE IF NOT EXISTS research_audit_events (
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     details JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE TABLE IF NOT EXISTS mcp_tool_audit_events (
+    id UUID PRIMARY KEY,
+    request_id TEXT,
+    tool_name TEXT NOT NULL,
+    outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed', 'denied')),
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    details JSONB NOT NULL DEFAULT '{}'::jsonb
+);
 CREATE INDEX IF NOT EXISTS research_sources_run_id_idx ON research_sources(run_id, rank);
 CREATE INDEX IF NOT EXISTS research_evidence_run_id_idx ON research_evidence(run_id, retrieved_at);
 CREATE INDEX IF NOT EXISTS research_audit_events_run_id_idx
     ON research_audit_events(run_id, occurred_at);
+CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_occurred_at_idx
+    ON mcp_tool_audit_events(occurred_at DESC);
 """
 
 
@@ -105,6 +116,40 @@ class ResearchStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.fetchval("SELECT 1")
+
+    async def record_mcp_tool_event(
+        self, request_id: str | None, tool_name: str, outcome: str, details: dict[str, object]
+    ) -> None:
+        """Append one direct MCP execution outcome without creating a research run."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO mcp_tool_audit_events (id, request_id, tool_name, outcome, details)
+                   VALUES ($1, $2, $3, $4, $5::jsonb)""",
+                uuid4(),
+                request_id,
+                tool_name,
+                outcome,
+                json.dumps(details),
+            )
+
+    async def list_mcp_tool_events(self, limit: int) -> list[McpToolAuditEvent]:
+        """Return recent direct MCP outcomes without retaining retrieved page content."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT id, request_id, tool_name, outcome, occurred_at, details
+                   FROM mcp_tool_audit_events ORDER BY occurred_at DESC LIMIT $1""",
+                limit,
+            )
+        events: list[McpToolAuditEvent] = []
+        for row in rows:
+            event = dict(row)
+            event["details"] = self._details(row["details"])
+            events.append(McpToolAuditEvent(**event))
+        return events
 
     async def save_sources(self, run_id: UUID, sources: list[SourceCandidate]) -> None:
         pool = await self._connection_pool()

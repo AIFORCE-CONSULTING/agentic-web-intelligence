@@ -122,6 +122,23 @@ class ResearchRunList(BaseModel):
     runs: list[ResearchRunSummary]
 
 
+class McpToolAuditEvent(BaseModel):
+    """A durable record for one direct MCP tool execution."""
+
+    id: UUID
+    request_id: str | None = None
+    tool_name: str
+    outcome: Literal["succeeded", "failed", "denied"]
+    occurred_at: datetime
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class McpToolAuditList(BaseModel):
+    """A bounded, reverse-chronological MCP execution history."""
+
+    events: list[McpToolAuditEvent]
+
+
 class ToolPolicyError(ValueError):
     """Raised when a request is outside the read-only web-tool policy."""
 

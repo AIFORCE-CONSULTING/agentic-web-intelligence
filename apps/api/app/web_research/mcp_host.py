@@ -6,7 +6,7 @@ HTTP clients, and Trafilatura remain implementation details behind this boundary
 """
 
 import json
-from collections.abc import Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -28,6 +28,9 @@ MCP_PROTOCOL_VERSION = "2025-03-26"
 
 class McpToolCallError(ValueError):
     """A safe error returned to an MCP client for one tool invocation."""
+
+
+AuditRecorder = Callable[[str | None, str, str, dict[str, object]], Awaitable[None]]
 
 
 @dataclass(frozen=True)
@@ -98,8 +101,13 @@ class GovernedWebToolPolicy:
 class GovernedWebMcpHost:
     """Minimal JSON-RPC MCP transport for the governed web-tool policy."""
 
-    def __init__(self, policy: GovernedWebToolPolicy | None = None) -> None:
+    def __init__(
+        self,
+        policy: GovernedWebToolPolicy | None = None,
+        audit_recorder: AuditRecorder | None = None,
+    ) -> None:
         self._policy = policy or GovernedWebToolPolicy()
+        self._audit_recorder = audit_recorder
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Expose the policy registry for the HTTP catalog and MCP clients."""
@@ -142,6 +150,17 @@ class GovernedWebMcpHost:
         try:
             result = await self._policy.call(name, arguments)
         except (McpToolCallError, ToolPolicyError, ToolProviderError, ToolRetrievalError) as error:
+            outcome = (
+                "denied" if isinstance(error, (McpToolCallError, ToolPolicyError)) else "failed"
+            )
+            audit_recorded = await self._record_outcome(
+                request_id,
+                name,
+                outcome,
+                self._failure_details(arguments, error),
+            )
+            if not audit_recorded:
+                return self._audit_unavailable_result(request_id)
             return self._result(
                 request_id,
                 {
@@ -150,11 +169,57 @@ class GovernedWebMcpHost:
                 },
             )
         serialized = result.model_dump(mode="json")
+        audit_recorded = await self._record_outcome(
+            request_id,
+            name,
+            "succeeded",
+            self._success_details(result),
+        )
+        if not audit_recorded:
+            return self._audit_unavailable_result(request_id)
         return self._result(
             request_id,
             {
                 "content": [{"type": "text", "text": json.dumps(serialized, sort_keys=True)}],
                 "structuredContent": serialized,
+            },
+        )
+
+    async def _record_outcome(
+        self, request_id: object, tool_name: str, outcome: str, details: dict[str, object]
+    ) -> bool:
+        if self._audit_recorder is None:
+            return True
+        safe_request_id = str(request_id)[:128] if isinstance(request_id, (str, int)) else None
+        try:
+            await self._audit_recorder(safe_request_id, tool_name, outcome, details)
+        except Exception:
+            return False
+        return True
+
+    @staticmethod
+    def _success_details(result: SearchResponse | Evidence) -> dict[str, object]:
+        if isinstance(result, SearchResponse):
+            return {"result_count": len(result.results)}
+        return {"url": result.url, "content_hash": result.content_hash}
+
+    @staticmethod
+    def _failure_details(arguments: Mapping[str, Any], error: Exception) -> dict[str, object]:
+        details: dict[str, object] = {"reason": str(error), "argument_names": sorted(arguments)}
+        requested_url = arguments.get("url")
+        if isinstance(requested_url, str):
+            details["requested_url"] = requested_url
+        return details
+
+    @staticmethod
+    def _audit_unavailable_result(request_id: object) -> dict[str, Any]:
+        return GovernedWebMcpHost._result(
+            request_id,
+            {
+                "content": [
+                    {"type": "text", "text": "The MCP execution audit store is unavailable."}
+                ],
+                "isError": True,
             },
         )
 

@@ -15,7 +15,7 @@ dependencies = [
   "pydantic==2.13.4",
   "pydantic-settings==2.14.2",
   "trafilatura==2.2.0",
-  "uvicorn==0.47.0",
+  "uvicorn==0.52.4",
 ]
 
 [project.optional-dependencies]

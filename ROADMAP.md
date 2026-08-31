@@ -18,7 +18,7 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 - Developer and operator portal for the console, API reference, documentation, and service health
 - Publish the MkDocs documentation site with GitHub Pages
 
-## Phase 3 - Agent Runtime
+## Phase 3 - Agent Runtime (in progress)
 
 Build LangGraph workflows, planning, memory, and multi-agent patterns.
 

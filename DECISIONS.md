@@ -6,3 +6,4 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0002 - React and FastAPI application boundary](docs/adr/0002-react-fastapi.md)
 - [ADR 0003 - Govern web intelligence through MCP](docs/adr/0003-web-intelligence-mcp.md)
 - [ADR 0004 - Deliver governed web research as a narrow MCP capability](docs/adr/0004-governed-web-research-mvp.md)
+- [ADR 0005 - Define a governed agent-runtime contract before adding agents](docs/adr/0005-governed-agent-runtime-contract.md)

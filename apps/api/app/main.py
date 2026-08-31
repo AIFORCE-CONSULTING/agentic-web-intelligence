@@ -8,6 +8,13 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
+from app.agent_runtime.contracts import (
+    RuntimeRun,
+    RuntimeRunList,
+    RuntimeStoreUnavailable,
+)
+from app.agent_runtime.store import RuntimeStore
+from app.agent_runtime.service import RuntimeService
 from app.prompt_templates import (
     GovernedResearchPromptRequest,
     PromptTemplateInfo,
@@ -72,6 +79,8 @@ def create_app() -> FastAPI:
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
     )
     app.state.research_store = ResearchStore(settings.database_url)
+    app.state.runtime_store = RuntimeStore(settings.database_url)
+    app.state.runtime_service = RuntimeService(app.state.runtime_store)
     app.state.mcp_host = GovernedWebMcpHost(
         audit_recorder=app.state.research_store.record_mcp_tool_event
     )
@@ -166,6 +175,37 @@ def create_app() -> FastAPI:
 
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return {"tools": host.list_tools()}
+
+    @app.get("/v1/runtime/runs/{run_id}", response_model=RuntimeRun, tags=["runtime"])
+    async def get_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Inspect a runtime run without exposing mutation of its authority fields."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        store: RuntimeStore = http_request.app.state.runtime_store
+        try:
+            run = await store.get_run(parsed_run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if run is None:
+            raise HTTPException(status_code=404, detail="Runtime run was not found.")
+        return run
+
+    @app.get("/v1/runtime/runs", response_model=RuntimeRunList, tags=["runtime"])
+    async def list_runtime_runs(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=50)
+    ) -> RuntimeRunList:
+        """List bounded runtime state for operator inspection."""
+
+        store: RuntimeStore = http_request.app.state.runtime_store
+        try:
+            return RuntimeRunList(runs=await store.list_runs(limit))
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/v1/mcp/audit", response_model=McpToolAuditList, tags=["mcp"])
     async def list_mcp_tool_audit(

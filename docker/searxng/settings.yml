@@ -1,0 +1,12 @@
+use_default_settings: true
+
+server:
+  bind_address: "0.0.0.0"
+  limiter: false
+  public_instance: false
+  method: "GET"
+
+search:
+  formats:
+    - html
+    - json

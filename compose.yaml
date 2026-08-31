@@ -9,6 +9,8 @@ services:
       APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
       APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
       WEB_ORIGIN: ${WEB_ORIGIN:-http://localhost:3000}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
     ports:
       - "8000:8000"
     healthcheck:
@@ -33,7 +35,7 @@ services:
       - platform
 
   docs:
-    profiles: ["documentation"]
+    profiles: ["documentation", "web-research"]
     build:
       context: .
       dockerfile: docker/docs.Dockerfile
@@ -42,8 +44,25 @@ services:
     networks:
       - platform
 
+  searxng:
+    profiles: ["web-research"]
+    image: docker.io/searxng/searxng:latest
+    environment:
+      SEARXNG_SECRET: ${SEARXNG_SECRET:?Set SEARXNG_SECRET in .env}
+    volumes:
+      - ./docker/searxng/settings.yml:/etc/searxng/settings.yml:ro
+      - searxng-data:/var/cache/searxng
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "--proxy=off", "http://localhost:8080/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+    networks:
+      - platform
+
   postgres:
-    profiles: ["stateful-services"]
+    profiles: ["stateful-services", "web-research"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-enterprise_agent_platform}
@@ -85,3 +104,4 @@ networks:
 volumes:
   postgres-data:
   redis-data:
+  searxng-data:

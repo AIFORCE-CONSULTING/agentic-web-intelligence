@@ -10,7 +10,7 @@ Make the work of a Forward Deployed Engineer repeatable: rapidly discover a prob
 
 ## Phase 1 outcome
 
-A contributor can clone the repository, understand the platform, start its local environment, run validation, and use a governed web-intelligence capability through an MCP boundary.
+A contributor can clone the repository, understand the platform, start its local environment, run validation, and contribute through documented engineering standards.
 
 ## Non-goals for Phase 1
 

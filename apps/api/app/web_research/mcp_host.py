@@ -151,7 +151,7 @@ class GovernedWebMcpHost:
             result = await self._policy.call(name, arguments)
         except (McpToolCallError, ToolPolicyError, ToolProviderError, ToolRetrievalError) as error:
             outcome = (
-                "denied" if isinstance(error, (McpToolCallError, ToolPolicyError)) else "failed"
+                "denied" if isinstance(error, McpToolCallError | ToolPolicyError) else "failed"
             )
             audit_recorded = await self._record_outcome(
                 request_id,
@@ -190,7 +190,7 @@ class GovernedWebMcpHost:
     ) -> bool:
         if self._audit_recorder is None:
             return True
-        safe_request_id = str(request_id)[:128] if isinstance(request_id, (str, int)) else None
+        safe_request_id = str(request_id)[:128] if isinstance(request_id, str | int) else None
         try:
             await self._audit_recorder(safe_request_id, tool_name, outcome, details)
         except Exception:

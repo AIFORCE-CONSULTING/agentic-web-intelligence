@@ -103,6 +103,7 @@ jobs:
     env:
       POSTGRES_PASSWORD: ci-not-used
       REDIS_PASSWORD: ci-not-used
+      SEARXNG_SECRET: ci-not-used
     steps:
       - name: Check out source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2

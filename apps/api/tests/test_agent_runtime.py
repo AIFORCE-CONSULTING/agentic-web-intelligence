@@ -22,7 +22,7 @@ from app.agent_runtime.store import (
     RuntimeStore,
     RuntimeTransitionError,
 )
-from app.agent_runtime.workflow import run_deterministic_planner
+from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_planner
 from app.main import create_app
 from app.settings import Settings
 
@@ -237,4 +237,106 @@ def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
     assert [(proposal.role, proposal.title) for proposal in service.proposals] == [
         ("researcher", "Gather governed evidence for: Research a topic"),
         ("reviewer", "Review evidence completeness and provenance"),
+    ]
+
+
+def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -> None:
+    run_id = uuid4()
+    step_id = uuid4()
+    now = datetime.now(UTC)
+    researcher = RuntimeStep(
+        id=step_id,
+        role="researcher",
+        title="Gather governed evidence",
+        status="pending",
+        allowed_capabilities=["web.search", "web.extract"],
+        attempt_count=0,
+        idempotency_key="researcher:test",
+        timeout_seconds=300,
+        created_at=now,
+        updated_at=now,
+    )
+    executing_run = RuntimeRun(
+        id=run_id,
+        goal="Research a topic",
+        status="executing",
+        created_at=now,
+        updated_at=now,
+        steps=[researcher],
+    )
+    reviewing_run = executing_run.model_copy(update={"status": "reviewing"})
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.authorized: list[str] = []
+            self.outcomes: list[tuple[str, dict[str, object]]] = []
+
+        async def begin_execution(self, _: object) -> RuntimeRun:
+            return executing_run
+
+        async def activate_researcher(self, _: object) -> RuntimeStep:
+            return researcher.model_copy(update={"status": "active", "attempt_count": 1})
+
+        async def authorize_capability(self, _: object, capability: str) -> None:
+            self.authorized.append(capability)
+
+        async def record_tool_outcome(
+            self, _: object, __: object, tool_name: str, details: dict[str, object]
+        ) -> None:
+            self.outcomes.append((tool_name, details))
+
+        async def complete_research(self, _: object, __: object) -> RuntimeRun:
+            return reviewing_run
+
+        async def fail_research(self, *_: object) -> RuntimeRun:
+            raise AssertionError("The governed tool calls should succeed.")
+
+    class FakeHost:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        async def handle(self, payload: dict[str, object]) -> dict[str, object]:
+            params = payload["params"]
+            assert isinstance(params, dict)
+            tool_name = params["name"]
+            arguments = params["arguments"]
+            assert isinstance(tool_name, str)
+            assert isinstance(arguments, dict)
+            self.calls.append((tool_name, arguments))
+            if tool_name == "web.search":
+                structured: dict[str, object] = {
+                    "query": "Research a topic",
+                    "results": [
+                        {
+                            "title": "Public source",
+                            "url": "https://example.com/evidence",
+                            "snippet": "Source summary",
+                            "engine": "test",
+                        }
+                    ],
+                }
+            else:
+                structured = {
+                    "url": "https://example.com/evidence",
+                    "retrieved_at": now.isoformat(),
+                    "content_type": "text/plain",
+                    "text": "Public evidence.",
+                    "content_hash": "sha256:test",
+                    "extraction_method": "plain-text",
+                }
+            return {"result": {"structuredContent": structured}}
+
+    service = FakeService()
+    host = FakeHost()
+    completed = asyncio.run(run_deterministic_executor(service, host, str(run_id)))
+
+    assert completed.status == "reviewing"
+    assert service.authorized == ["web.search", "web.extract"]
+    assert host.calls == [
+        ("web.search", {"query": "Research a topic", "max_results": 3}),
+        ("web.extract", {"url": "https://example.com/evidence"}),
+    ]
+    assert service.outcomes == [
+        ("web.search", {"result_count": 1}),
+        ("web.extract", {"url": "https://example.com/evidence", "content_hash": "sha256:test"}),
     ]

@@ -142,6 +142,19 @@ plans. A later planner may propose bounded steps, but the runtime service will
 continue to materialize only the roles, capabilities, and handoff paths allowed
 by its version-controlled policy.
 
+## Deterministic executor
+
+After the runtime approval gate, the server-only executor activates the stored
+researcher step and calls the existing MCP host internally. It first calls
+`web.search` using the approved goal, then calls `web.extract` only for the
+first governed search result. Before each call, the runtime checks the stored
+capability grant for that exact researcher step. It records only bounded result
+metadata in the runtime event stream and ends in `reviewing`; a failed or
+denied execution ends in `failed` without an implicit retry.
+
+The executor does not expose a public trigger, add a new MCP tool, run a
+reviewer, or give the reviewer feedback capabilities.
+
 ## Deferred multi-agent refinement
 
 Reviewer prompts, structured review decisions, and a bounded reviewer-to-

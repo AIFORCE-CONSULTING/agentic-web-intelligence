@@ -271,6 +271,73 @@ class RuntimeStore:
         assert row is not None
         return self._handoff_from_row(row)
 
+    async def activate_step(self, run_id: UUID, step_id: UUID) -> None:
+        """Activate one pending step only while its run is executing."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            run_status = await connection.fetchval(
+                "SELECT status FROM agent_runtime_runs WHERE id = $1 FOR UPDATE", run_id
+            )
+            if run_status != "executing":
+                raise RuntimeTransitionError("Runtime run is not executing.")
+            updated = await connection.execute(
+                """UPDATE agent_runtime_steps
+                SET status = 'active', attempt_count = attempt_count + 1, updated_at = now()
+                WHERE id = $1 AND run_id = $2 AND status = 'pending'""",
+                step_id,
+                run_id,
+            )
+            if updated != "UPDATE 1":
+                raise RuntimeTransitionError("Runtime step is not pending in this run.")
+            await self._append_event(
+                connection, run_id, "runtime.step.activated", {"step_id": str(step_id)}
+            )
+
+    async def complete_step(self, run_id: UUID, step_id: UUID) -> None:
+        """Complete one active step and retain its immutable authority record."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            updated = await connection.execute(
+                """UPDATE agent_runtime_steps
+                SET status = 'completed', updated_at = now()
+                WHERE id = $1 AND run_id = $2 AND status = 'active'""",
+                step_id,
+                run_id,
+            )
+            if updated != "UPDATE 1":
+                raise RuntimeTransitionError("Runtime step is not active in this run.")
+            await self._append_event(
+                connection, run_id, "runtime.step.completed", {"step_id": str(step_id)}
+            )
+
+    async def fail_step(self, run_id: UUID, step_id: UUID, reason: str) -> None:
+        """Record a bounded failure before the service moves the run to a terminal state."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                """UPDATE agent_runtime_steps
+                SET status = 'failed', updated_at = now()
+                WHERE id = $1 AND run_id = $2 AND status = 'active'""",
+                step_id,
+                run_id,
+            )
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.step.failed",
+                {"step_id": str(step_id), "reason": reason[:512]},
+            )
+
+    async def record_event(self, run_id: UUID, event_type: str, details: dict[str, object]) -> None:
+        """Append one sanitized runtime event from trusted orchestration code."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await self._append_event(connection, run_id, event_type, details)
+
     async def get_run(self, run_id: UUID) -> RuntimeRun | None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:

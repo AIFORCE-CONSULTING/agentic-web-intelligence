@@ -2,7 +2,13 @@
 
 from uuid import UUID, uuid4
 
-from app.agent_runtime.contracts import ApprovedPlanStep, PlanStepProposal, RuntimeHandoff, RuntimeRun
+from app.agent_runtime.contracts import (
+    ApprovedPlanStep,
+    PlanStepProposal,
+    RuntimeHandoff,
+    RuntimeRun,
+    RuntimeStep,
+)
 from app.agent_runtime.policy import (
     ALLOWED_HANDOFFS,
     MAX_RESEARCH_STEPS,
@@ -53,6 +59,53 @@ class RuntimeService:
         if transitioned is None:
             raise RuntimePlanError("Runtime run was not found.")
         return transitioned
+
+    async def activate_researcher(self, run_id: UUID) -> RuntimeStep:
+        """Activate the only step that may request Phase 2 web capabilities."""
+
+        run = await self._require_run(run_id)
+        if run.status != "executing":
+            raise RuntimePlanError("A researcher can run only while the runtime is executing.")
+        researcher = next((step for step in run.steps if step.role == "researcher"), None)
+        if researcher is None:
+            raise RuntimePlanError("Runtime run has no approved researcher step.")
+        await self._store.activate_step(run_id, researcher.id)
+        return researcher.model_copy(update={"status": "active", "attempt_count": researcher.attempt_count + 1})
+
+    async def authorize_capability(self, step: RuntimeStep, capability: str) -> None:
+        """Reject an executor request unless the stored step grant permits it."""
+
+        if capability not in step.allowed_capabilities:
+            raise RuntimePlanError(
+                f"The {step.role} step is not authorized to invoke {capability}."
+            )
+
+    async def complete_research(self, run_id: UUID, step_id: UUID) -> RuntimeRun:
+        """Close the researcher step and move the run to the reviewer gate."""
+
+        await self._store.complete_step(run_id, step_id)
+        transitioned = await self._store.transition_run(run_id, "reviewing")
+        assert transitioned is not None
+        return transitioned
+
+    async def fail_research(self, run_id: UUID, step_id: UUID, reason: str) -> RuntimeRun:
+        """Record a failed deterministic execution without attempting an implicit retry."""
+
+        await self._store.fail_step(run_id, step_id, reason)
+        transitioned = await self._store.transition_run(run_id, "failed")
+        assert transitioned is not None
+        return transitioned
+
+    async def record_tool_outcome(
+        self, run_id: UUID, step_id: UUID, tool_name: str, details: dict[str, object]
+    ) -> None:
+        """Record bounded, non-secret tool outcome metadata in the runtime audit stream."""
+
+        await self._store.record_event(
+            run_id,
+            "runtime.tool.succeeded",
+            {"step_id": str(step_id), "tool_name": tool_name, **details},
+        )
 
     async def handoff(
         self, run_id: UUID, sender_step_id: UUID, recipient_step_id: UUID, content: str

@@ -84,9 +84,21 @@ def test_runtime_store_decodes_postgres_json_fields() -> None:
     event = RuntimeStore._event_from_row(
         {"event_type": "runtime.run.requested", "occurred_at": now, "details": '{"safe": true}'}
     )
+    memory = RuntimeStore._memory_from_row(
+        {
+            "id": uuid4(),
+            "run_id": uuid4(),
+            "memory_type": "source_reference",
+            "content": '{"url": "https://example.com", "content_hash": "sha256:test"}',
+            "source_step_id": None,
+            "created_at": now,
+            "expires_at": now,
+        }
+    )
 
     assert step.allowed_capabilities == []
     assert event.details == {"safe": True}
+    assert memory.content == {"url": "https://example.com", "content_hash": "sha256:test"}
 
 
 def test_runtime_control_plane_has_no_public_run_creation_route(
@@ -270,6 +282,7 @@ def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -
         def __init__(self) -> None:
             self.authorized: list[str] = []
             self.outcomes: list[tuple[str, dict[str, object]]] = []
+            self.memories: list[tuple[str, dict[str, str]]] = []
 
         async def begin_execution(self, _: object) -> RuntimeRun:
             return executing_run
@@ -279,6 +292,16 @@ def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -
 
         async def authorize_capability(self, _: object, capability: str) -> None:
             self.authorized.append(capability)
+
+        async def remember_research_query(self, _: object, __: object, query: str) -> None:
+            self.memories.append(("research_query", {"query": query}))
+
+        async def remember_source_reference(
+            self, _: object, __: object, url: str, content_hash: str
+        ) -> None:
+            self.memories.append(
+                ("source_reference", {"url": url, "content_hash": content_hash})
+            )
 
         async def record_tool_outcome(
             self, _: object, __: object, tool_name: str, details: dict[str, object]
@@ -339,4 +362,11 @@ def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -
     assert service.outcomes == [
         ("web.search", {"result_count": 1}),
         ("web.extract", {"url": "https://example.com/evidence", "content_hash": "sha256:test"}),
+    ]
+    assert service.memories == [
+        ("research_query", {"query": "Research a topic"}),
+        (
+            "source_reference",
+            {"url": "https://example.com/evidence", "content_hash": "sha256:test"},
+        ),
     ]

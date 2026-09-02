@@ -1,6 +1,7 @@
 """Postgres persistence and server-side guards for the Phase 3 runtime core."""
 
 import json
+from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -9,6 +10,7 @@ from app.agent_runtime.contracts import (
     ApprovedPlanStep,
     RuntimeEvent,
     RuntimeHandoff,
+    RuntimeMemory,
     RuntimeRun,
     RuntimeRunSummary,
     RuntimeStep,
@@ -54,6 +56,15 @@ CREATE TABLE IF NOT EXISTS agent_runtime_events (
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     details JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE TABLE IF NOT EXISTS agent_runtime_memories (
+    id UUID PRIMARY KEY,
+    run_id UUID NOT NULL REFERENCES agent_runtime_runs(id) ON DELETE CASCADE,
+    memory_type TEXT NOT NULL CHECK (memory_type IN ('research_query', 'source_reference')),
+    content JSONB NOT NULL,
+    source_step_id UUID REFERENCES agent_runtime_steps(id) ON DELETE SET NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL
+);
 CREATE INDEX IF NOT EXISTS agent_runtime_runs_updated_at_idx
     ON agent_runtime_runs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS agent_runtime_steps_run_id_idx
@@ -62,7 +73,11 @@ CREATE INDEX IF NOT EXISTS agent_runtime_handoffs_run_id_idx
     ON agent_runtime_handoffs(run_id, created_at);
 CREATE INDEX IF NOT EXISTS agent_runtime_events_run_id_idx
     ON agent_runtime_events(run_id, occurred_at);
+CREATE INDEX IF NOT EXISTS agent_runtime_memories_run_id_idx
+    ON agent_runtime_memories(run_id, expires_at);
 """
+
+RUN_MEMORY_RETENTION = timedelta(hours=24)
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "requested": frozenset({"planning", "cancelled"}),
@@ -338,6 +353,45 @@ class RuntimeStore:
         async with pool.acquire() as connection:
             await self._append_event(connection, run_id, event_type, details)
 
+    async def record_memory(
+        self,
+        run_id: UUID,
+        memory_type: str,
+        content: dict[str, object],
+        source_step_id: UUID | None = None,
+    ) -> RuntimeMemory:
+        """Persist one bounded run-owned memory with a fixed retention deadline."""
+
+        pool = await self._connection_pool()
+        memory_id = uuid4()
+        expires_at = datetime.now(UTC) + RUN_MEMORY_RETENTION
+        async with pool.acquire() as connection, connection.transaction():
+            exists = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM agent_runtime_runs WHERE id = $1)", run_id
+            )
+            if not exists:
+                raise RuntimeTransitionError("Runtime run was not found.")
+            row = await connection.fetchrow(
+                """INSERT INTO agent_runtime_memories
+                (id, run_id, memory_type, content, source_step_id, expires_at)
+                VALUES ($1, $2, $3, $4::jsonb, $5, $6)
+                RETURNING id, run_id, memory_type, content, source_step_id, created_at, expires_at""",
+                memory_id,
+                run_id,
+                memory_type,
+                json.dumps(content),
+                source_step_id,
+                expires_at,
+            )
+            assert row is not None
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.memory.recorded",
+                {"memory_id": str(memory_id), "memory_type": memory_type},
+            )
+        return self._memory_from_row(row)
+
     async def get_run(self, run_id: UUID) -> RuntimeRun | None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
@@ -350,6 +404,12 @@ class RuntimeStore:
             handoffs = await connection.fetch(
                 "SELECT * FROM agent_runtime_handoffs WHERE run_id = $1 ORDER BY created_at", run_id
             )
+            memories = await connection.fetch(
+                """SELECT id, run_id, memory_type, content, source_step_id, created_at, expires_at
+                FROM agent_runtime_memories WHERE run_id = $1 AND expires_at > now()
+                ORDER BY created_at""",
+                run_id,
+            )
             events = await connection.fetch(
                 "SELECT event_type, occurred_at, details FROM agent_runtime_events "
                 "WHERE run_id = $1 ORDER BY occurred_at",
@@ -359,6 +419,7 @@ class RuntimeStore:
             id=run["id"], goal=run["goal"], status=run["status"], created_at=run["created_at"],
             updated_at=run["updated_at"], steps=[self._step_from_row(row) for row in steps],
             handoffs=[self._handoff_from_row(row) for row in handoffs],
+            memories=[self._memory_from_row(row) for row in memories],
             events=[self._event_from_row(row) for row in events],
         )
 
@@ -408,3 +469,18 @@ class RuntimeStore:
         if isinstance(details, str):
             details = json.loads(details)
         return RuntimeEvent(event_type=row["event_type"], occurred_at=row["occurred_at"], details=details)
+
+    @staticmethod
+    def _memory_from_row(row: asyncpg.Record) -> RuntimeMemory:
+        content = row["content"]
+        if isinstance(content, str):
+            content = json.loads(content)
+        return RuntimeMemory(
+            id=row["id"],
+            run_id=row["run_id"],
+            memory_type=row["memory_type"],
+            content=content,
+            source_step_id=row["source_step_id"],
+            created_at=row["created_at"],
+            expires_at=row["expires_at"],
+        )

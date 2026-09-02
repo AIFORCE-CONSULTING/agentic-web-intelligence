@@ -155,6 +155,19 @@ denied execution ends in `failed` without an implicit retry.
 The executor does not expose a public trigger, add a new MCP tool, run a
 reviewer, or give the reviewer feedback capabilities.
 
+## Scoped memory
+
+The initial memory boundary is deliberately narrow: memory belongs to one
+runtime run and expires after 24 hours. Only trusted server-side runtime code
+may write it; there is no MCP tool or public write endpoint for memory.
+
+The deterministic executor records a query reference and, when extraction
+succeeds, a source URL plus content hash. It does not retain raw page text as
+memory. Reads are limited to the owning run and exclude expired records.
+
+Workspace and user memory are deferred until Phase 4 establishes authenticated
+identity, tenant boundaries, retention policy, and access controls.
+
 ## Deferred multi-agent refinement
 
 Reviewer prompts, structured review decisions, and a bounded reviewer-to-

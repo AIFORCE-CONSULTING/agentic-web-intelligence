@@ -101,6 +101,18 @@ class RuntimeHandoff(BaseModel):
     created_at: datetime
 
 
+class RuntimeMemory(BaseModel):
+    """A bounded, run-owned fact retained for the runtime's fixed lifetime."""
+
+    id: UUID
+    run_id: UUID
+    memory_type: Literal["research_query", "source_reference"]
+    content: dict[str, object]
+    source_step_id: UUID | None = None
+    created_at: datetime
+    expires_at: datetime
+
+
 class RuntimeRun(BaseModel):
     """Inspectable materialized state for one governed runtime execution."""
 
@@ -111,6 +123,7 @@ class RuntimeRun(BaseModel):
     updated_at: datetime
     steps: list[RuntimeStep] = Field(default_factory=list)
     handoffs: list[RuntimeHandoff] = Field(default_factory=list)
+    memories: list[RuntimeMemory] = Field(default_factory=list)
     events: list[RuntimeEvent] = Field(default_factory=list)
 
 

@@ -107,6 +107,25 @@ class RuntimeService:
             {"step_id": str(step_id), "tool_name": tool_name, **details},
         )
 
+    async def remember_research_query(self, run_id: UUID, step_id: UUID, query: str) -> None:
+        """Retain a bounded query reference for this run only."""
+
+        await self._store.record_memory(
+            run_id, "research_query", {"query": query}, source_step_id=step_id
+        )
+
+    async def remember_source_reference(
+        self, run_id: UUID, step_id: UUID, url: str, content_hash: str
+    ) -> None:
+        """Retain provenance references, never the raw retrieved page body."""
+
+        await self._store.record_memory(
+            run_id,
+            "source_reference",
+            {"url": url, "content_hash": content_hash},
+            source_step_id=step_id,
+        )
+
     async def handoff(
         self, run_id: UUID, sender_step_id: UUID, recipient_step_id: UUID, content: str
     ) -> RuntimeHandoff:

@@ -76,6 +76,7 @@ def build_deterministic_executor_workflow(
         run = await service.begin_execution(run_id)
         researcher = await service.activate_researcher(run.id)
         try:
+            await service.remember_research_query(run.id, researcher.id, run.goal)
             await service.authorize_capability(researcher, "web.search")
             search = await _call_search(host, run.id, researcher.id, run.goal)
             await service.record_tool_outcome(
@@ -92,6 +93,9 @@ def build_deterministic_executor_workflow(
                     researcher.id,
                     "web.extract",
                     {"url": evidence.url, "content_hash": evidence.content_hash},
+                )
+                await service.remember_source_reference(
+                    run.id, researcher.id, evidence.url, evidence.content_hash
                 )
         except (RuntimeExecutionError, RuntimePlanError) as error:
             return {"run": await service.fail_research(run.id, researcher.id, str(error))}

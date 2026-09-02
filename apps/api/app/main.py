@@ -13,8 +13,8 @@ from app.agent_runtime.contracts import (
     RuntimeRunList,
     RuntimeStoreUnavailable,
 )
-from app.agent_runtime.store import RuntimeStore
 from app.agent_runtime.service import RuntimeService
+from app.agent_runtime.store import RuntimeStore
 from app.prompt_templates import (
     GovernedResearchPromptRequest,
     PromptTemplateInfo,
@@ -232,9 +232,7 @@ def create_app() -> FastAPI:
 
         return PromptTemplateList(prompts=[governed_research_template_info()])
 
-    @app.get(
-        "/v1/prompts/governed-research", response_model=PromptTemplateInfo, tags=["prompts"]
-    )
+    @app.get("/v1/prompts/governed-research", response_model=PromptTemplateInfo, tags=["prompts"])
     async def get_governed_research_template() -> PromptTemplateInfo:
         """Return the prompt declaration that future MCP clients can discover."""
 

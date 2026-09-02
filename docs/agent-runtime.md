@@ -126,8 +126,9 @@ is deliberately neither an HTTP route nor an MCP tool.
 Its version-controlled policy gives researchers exactly `web.search` and
 `web.extract`, and reviewers no capabilities. A plan must contain one to five
 researcher steps followed by exactly one reviewer step. Handoffs are allowed
-only from planner to researcher and from researcher to reviewer. The service
-checks stored step identities and roles before recording a handoff; handoff
+only from planner to researcher, researcher to reviewer, and reviewer back to
+the same researcher for one bounded revision. The service checks stored step
+identities, roles, state, and retry budget before recording a handoff; handoff
 content cannot broaden the recipient's authority.
 
 ## Deterministic planner
@@ -152,8 +153,8 @@ capability grant for that exact researcher step. It records only bounded result
 metadata in the runtime event stream and ends in `reviewing`; a failed or
 denied execution ends in `failed` without an implicit retry.
 
-The executor does not expose a public trigger, add a new MCP tool, run a
-reviewer, or give the reviewer feedback capabilities.
+The executor does not expose a public trigger, add a new MCP tool, or give the
+reviewer tool capabilities.
 
 ## Scoped memory
 
@@ -168,10 +169,18 @@ memory. Reads are limited to the owning run and exclude expired records.
 Workspace and user memory are deferred until Phase 4 establishes authenticated
 identity, tenant boundaries, retention policy, and access controls.
 
-## Deferred multi-agent refinement
+## Deterministic reviewer and bounded revision
 
-Reviewer prompts, structured review decisions, and a bounded reviewer-to-
-researcher revision loop are recorded for the later Phase 3 multi-agent work.
-They are not part of the deterministic planner slice. If added, they must use
-typed review outcomes, preserve the researcher's existing capabilities, enforce
-a retry budget, and route exhausted reviews to `needs_attention`.
+The reviewer is a server-only, no-tool LangGraph node. It evaluates persisted
+run-owned provenance references and emits one typed outcome: `accepted`,
+`revision_requested`, or `needs_attention`. A governed source reference is
+accepted. If none exists, the reviewer may hand feedback to the same researcher
+for one additional attempt; it never assigns a new role, changes the goal, or
+adds a capability. An unresolved second review ends in `needs_attention`, not
+an unbounded loop.
+
+The reviewer-to-researcher handoff and transition back to execution are
+persisted atomically after the typed outcome is recorded. The revision reuses the existing
+researcher step, its original `web.search` and `web.extract` grants, and its
+idempotency identity. There is still no public trigger, reviewer MCP tool, or
+model-authored authority boundary.

@@ -5,12 +5,14 @@ from uuid import UUID, uuid4
 from app.agent_runtime.contracts import (
     ApprovedPlanStep,
     PlanStepProposal,
+    ReviewDecision,
     RuntimeHandoff,
     RuntimeRun,
     RuntimeStep,
 )
 from app.agent_runtime.policy import (
     ALLOWED_HANDOFFS,
+    MAX_RESEARCH_ATTEMPTS,
     MAX_RESEARCH_STEPS,
     ROLE_CAPABILITIES,
     ROLE_TIMEOUT_SECONDS,
@@ -39,9 +41,7 @@ class RuntimeService:
         assert transitioned is not None
         return transitioned
 
-    async def approve_plan(
-        self, run_id: UUID, proposals: list[PlanStepProposal]
-    ) -> RuntimeRun:
+    async def approve_plan(self, run_id: UUID, proposals: list[PlanStepProposal]) -> RuntimeRun:
         """Materialize only policy-approved roles with fixed capabilities."""
 
         run = await self._require_run(run_id)
@@ -55,6 +55,13 @@ class RuntimeService:
     async def begin_execution(self, run_id: UUID) -> RuntimeRun:
         """Move an approved plan into execution through the finite state machine."""
 
+        run = await self._require_run(run_id)
+        if run.status == "executing":
+            return run
+        if run.status != "awaiting_approval":
+            raise RuntimePlanError(
+                "Execution can begin only after approval or a reviewer revision."
+            )
         transitioned = await self._store.transition_run(run_id, "executing")
         if transitioned is None:
             raise RuntimePlanError("Runtime run was not found.")
@@ -66,11 +73,16 @@ class RuntimeService:
         run = await self._require_run(run_id)
         if run.status != "executing":
             raise RuntimePlanError("A researcher can run only while the runtime is executing.")
-        researcher = next((step for step in run.steps if step.role == "researcher"), None)
+        researcher = next(
+            (step for step in run.steps if step.role == "researcher" and step.status == "pending"),
+            None,
+        )
         if researcher is None:
-            raise RuntimePlanError("Runtime run has no approved researcher step.")
-        await self._store.activate_step(run_id, researcher.id)
-        return researcher.model_copy(update={"status": "active", "attempt_count": researcher.attempt_count + 1})
+            raise RuntimePlanError("Runtime run has no pending approved researcher step.")
+        await self._store.activate_step(run_id, researcher.id, "executing")
+        return researcher.model_copy(
+            update={"status": "active", "attempt_count": researcher.attempt_count + 1}
+        )
 
     async def authorize_capability(self, step: RuntimeStep, capability: str) -> None:
         """Reject an executor request unless the stored step grant permits it."""
@@ -95,6 +107,83 @@ class RuntimeService:
         transitioned = await self._store.transition_run(run_id, "failed")
         assert transitioned is not None
         return transitioned
+
+    async def activate_reviewer(self, run_id: UUID) -> RuntimeStep:
+        """Activate the reviewer only at the review gate and with no tool grants."""
+
+        run = await self._require_run(run_id)
+        if run.status != "reviewing":
+            raise RuntimePlanError("A reviewer can run only while the runtime is reviewing.")
+        reviewer = next(
+            (step for step in run.steps if step.role == "reviewer" and step.status == "pending"),
+            None,
+        )
+        if reviewer is None:
+            raise RuntimePlanError("Runtime run has no pending approved reviewer step.")
+        await self._store.activate_step(run_id, reviewer.id, "reviewing")
+        return reviewer.model_copy(
+            update={"status": "active", "attempt_count": reviewer.attempt_count + 1}
+        )
+
+    async def accept_review(self, run_id: UUID, reviewer_step_id: UUID) -> RuntimeRun:
+        """Complete a reviewer step and close a successfully reviewed run."""
+
+        await self._store.complete_step(run_id, reviewer_step_id)
+        transitioned = await self._store.transition_run(run_id, "completed")
+        assert transitioned is not None
+        return transitioned
+
+    async def request_research_revision(
+        self, run_id: UUID, reviewer_step_id: UUID, researcher_step_id: UUID, feedback: str
+    ) -> RuntimeRun:
+        """Create the one policy-bounded reviewer-to-researcher feedback handoff."""
+
+        run = await self._require_run(run_id)
+        researcher = next((step for step in run.steps if step.id == researcher_step_id), None)
+        if researcher is None or researcher.role != "researcher":
+            raise RuntimePlanError("Reviewer feedback must target this run's researcher step.")
+        if researcher.attempt_count >= MAX_RESEARCH_ATTEMPTS:
+            raise RuntimePlanError("The approved researcher retry budget is exhausted.")
+        revised = await self._store.request_revision(
+            run_id, reviewer_step_id, researcher_step_id, feedback
+        )
+        assert revised is not None
+        return revised
+
+    async def escalate_review(
+        self, run_id: UUID, reviewer_step_id: UUID, reason: str
+    ) -> RuntimeRun:
+        """Close an unresolved review without an implicit or unbounded retry."""
+
+        await self._store.record_event(
+            run_id,
+            "runtime.review.needs_attention",
+            {"reviewer_step_id": str(reviewer_step_id), "reason": reason[:512]},
+        )
+        await self._store.complete_step(run_id, reviewer_step_id)
+        transitioned = await self._store.transition_run(run_id, "needs_attention")
+        assert transitioned is not None
+        return transitioned
+
+    async def get_run(self, run_id: UUID) -> RuntimeRun:
+        """Read one persisted run for an internal workflow node."""
+
+        return await self._require_run(run_id)
+
+    async def record_review_decision(
+        self, run_id: UUID, reviewer_step_id: UUID, decision: ReviewDecision
+    ) -> None:
+        """Persist the typed outcome before it can affect run routing."""
+
+        await self._store.record_event(
+            run_id,
+            "runtime.review.decided",
+            {
+                "reviewer_step_id": str(reviewer_step_id),
+                "outcome": decision.outcome,
+                "reason": decision.reason,
+            },
+        )
 
     async def record_tool_outcome(
         self, run_id: UUID, step_id: UUID, tool_name: str, details: dict[str, object]
@@ -158,9 +247,10 @@ class RuntimeService:
             raise RuntimePlanError(
                 f"An approved plan permits at most {MAX_RESEARCH_STEPS} researcher steps."
             )
-        if proposals[-1].role != "reviewer" or sum(
-            proposal.role == "reviewer" for proposal in proposals
-        ) != 1:
+        if (
+            proposals[-1].role != "reviewer"
+            or sum(proposal.role == "reviewer" for proposal in proposals) != 1
+        ):
             raise RuntimePlanError("An approved plan requires exactly one final reviewer step.")
         if any(proposal.role == "reviewer" for proposal in proposals[:-1]):
             raise RuntimePlanError("Reviewer work may occur only after researcher steps.")

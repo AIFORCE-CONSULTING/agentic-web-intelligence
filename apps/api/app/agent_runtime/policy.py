@@ -20,7 +20,8 @@ ALLOWED_HANDOFFS: dict[RuntimeRole, frozenset[RuntimeRole]] = {
     "orchestrator": frozenset(),
     "planner": frozenset({"researcher"}),
     "researcher": frozenset({"reviewer"}),
-    "reviewer": frozenset(),
+    "reviewer": frozenset({"researcher"}),
 }
 
 MAX_RESEARCH_STEPS = 5
+MAX_RESEARCH_ATTEMPTS = 2

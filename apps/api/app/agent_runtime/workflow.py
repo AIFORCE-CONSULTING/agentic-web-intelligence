@@ -4,7 +4,7 @@ from typing import TypedDict
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agent_runtime.contracts import PlanStepProposal, RuntimeRun
+from app.agent_runtime.contracts import PlanStepProposal, ReviewDecision, RuntimeRun
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.web_research.contracts import Evidence, SearchResponse
 from app.web_research.mcp_host import GovernedWebMcpHost
@@ -115,6 +115,69 @@ async def run_deterministic_executor(
     """Execute the stored researcher grant and finish at reviewing or failed."""
 
     result = await build_deterministic_executor_workflow(service, host).compile().ainvoke(
+        {"run_id": run_id}
+    )
+    return result["run"]
+
+
+class ReviewWorkflowState(TypedDict, total=False):
+    """State for a reviewer that can only inspect persisted run references."""
+
+    run_id: str
+    run: RuntimeRun
+
+
+def _review_decision(run: RuntimeRun) -> ReviewDecision:
+    """Evaluate provenance without invoking a model, tool, or external service."""
+
+    if any(memory.memory_type == "source_reference" for memory in run.memories):
+        return ReviewDecision(outcome="accepted", reason="Governed source provenance is present.")
+    researcher = next(step for step in run.steps if step.role == "researcher")
+    if researcher.attempt_count < 2:
+        return ReviewDecision(
+            outcome="revision_requested",
+            reason="No governed source reference was produced; repeat the approved research step.",
+        )
+    return ReviewDecision(
+        outcome="needs_attention",
+        reason="No governed source reference was produced within the approved retry budget.",
+    )
+
+
+def build_deterministic_reviewer_workflow(service: RuntimeService) -> StateGraph:
+    """Build a no-tool reviewer with one bounded feedback cycle."""
+
+    async def review(state: ReviewWorkflowState) -> ReviewWorkflowState:
+        from uuid import UUID
+
+        run_id = UUID(state["run_id"])
+        run = await service.get_run(run_id)
+        reviewer = await service.activate_reviewer(run.id)
+        researcher = next(step for step in run.steps if step.role == "researcher")
+        decision = _review_decision(run)
+        await service.record_review_decision(run.id, reviewer.id, decision)
+        if decision.outcome == "accepted":
+            return {"run": await service.accept_review(run.id, reviewer.id)}
+        if decision.outcome == "revision_requested":
+            return {
+                "run": await service.request_research_revision(
+                    run.id, reviewer.id, researcher.id, decision.reason
+                )
+            }
+        return {"run": await service.escalate_review(run.id, reviewer.id, decision.reason)}
+
+    return (
+        StateGraph(ReviewWorkflowState)
+        .add_node("review", review)
+        .add_edge(START, "review")
+        .add_edge("review", END)
+    )
+
+
+async def run_deterministic_reviewer(service: RuntimeService, run_id: str) -> RuntimeRun:
+    """Finish a review or return the run to its single approved revision attempt."""
+
+    result = await build_deterministic_reviewer_workflow(service).compile().ainvoke(
         {"run_id": run_id}
     )
     return result["run"]

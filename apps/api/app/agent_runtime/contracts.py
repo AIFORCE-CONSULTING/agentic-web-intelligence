@@ -8,6 +8,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 RuntimeRole = Literal["orchestrator", "planner", "researcher", "reviewer"]
 RuntimeCapability = Literal["web.search", "web.extract"]
+ReviewOutcome = Literal["accepted", "revision_requested", "needs_attention"]
 RunStatus = Literal[
     "requested",
     "planning",
@@ -111,6 +112,13 @@ class RuntimeMemory(BaseModel):
     source_step_id: UUID | None = None
     created_at: datetime
     expires_at: datetime
+
+
+class ReviewDecision(BaseModel):
+    """A typed reviewer outcome that cannot add capability or routing authority."""
+
+    outcome: ReviewOutcome
+    reason: str = Field(min_length=1, max_length=512)
 
 
 class RuntimeRun(BaseModel):

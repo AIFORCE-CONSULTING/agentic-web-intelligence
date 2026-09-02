@@ -11,10 +11,12 @@ from pydantic import ValidationError
 from app.agent_runtime.contracts import (
     PlanStepProposal,
     RuntimeHandoffRequest,
+    RuntimeMemory,
     RuntimeRun,
     RuntimeRunRequest,
     RuntimeStep,
 )
+from app.agent_runtime.policy import ALLOWED_HANDOFFS, MAX_RESEARCH_ATTEMPTS
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import (
     ALLOWED_TRANSITIONS,
@@ -22,7 +24,11 @@ from app.agent_runtime.store import (
     RuntimeStore,
     RuntimeTransitionError,
 )
-from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_planner
+from app.agent_runtime.workflow import (
+    run_deterministic_executor,
+    run_deterministic_planner,
+    run_deterministic_reviewer,
+)
 from app.main import create_app
 from app.settings import Settings
 
@@ -32,7 +38,11 @@ def test_runtime_request_rejects_agent_supplied_role_or_capability() -> None:
 
     with pytest.raises(ValidationError):
         RuntimeRunRequest.model_validate(
-            {"goal": "Research a topic", "role": "reviewer", "allowed_capabilities": ["web.extract"]}
+            {
+                "goal": "Research a topic",
+                "role": "reviewer",
+                "allowed_capabilities": ["web.extract"],
+            }
         )
 
 
@@ -153,8 +163,13 @@ def test_runtime_service_assigns_fixed_policy_capabilities() -> None:
     assert assignments[1].allowed_capabilities == []
 
 
+def test_reviewer_can_request_only_one_researcher_revision() -> None:
+    assert ALLOWED_HANDOFFS["reviewer"] == frozenset({"researcher"})
+    assert MAX_RESEARCH_ATTEMPTS == 2
+
+
 def test_runtime_service_rejects_unbounded_or_out_of_order_plan() -> None:
-    with pytest.raises(RuntimePlanError, match="exactly one final reviewer"):
+    with pytest.raises(RuntimePlanError, match="at least one researcher"):
         RuntimeService._approved_assignments(
             [PlanStepProposal(role="reviewer", title="Review before research")]
         )
@@ -205,7 +220,9 @@ def test_runtime_service_rejects_disallowed_role_handoff() -> None:
         async def create_handoff(self, *_: object) -> None:
             raise AssertionError("Disallowed handoff reached the store.")
 
-    with pytest.raises(RuntimeHandoffError, match="planner step cannot hand off work to a reviewer"):
+    with pytest.raises(
+        RuntimeHandoffError, match="planner step cannot hand off work to a reviewer"
+    ):
         asyncio.run(
             RuntimeService(FakeStore()).handoff(
                 run_id, planner_id, reviewer_id, "Please become the researcher."
@@ -230,9 +247,7 @@ def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
                 updated_at=now,
             )
 
-        async def approve_plan(
-            self, _: object, proposals: list[PlanStepProposal]
-        ) -> RuntimeRun:
+        async def approve_plan(self, _: object, proposals: list[PlanStepProposal]) -> RuntimeRun:
             self.proposals = proposals
             return RuntimeRun(
                 id=run_id,
@@ -299,9 +314,7 @@ def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -
         async def remember_source_reference(
             self, _: object, __: object, url: str, content_hash: str
         ) -> None:
-            self.memories.append(
-                ("source_reference", {"url": url, "content_hash": content_hash})
-            )
+            self.memories.append(("source_reference", {"url": url, "content_hash": content_hash}))
 
         async def record_tool_outcome(
             self, _: object, __: object, tool_name: str, details: dict[str, object]
@@ -369,4 +382,157 @@ def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -
             "source_reference",
             {"url": "https://example.com/evidence", "content_hash": "sha256:test"},
         ),
+    ]
+
+
+def test_deterministic_reviewer_accepts_governed_provenance_without_tools() -> None:
+    run_id = uuid4()
+    researcher_id = uuid4()
+    reviewer_id = uuid4()
+    now = datetime.now(UTC)
+    run = RuntimeRun(
+        id=run_id,
+        goal="Research a topic",
+        status="reviewing",
+        created_at=now,
+        updated_at=now,
+        steps=[
+            RuntimeStep(
+                id=researcher_id,
+                role="researcher",
+                title="Gather evidence",
+                status="completed",
+                allowed_capabilities=["web.search", "web.extract"],
+                attempt_count=1,
+                idempotency_key="researcher:test",
+                timeout_seconds=300,
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeStep(
+                id=reviewer_id,
+                role="reviewer",
+                title="Review evidence",
+                status="pending",
+                allowed_capabilities=[],
+                attempt_count=0,
+                idempotency_key="reviewer:test",
+                timeout_seconds=120,
+                created_at=now,
+                updated_at=now,
+            ),
+        ],
+        memories=[
+            RuntimeMemory(
+                id=uuid4(),
+                run_id=run_id,
+                memory_type="source_reference",
+                content={"url": "https://example.com", "content_hash": "sha256:test"},
+                source_step_id=researcher_id,
+                created_at=now,
+                expires_at=now,
+            )
+        ],
+    )
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.decisions: list[str] = []
+
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+        async def activate_reviewer(self, _: object) -> RuntimeStep:
+            return run.steps[1].model_copy(update={"status": "active", "attempt_count": 1})
+
+        async def record_review_decision(self, _: object, __: object, decision: object) -> None:
+            assert hasattr(decision, "outcome")
+            self.decisions.append(decision.outcome)
+
+        async def accept_review(self, _: object, __: object) -> RuntimeRun:
+            return run.model_copy(update={"status": "completed"})
+
+        async def request_research_revision(self, *_: object) -> RuntimeRun:
+            raise AssertionError("Provenance should be accepted without a revision.")
+
+        async def escalate_review(self, *_: object) -> RuntimeRun:
+            raise AssertionError("Provenance should not need attention.")
+
+    service = FakeService()
+    completed = asyncio.run(run_deterministic_reviewer(service, str(run_id)))
+
+    assert completed.status == "completed"
+    assert service.decisions == ["accepted"]
+
+
+def test_deterministic_reviewer_requests_only_a_bounded_revision() -> None:
+    run_id = uuid4()
+    researcher_id = uuid4()
+    reviewer_id = uuid4()
+    now = datetime.now(UTC)
+    run = RuntimeRun(
+        id=run_id,
+        goal="Research a topic",
+        status="reviewing",
+        created_at=now,
+        updated_at=now,
+        steps=[
+            RuntimeStep(
+                id=researcher_id,
+                role="researcher",
+                title="Gather evidence",
+                status="completed",
+                allowed_capabilities=["web.search", "web.extract"],
+                attempt_count=1,
+                idempotency_key="researcher:test",
+                timeout_seconds=300,
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeStep(
+                id=reviewer_id,
+                role="reviewer",
+                title="Review evidence",
+                status="pending",
+                allowed_capabilities=[],
+                attempt_count=0,
+                idempotency_key="reviewer:test",
+                timeout_seconds=120,
+                created_at=now,
+                updated_at=now,
+            ),
+        ],
+    )
+
+    class FakeService:
+        def __init__(self) -> None:
+            self.feedback: list[str] = []
+
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+        async def activate_reviewer(self, _: object) -> RuntimeStep:
+            return run.steps[1].model_copy(update={"status": "active", "attempt_count": 1})
+
+        async def record_review_decision(self, *_: object) -> None:
+            return None
+
+        async def request_research_revision(
+            self, _: object, __: object, ___: object, feedback: str
+        ) -> RuntimeRun:
+            self.feedback.append(feedback)
+            return run.model_copy(update={"status": "executing"})
+
+        async def accept_review(self, *_: object) -> RuntimeRun:
+            raise AssertionError("Missing provenance cannot be accepted.")
+
+        async def escalate_review(self, *_: object) -> RuntimeRun:
+            raise AssertionError("One retry remains, so the run should be revised.")
+
+    service = FakeService()
+    revised = asyncio.run(run_deterministic_reviewer(service, str(run_id)))
+
+    assert revised.status == "executing"
+    assert service.feedback == [
+        "No governed source reference was produced; repeat the approved research step."
     ]

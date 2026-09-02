@@ -16,6 +16,7 @@ from app.agent_runtime.contracts import (
     RuntimeStep,
     RuntimeStoreUnavailable,
 )
+from app.agent_runtime.policy import MAX_RESEARCH_ATTEMPTS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runtime_runs (
@@ -33,7 +34,9 @@ CREATE TABLE IF NOT EXISTS agent_runtime_steps (
     run_id UUID NOT NULL REFERENCES agent_runtime_runs(id) ON DELETE CASCADE,
     role TEXT NOT NULL CHECK (role IN ('orchestrator', 'planner', 'researcher', 'reviewer')),
     title TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('pending', 'active', 'completed', 'failed', 'cancelled', 'needs_attention')),
+    status TEXT NOT NULL CHECK (status IN (
+        'pending', 'active', 'completed', 'failed', 'cancelled', 'needs_attention'
+    )),
     allowed_capabilities JSONB NOT NULL DEFAULT '[]'::jsonb,
     attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
     idempotency_key TEXT NOT NULL,
@@ -84,7 +87,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "planning": frozenset({"awaiting_approval", "rejected", "failed", "cancelled"}),
     "awaiting_approval": frozenset({"executing", "rejected", "cancelled"}),
     "executing": frozenset({"reviewing", "failed", "cancelled", "needs_attention"}),
-    "reviewing": frozenset({"completed", "needs_attention", "failed", "cancelled"}),
+    "reviewing": frozenset({"executing", "completed", "needs_attention", "failed", "cancelled"}),
     "completed": frozenset(),
     "rejected": frozenset(),
     "failed": frozenset(),
@@ -125,7 +128,9 @@ class RuntimeStore:
                 if self._pool is not None:
                     await self._pool.close()
                     self._pool = None
-                raise RuntimeStoreUnavailable("Agent runtime persistence is unavailable.") from error
+                raise RuntimeStoreUnavailable(
+                    "Agent runtime persistence is unavailable."
+                ) from error
         return self._pool
 
     async def create_run(self, goal: str) -> RuntimeRun:
@@ -142,8 +147,10 @@ class RuntimeStore:
             )
             await connection.execute(
                 """INSERT INTO agent_runtime_steps
-                (id, run_id, role, title, status, allowed_capabilities, idempotency_key, timeout_seconds)
-                VALUES ($1, $2, 'planner', 'Create a bounded plan', 'pending', '[]'::jsonb, $3, 60)""",
+                (id, run_id, role, title, status, allowed_capabilities,
+                 idempotency_key, timeout_seconds)
+                VALUES ($1, $2, 'planner', 'Create a bounded plan', 'pending',
+                 '[]'::jsonb, $3, 60)""",
                 planner_step_id,
                 run_id,
                 f"planner:{planner_step_id}",
@@ -169,7 +176,9 @@ class RuntimeStore:
             if current is None:
                 return None
             if next_status not in ALLOWED_TRANSITIONS[current]:
-                raise RuntimeTransitionError(f"Cannot transition runtime run from {current} to {next_status}.")
+                raise RuntimeTransitionError(
+                    f"Cannot transition runtime run from {current} to {next_status}."
+                )
             await connection.execute(
                 "UPDATE agent_runtime_runs SET status = $2, updated_at = now() WHERE id = $1",
                 run_id,
@@ -214,7 +223,8 @@ class RuntimeStore:
             for assignment in assignments:
                 await connection.execute(
                     """INSERT INTO agent_runtime_steps
-                    (id, run_id, role, title, status, allowed_capabilities, idempotency_key, timeout_seconds)
+                    (id, run_id, role, title, status, allowed_capabilities,
+                     idempotency_key, timeout_seconds)
                     VALUES ($1, $2, $3, $4, 'pending', $5::jsonb, $6, $7)""",
                     assignment.id,
                     run_id,
@@ -254,9 +264,12 @@ class RuntimeStore:
             if run_status is None:
                 raise RuntimeHandoffError("Runtime run was not found.")
             if run_status not in {"planning", "executing", "reviewing"}:
-                raise RuntimeHandoffError("Runtime run is not accepting handoffs in its current state.")
+                raise RuntimeHandoffError(
+                    "Runtime run is not accepting handoffs in its current state."
+                )
             steps = await connection.fetch(
-                "SELECT id, role FROM agent_runtime_steps WHERE run_id = $1 AND id = ANY($2::uuid[])",
+                "SELECT id, role FROM agent_runtime_steps "
+                "WHERE run_id = $1 AND id = ANY($2::uuid[])",
                 run_id,
                 [sender_step_id, recipient_step_id],
             )
@@ -276,7 +289,10 @@ class RuntimeStore:
                 connection,
                 run_id,
                 "runtime.handoff.created",
-                {"sender_step_id": str(sender_step_id), "recipient_step_id": str(recipient_step_id)},
+                {
+                    "sender_step_id": str(sender_step_id),
+                    "recipient_step_id": str(recipient_step_id),
+                },
             )
             row = await connection.fetchrow(
                 "SELECT id, sender_step_id, recipient_step_id, content, created_at "
@@ -286,16 +302,16 @@ class RuntimeStore:
         assert row is not None
         return self._handoff_from_row(row)
 
-    async def activate_step(self, run_id: UUID, step_id: UUID) -> None:
-        """Activate one pending step only while its run is executing."""
+    async def activate_step(self, run_id: UUID, step_id: UUID, run_status: str) -> None:
+        """Activate one pending step only in its declared runtime phase."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
-            run_status = await connection.fetchval(
+            current_status = await connection.fetchval(
                 "SELECT status FROM agent_runtime_runs WHERE id = $1 FOR UPDATE", run_id
             )
-            if run_status != "executing":
-                raise RuntimeTransitionError("Runtime run is not executing.")
+            if current_status != run_status:
+                raise RuntimeTransitionError(f"Runtime run is not {run_status}.")
             updated = await connection.execute(
                 """UPDATE agent_runtime_steps
                 SET status = 'active', attempt_count = attempt_count + 1, updated_at = now()
@@ -308,6 +324,89 @@ class RuntimeStore:
             await self._append_event(
                 connection, run_id, "runtime.step.activated", {"step_id": str(step_id)}
             )
+
+    async def request_revision(
+        self,
+        run_id: UUID,
+        reviewer_step_id: UUID,
+        researcher_step_id: UUID,
+        feedback: str,
+    ) -> RuntimeRun | None:
+        """Atomically close a review, record feedback, and reopen its bounded research loop."""
+
+        pool = await self._connection_pool()
+        handoff_id = uuid4()
+        async with pool.acquire() as connection, connection.transaction():
+            status = await connection.fetchval(
+                "SELECT status FROM agent_runtime_runs WHERE id = $1 FOR UPDATE", run_id
+            )
+            if status is None:
+                return None
+            if status != "reviewing":
+                raise RuntimeTransitionError("Runtime run is not reviewing.")
+            steps = await connection.fetch(
+                """SELECT id, role, status, attempt_count FROM agent_runtime_steps
+                WHERE run_id = $1 AND id = ANY($2::uuid[]) FOR UPDATE""",
+                run_id,
+                [reviewer_step_id, researcher_step_id],
+            )
+            by_id = {row["id"]: row for row in steps}
+            reviewer = by_id.get(reviewer_step_id)
+            researcher = by_id.get(researcher_step_id)
+            if (
+                reviewer is None
+                or researcher is None
+                or reviewer["role"] != "reviewer"
+                or reviewer["status"] != "active"
+                or researcher["role"] != "researcher"
+                or researcher["status"] != "completed"
+                or researcher["attempt_count"] >= MAX_RESEARCH_ATTEMPTS
+            ):
+                raise RuntimeHandoffError(
+                    "Revision steps are not in the required reviewed state or retry budget."
+                )
+            await connection.execute(
+                """UPDATE agent_runtime_steps SET status = 'completed', updated_at = now()
+                WHERE id = $1""",
+                reviewer_step_id,
+            )
+            await connection.execute(
+                """INSERT INTO agent_runtime_handoffs
+                (id, run_id, sender_step_id, recipient_step_id, content)
+                VALUES ($1, $2, $3, $4, $5)""",
+                handoff_id,
+                run_id,
+                reviewer_step_id,
+                researcher_step_id,
+                feedback,
+            )
+            await connection.execute(
+                """UPDATE agent_runtime_steps SET status = 'pending', updated_at = now()
+                WHERE id = ANY($1::uuid[])""",
+                [researcher_step_id, reviewer_step_id],
+            )
+            await connection.execute(
+                """UPDATE agent_runtime_runs
+                SET status = 'executing', updated_at = now() WHERE id = $1""",
+                run_id,
+            )
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.review.revision_requested",
+                {
+                    "reviewer_step_id": str(reviewer_step_id),
+                    "researcher_step_id": str(researcher_step_id),
+                    "handoff_id": str(handoff_id),
+                },
+            )
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.run.transitioned",
+                {"from_status": "reviewing", "to_status": "executing"},
+            )
+        return await self.get_run(run_id)
 
     async def complete_step(self, run_id: UUID, step_id: UUID) -> None:
         """Complete one active step and retain its immutable authority record."""
@@ -375,7 +474,8 @@ class RuntimeStore:
                 """INSERT INTO agent_runtime_memories
                 (id, run_id, memory_type, content, source_step_id, expires_at)
                 VALUES ($1, $2, $3, $4::jsonb, $5, $6)
-                RETURNING id, run_id, memory_type, content, source_step_id, created_at, expires_at""",
+                RETURNING id, run_id, memory_type, content, source_step_id,
+                created_at, expires_at""",
                 memory_id,
                 run_id,
                 memory_type,
@@ -395,7 +495,9 @@ class RuntimeStore:
     async def get_run(self, run_id: UUID) -> RuntimeRun | None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
-            run = await connection.fetchrow("SELECT * FROM agent_runtime_runs WHERE id = $1", run_id)
+            run = await connection.fetchrow(
+                "SELECT * FROM agent_runtime_runs WHERE id = $1", run_id
+            )
             if run is None:
                 return None
             steps = await connection.fetch(
@@ -416,8 +518,12 @@ class RuntimeStore:
                 run_id,
             )
         return RuntimeRun(
-            id=run["id"], goal=run["goal"], status=run["status"], created_at=run["created_at"],
-            updated_at=run["updated_at"], steps=[self._step_from_row(row) for row in steps],
+            id=run["id"],
+            goal=run["goal"],
+            status=run["status"],
+            created_at=run["created_at"],
+            updated_at=run["updated_at"],
+            steps=[self._step_from_row(row) for row in steps],
             handoffs=[self._handoff_from_row(row) for row in handoffs],
             memories=[self._memory_from_row(row) for row in memories],
             events=[self._event_from_row(row) for row in events],
@@ -440,8 +546,12 @@ class RuntimeStore:
         connection: asyncpg.Connection, run_id: UUID, event_type: str, details: dict[str, object]
     ) -> None:
         await connection.execute(
-            "INSERT INTO agent_runtime_events (id, run_id, event_type, details) VALUES ($1, $2, $3, $4::jsonb)",
-            uuid4(), run_id, event_type, json.dumps(details),
+            "INSERT INTO agent_runtime_events (id, run_id, event_type, details) "
+            "VALUES ($1, $2, $3, $4::jsonb)",
+            uuid4(),
+            run_id,
+            event_type,
+            json.dumps(details),
         )
 
     @staticmethod
@@ -450,17 +560,26 @@ class RuntimeStore:
         if isinstance(capabilities, str):
             capabilities = json.loads(capabilities)
         return RuntimeStep(
-            id=row["id"], role=row["role"], title=row["title"], status=row["status"],
+            id=row["id"],
+            role=row["role"],
+            title=row["title"],
+            status=row["status"],
             allowed_capabilities=capabilities,
-            attempt_count=row["attempt_count"], idempotency_key=row["idempotency_key"],
-            timeout_seconds=row["timeout_seconds"], created_at=row["created_at"], updated_at=row["updated_at"],
+            attempt_count=row["attempt_count"],
+            idempotency_key=row["idempotency_key"],
+            timeout_seconds=row["timeout_seconds"],
+            created_at=row["created_at"],
+            updated_at=row["updated_at"],
         )
 
     @staticmethod
     def _handoff_from_row(row: asyncpg.Record) -> RuntimeHandoff:
         return RuntimeHandoff(
-            id=row["id"], sender_step_id=row["sender_step_id"],
-            recipient_step_id=row["recipient_step_id"], content=row["content"], created_at=row["created_at"],
+            id=row["id"],
+            sender_step_id=row["sender_step_id"],
+            recipient_step_id=row["recipient_step_id"],
+            content=row["content"],
+            created_at=row["created_at"],
         )
 
     @staticmethod
@@ -468,7 +587,9 @@ class RuntimeStore:
         details = row["details"]
         if isinstance(details, str):
             details = json.loads(details)
-        return RuntimeEvent(event_type=row["event_type"], occurred_at=row["occurred_at"], details=details)
+        return RuntimeEvent(
+            event_type=row["event_type"], occurred_at=row["occurred_at"], details=details
+        )
 
     @staticmethod
     def _memory_from_row(row: asyncpg.Record) -> RuntimeMemory:

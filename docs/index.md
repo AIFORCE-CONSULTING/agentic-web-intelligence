@@ -18,6 +18,12 @@ React operator console -> FastAPI gateway -> LangGraph workflow -> MCP policy bo
 
 The initial local stack runs only the React console and FastAPI service. PostgreSQL and Redis remain opt-in until a platform capability needs them.
 
+## Phase 3: Agent runtime
+
+Phase 3 adds governed planning, typed execution state, bounded role handoffs,
+and safe recovery semantics. The [agent runtime contract](agent-runtime.md)
+defines these boundaries before additional agent behavior is implemented.
+
 ## Start here
 
 - Read the [project vision](foundation/project.md) and [engineering principles](foundation/principles.md).

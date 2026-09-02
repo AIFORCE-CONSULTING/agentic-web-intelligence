@@ -73,7 +73,9 @@ nav:
       - ADR 0002 — React and FastAPI: adr/0002-react-fastapi.md
       - ADR 0003 — Web intelligence via MCP: adr/0003-web-intelligence-mcp.md
       - ADR 0004 — Governed web-research MVP: adr/0004-governed-web-research-mvp.md
+      - ADR 0005 — Governed agent-runtime contract: adr/0005-governed-agent-runtime-contract.md
   - Web research: governed-web-research.md
+  - Agent runtime: agent-runtime.md
   - Governed research prompt: governed-research-prompt.md
   - Contributing:
       - Contribution guide: contributing.md

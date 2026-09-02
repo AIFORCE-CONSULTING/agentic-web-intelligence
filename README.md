@@ -30,7 +30,7 @@ docs/                  Documentation-site source
 
 ## Status
 
-Phase 1 is complete. Phase 2 is the current focus. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [ROADMAP.md](ROADMAP.md) for the project contract and delivery plan.
+Phases 1 through 3 are complete. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), and [ROADMAP.md](ROADMAP.md) for the project contract and delivery plan.
 
 ## Technology direction
 

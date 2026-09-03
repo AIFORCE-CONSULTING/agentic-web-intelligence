@@ -11,7 +11,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 PIN_PATTERN = re.compile(r"^\s*([A-Za-z0-9_.-]+)(?:\[[^]]+\])?\s*==\s*([^\s;]+)")
-LOCK_PATTERN = re.compile(r"^([A-Za-z0-9_.-]+)==([^\s\\]+)")
+LOCK_PATTERN = re.compile(r"^([A-Za-z0-9_.-]+)(?:\[[^]]+\])?==([^\s\\]+)")
 
 
 @dataclass(frozen=True)

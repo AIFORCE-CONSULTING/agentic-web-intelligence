@@ -45,6 +45,21 @@ Health checks, API documentation, and the prompt/tool catalogs remain public.
 The actions that consume tools or access durable platform records require an
 authenticated session and the appropriate workspace role.
 
+## Security audit trail
+
+`GET /v1/audit/security` gives a workspace administrator a bounded,
+reverse-chronological record of security decisions in that workspace. The
+platform records successful bootstrap, sign-in, and sign-out events, plus
+denied authentication and authorization attempts. Events include the acting
+user when known, workspace, event type, outcome, and timestamp. They do not
+store passwords, bootstrap secrets, raw session tokens, or attempted email
+addresses.
+
+Audit persistence is intentionally non-blocking for an access decision: if the
+audit database is unavailable, authentication and authorization still enforce
+their rules rather than falling open. The service health endpoint continues to
+expose persistence availability to operators.
+
 ## Enterprise compatibility
 
 The platform will add a configuration-driven OIDC adapter rather than choosing

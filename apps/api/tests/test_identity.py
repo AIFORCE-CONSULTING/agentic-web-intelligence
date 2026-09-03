@@ -7,7 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.identity.contracts import AuthenticatedUser
+from app.identity.contracts import AuthenticatedUser, SecurityAuditEvent
 from app.identity.service import AuthenticationError, IdentityService
 from app.main import create_app
 from app.settings import Settings
@@ -85,6 +85,22 @@ def test_durable_routes_require_a_session_and_enforce_workspace_roles(
             assert limit == 25
             return []
 
+    class FakeSecurityAuditStore:
+        def __init__(self) -> None:
+            self.records: list[tuple[str, str, object, object, dict[str, object]]] = []
+
+        async def record(
+            self,
+            event_type: str,
+            outcome: str,
+            actor_user_id=None,
+            workspace_id=None,
+            details: dict[str, object] | None = None,
+        ) -> None:
+            self.records.append(
+                (event_type, outcome, actor_user_id, workspace_id, details or {})
+            )
+
     monkeypatch.setattr(
         "app.main.get_settings",
         lambda: Settings(database_url="postgresql://test", searxng_base_url=None),
@@ -93,6 +109,8 @@ def test_durable_routes_require_a_session_and_enforce_workspace_roles(
     store = FakeResearchStore()
     app.state.identity_service = FakeIdentityService()
     app.state.research_store = store
+    audit_store = FakeSecurityAuditStore()
+    app.state.security_audit_store = audit_store
 
     async def request() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
@@ -109,3 +127,70 @@ def test_durable_routes_require_a_session_and_enforce_workspace_roles(
     assert readable.status_code == 200
     assert store.list_workspace_id == workspace_id
     assert denied.status_code == 403
+    assert audit_store.records == [
+        ("authorization.denied", "denied", None, None, {"reason": "no_session"}),
+        (
+            "authorization.denied",
+            "denied",
+            viewer.id,
+            workspace_id,
+            {"permission": "research.write"},
+        ),
+    ]
+
+
+def test_security_audit_is_workspace_scoped_and_administrator_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id = uuid4()
+    administrator = AuthenticatedUser(
+        id=uuid4(),
+        email="admin@example.com",
+        workspace_id=workspace_id,
+        workspace_name="Workspace A",
+        role="administrator",
+        authenticated_at=datetime.now(UTC),
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, token: str | None) -> AuthenticatedUser | None:
+            return administrator if token == "admin-session" else None
+
+    class FakeSecurityAuditStore:
+        def __init__(self) -> None:
+            self.workspace_id = None
+
+        async def list_workspace_events(self, received_workspace_id, limit: int):
+            self.workspace_id = received_workspace_id
+            assert limit == 25
+            return [
+                SecurityAuditEvent(
+                    id=uuid4(),
+                    actor_user_id=administrator.id,
+                    workspace_id=workspace_id,
+                    event_type="auth.sign_in",
+                    outcome="succeeded",
+                    occurred_at=datetime.now(UTC),
+                )
+            ]
+
+    monkeypatch.setattr(
+        "app.main.get_settings",
+        lambda: Settings(database_url="postgresql://test", searxng_base_url=None),
+    )
+    app = create_app()
+    audit_store = FakeSecurityAuditStore()
+    app.state.identity_service = FakeIdentityService()
+    app.state.security_audit_store = audit_store
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            client.cookies.set("platform_session", "admin-session")
+            return await client.get("/v1/audit/security")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert audit_store.workspace_id == workspace_id
+    assert response.json()["events"][0]["event_type"] == "auth.sign_in"

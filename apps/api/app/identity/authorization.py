@@ -10,6 +10,7 @@ WorkspacePermission = Literal[
     "runtime.read",
     "mcp.use",
     "mcp.audit.read",
+    "security.audit.read",
 ]
 
 ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
@@ -20,6 +21,7 @@ ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
             "runtime.read",
             "mcp.use",
             "mcp.audit.read",
+            "security.audit.read",
         }
     ),
     "operator": frozenset({"research.read", "research.write", "runtime.read", "mcp.use"}),

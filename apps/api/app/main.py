@@ -20,7 +20,13 @@ from app.identity.authorization import (
     WorkspacePermission,
     require_permission,
 )
-from app.identity.contracts import AuthenticatedUser, BootstrapAdminRequest, SignInRequest
+from app.identity.audit import SecurityAuditStore, SecurityAuditStoreUnavailable
+from app.identity.contracts import (
+    AuthenticatedUser,
+    BootstrapAdminRequest,
+    SecurityAuditEventList,
+    SignInRequest,
+)
 from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
 from app.identity.store import IdentityStore, IdentityStoreUnavailable
 from app.prompt_templates import (
@@ -90,6 +96,7 @@ def create_app() -> FastAPI:
     app.state.runtime_store = RuntimeStore(settings.database_url)
     app.state.runtime_service = RuntimeService(app.state.runtime_store)
     app.state.identity_store = IdentityStore(settings.database_url)
+    app.state.security_audit_store = SecurityAuditStore(settings.database_url)
     app.state.identity_service = IdentityService(
         app.state.identity_store, settings.auth_bootstrap_secret
     )
@@ -126,12 +133,44 @@ def create_app() -> FastAPI:
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if user is None:
+            await record_security_event(
+                http_request, "authorization.denied", "denied", details={"reason": "no_session"}
+            )
             raise HTTPException(status_code=401, detail="Authentication is required.")
         try:
             require_permission(user, permission)
         except AuthorizationError as error:
+            await record_security_event(
+                http_request,
+                "authorization.denied",
+                "denied",
+                actor=user,
+                details={"permission": permission},
+            )
             raise HTTPException(status_code=403, detail=str(error)) from error
         return user
+
+    async def record_security_event(
+        http_request: Request,
+        event_type: str,
+        outcome: str,
+        actor: AuthenticatedUser | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        """Best-effort audit that never stores credentials or changes an access decision."""
+
+        store: SecurityAuditStore = http_request.app.state.security_audit_store
+        try:
+            await store.record(
+                event_type,
+                outcome,
+                actor_user_id=actor.id if actor else None,
+                workspace_id=actor.workspace_id if actor else None,
+                details=details,
+            )
+        except SecurityAuditStoreUnavailable:
+            # Authentication and authorization still enforce safely if the audit backend is down.
+            return
 
     @app.post(
         "/v1/auth/bootstrap",
@@ -150,12 +189,16 @@ def create_app() -> FastAPI:
                 request.bootstrap_secret, str(request.email), request.password
             )
         except AuthenticationError as error:
+            await record_security_event(
+                http_request, "auth.bootstrap", "denied", details={"reason": "invalid_proof"}
+            )
             raise HTTPException(status_code=401, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         set_session_cookie(response, token)
+        await record_security_event(http_request, "auth.bootstrap", "succeeded", actor=user)
         return user
 
     @app.post("/v1/auth/sign-in", response_model=AuthenticatedUser, tags=["auth"])
@@ -168,10 +211,14 @@ def create_app() -> FastAPI:
         try:
             user, token = await service.sign_in(str(request.email), request.password)
         except AuthenticationError as error:
+            await record_security_event(
+                http_request, "auth.sign_in", "denied", details={"reason": "invalid_credentials"}
+            )
             raise HTTPException(status_code=401, detail=str(error)) from error
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         set_session_cookie(response, token)
+        await record_security_event(http_request, "auth.sign_in", "succeeded", actor=user)
         return user
 
     @app.get("/v1/auth/me", response_model=AuthenticatedUser, tags=["auth"])
@@ -193,10 +240,18 @@ def create_app() -> FastAPI:
 
         service: IdentityService = http_request.app.state.identity_service
         try:
+            user = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
             await service.sign_out(http_request.cookies.get(SESSION_COOKIE_NAME))
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        await record_security_event(
+            http_request,
+            "auth.sign_out",
+            "succeeded" if user else "denied",
+            actor=user,
+            details={} if user else {"reason": "no_session"},
+        )
         return response
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
@@ -329,6 +384,21 @@ def create_app() -> FastAPI:
                 events=await store.list_mcp_tool_events(user.workspace_id, limit)
             )
         except ResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/v1/audit/security", response_model=SecurityAuditEventList, tags=["audit"])
+    async def list_security_audit(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> SecurityAuditEventList:
+        """Return sanitized security decisions for the authenticated administrator workspace."""
+
+        user = await require_workspace_permission(http_request, "security.audit.read")
+        store: SecurityAuditStore = http_request.app.state.security_audit_store
+        try:
+            return SecurityAuditEventList(
+                events=await store.list_workspace_events(user.workspace_id, limit)
+            )
+        except SecurityAuditStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post("/mcp", tags=["mcp"])

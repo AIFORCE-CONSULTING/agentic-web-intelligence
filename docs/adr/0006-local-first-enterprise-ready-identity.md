@@ -31,5 +31,7 @@ flow.
 
 The initial slice provides bootstrap, sign-in, sign-out, and current-user
 endpoints, then scopes durable Phase 2 and Phase 3 resources to an authenticated
-workspace. Password recovery, invitations, service identities, multi-workspace
-administration, and OIDC configuration UI remain separate scoped work.
+workspace. It also records sanitized authentication and authorization decisions
+in an append-only security audit trail. Password recovery, invitations, service
+identities, multi-workspace administration, and OIDC configuration UI remain
+separate scoped work.

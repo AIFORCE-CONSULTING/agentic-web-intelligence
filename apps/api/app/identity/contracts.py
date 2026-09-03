@@ -37,3 +37,21 @@ class AuthenticatedUser(BaseModel):
     workspace_name: str
     role: WorkspaceRole
     authenticated_at: datetime
+
+
+class SecurityAuditEvent(BaseModel):
+    """A sanitized, append-only record of a platform security decision."""
+
+    id: UUID
+    actor_user_id: UUID | None = None
+    workspace_id: UUID | None = None
+    event_type: str
+    outcome: Literal["succeeded", "denied"]
+    occurred_at: datetime
+    details: dict[str, object] = Field(default_factory=dict)
+
+
+class SecurityAuditEventList(BaseModel):
+    """Bounded security history for an administrator's workspace."""
+
+    events: list[SecurityAuditEvent]

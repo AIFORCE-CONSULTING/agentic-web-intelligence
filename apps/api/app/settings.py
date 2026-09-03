@@ -15,6 +15,7 @@ class Settings(BaseSettings):
     web_origin: str = "http://localhost:5173"
     searxng_base_url: str | None = None
     database_url: str | None = None
+    auth_bootstrap_secret: str | None = None
 
 
 @lru_cache

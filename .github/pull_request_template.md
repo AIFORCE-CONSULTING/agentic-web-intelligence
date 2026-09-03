@@ -12,6 +12,7 @@ Describe the user or platform outcome of this change.
 
 - [ ] I did not add credentials, production data, or unreviewed external tools.
 - [ ] I assessed the change for security, privacy, and supply-chain impact.
+- [ ] For dependency or workflow changes, I reviewed provenance/advisories and attached audit evidence.
 - [ ] I added or updated an ADR if this changes a material architectural decision.
 
 ## Evidence

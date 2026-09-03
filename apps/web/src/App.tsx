@@ -25,12 +25,23 @@ type BatchExtractionOutcome = {
   url: string; status: "succeeded" | "failed" | "denied"; reason?: string | null;
 };
 type BatchExtractResponse = { run_id: string; outcomes: BatchExtractionOutcome[] };
+type AuthenticatedUser = {
+  id: string; email: string; workspace_id: string; workspace_name: string;
+  role: "administrator" | "operator" | "viewer"; authenticated_at: string;
+};
+type SecurityAuditEvent = {
+  id: string; actor_user_id?: string | null; workspace_id?: string | null;
+  event_type: string; outcome: "succeeded" | "denied"; occurred_at: string;
+  details: Record<string, unknown>;
+};
+type SecurityAuditEventList = { events: SecurityAuditEvent[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
+const isAdminRoute = window.location.pathname === "/admin";
 
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, options);
+  const response = await fetch(`${apiBaseUrl}${path}`, { credentials: "include", ...options });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(payload?.detail ?? "The platform request could not be completed.");
@@ -59,8 +70,9 @@ function latestExtractionAttemptFor(run: ResearchRun): ExtractionAttempt | null 
 function PrimaryNavigation() {
   return (
     <nav className="primary-nav" aria-label="Primary navigation">
-      <a className={!isDeveloperRoute ? "active" : ""} href="/">Research workspace</a>
+      <a className={!isDeveloperRoute && !isAdminRoute ? "active" : ""} href="/">Research workspace</a>
       <a className={isDeveloperRoute ? "active" : ""} href="/developer">Developer hub</a>
+      <a className={isAdminRoute ? "active" : ""} href="/admin">Admin</a>
     </nav>
   );
 }
@@ -99,6 +111,7 @@ function DeveloperHub({
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/tools`} target="_blank" rel="noreferrer"><strong>MCP tool catalog</strong><span>Inspect the only agent-visible, read-only web tools.</span><small>{apiBaseUrl}/v1/mcp/tools</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/audit`} target="_blank" rel="noreferrer"><strong>MCP execution audit</strong><span>Review bounded, durable outcomes from direct MCP calls.</span><small>{apiBaseUrl}/v1/mcp/audit</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/runtime/runs`} target="_blank" rel="noreferrer"><strong>Agent runtime runs</strong><span>Inspect server-owned roles, capabilities, handoffs, and lifecycle events.</span><small>{apiBaseUrl}/v1/runtime/runs</small></a>
+          <a className="developer-card" href="/admin"><strong>Platform administration</strong><span>Sign in locally and inspect your workspace identity and security audit trail.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · included with the web-research stack</small></a>
         </div>
       </section>
@@ -107,6 +120,138 @@ function DeveloperHub({
         <p>The documentation site starts with the <code>web-research</code> profile. SearXNG remains internal-only; all web research goes through the governed API.</p>
       </section>
     </>
+  );
+}
+
+function AdminConsole() {
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [bootstrapSecret, setBootstrapSecret] = useState("");
+  const [showBootstrap, setShowBootstrap] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadAdminData() {
+    const currentUser = await apiRequest<AuthenticatedUser>("/v1/auth/me");
+    setUser(currentUser);
+    if (currentUser.role !== "administrator") {
+      setEvents([]);
+      return;
+    }
+    const audit = await apiRequest<SecurityAuditEventList>("/v1/audit/security");
+    setEvents(audit.events);
+  }
+
+  useEffect(() => {
+    void loadAdminData().catch((reason) => {
+      setUser(null);
+      setEvents([]);
+      if (reason instanceof Error && reason.message !== "Authentication is required.") {
+        setError(reason.message);
+      }
+    });
+  }, []);
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<AuthenticatedUser>("/v1/auth/sign-in", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      setPassword("");
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to sign in.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bootstrap(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<AuthenticatedUser>("/v1/auth/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bootstrap_secret: bootstrapSecret, email, password }),
+      });
+      setBootstrapSecret("");
+      setPassword("");
+      setShowBootstrap(false);
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to initialize the administrator.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/auth/sign-out`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Unable to sign out.");
+      setUser(null);
+      setEvents([]);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to sign out.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main>
+      <header>
+        <p className="eyebrow">Platform control plane</p>
+        <PrimaryNavigation />
+        <h1>Administration</h1>
+        <p className="lead">Inspect the identity and security decisions that the server enforces for this workspace.</p>
+      </header>
+      {error && <p className="error" role="alert">{error}</p>}
+      {!user && <section aria-labelledby="admin-sign-in-heading">
+        <h2 id="admin-sign-in-heading">Sign in</h2>
+        <p className="hint">Use the local administrator account created during deployment bootstrap.</p>
+        <form className="auth-form" onSubmit={signIn}>
+          <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          <button type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+        </form>
+        <button type="button" className="link-button" onClick={() => setShowBootstrap((visible) => !visible)}>
+          {showBootstrap ? "Hide first-time setup" : "First-time setup"}
+        </button>
+        {showBootstrap && <form className="auth-form bootstrap-form" onSubmit={bootstrap}>
+          <p className="hint">Use this once with the deployment-controlled bootstrap secret. It is unavailable after the first administrator is created.</p>
+          <label>Bootstrap secret<input type="password" value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} required /></label>
+          <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+          <label>Password<input type="password" minLength={14} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          <button type="submit" disabled={busy}>{busy ? "Initializing…" : "Create administrator"}</button>
+        </form>}
+      </section>}
+      {user && <>
+        <section aria-labelledby="identity-heading">
+          <div className="section-heading"><div><p className="eyebrow">Authenticated session</p><h2 id="identity-heading">Current identity</h2></div><button type="button" className="secondary" onClick={() => void signOut()} disabled={busy}>Sign out</button></div>
+          <dl className="identity-grid"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Role</dt><dd><span className={`role ${user.role}`}>{user.role}</span></dd></div><div><dt>Workspace</dt><dd>{user.workspace_name}</dd></div><div><dt>Session established</dt><dd>{new Date(user.authenticated_at).toLocaleString()}</dd></div></dl>
+        </section>
+        {user.role === "administrator" ? <section aria-labelledby="security-audit-heading">
+          <div className="section-heading"><div><p className="eyebrow">Append-only record</p><h2 id="security-audit-heading">Security audit</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          <p className="hint">Authentication and authorization decisions only. Secrets and raw session tokens are never shown or stored.</p>
+          {events.length ? <ol className="security-audit">{events.map((item) => <li key={item.id} className={item.outcome}><div><strong>{item.event_type}</strong><span>{item.outcome}</span></div><time>{new Date(item.occurred_at).toLocaleString()}</time>{Object.keys(item.details).length > 0 && <pre>{JSON.stringify(item.details, null, 2)}</pre>}</li>)}</ol> : <p>No workspace security events have been recorded yet.</p>}
+        </section> : <section><h2>Administrator access required</h2><p>Your role can use its permitted workspace capabilities, but only an administrator may view the security audit trail.</p></section>}
+      </>}
+    </main>
   );
 }
 
@@ -157,7 +302,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (health) void refreshRunLibrary();
+    if (health && !isDeveloperRoute && !isAdminRoute) void refreshRunLibrary();
   }, [health]);
 
   async function reopenRun(runId: string) {
@@ -238,6 +383,8 @@ export function App() {
       setBusy(false);
     }
   }
+
+  if (isAdminRoute) return <AdminConsole />;
 
   if (isDeveloperRoute) {
     return <main><DeveloperHub health={health} serviceHealth={serviceHealth} onRefresh={() => void refreshServiceHealth()} /></main>;

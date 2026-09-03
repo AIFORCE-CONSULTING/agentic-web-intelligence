@@ -29,6 +29,20 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 
 Add authentication, authorization, tool registry, secrets, and governance.
 
+## Post-Phase-4 Parking Lot
+
+These items are intentionally captured for the next planning pass. They do not
+expand the active Phase 4 scope or replace the existing Durable Execution
+roadmap phase.
+
+1. **GitHub Projects integration** — connect the platform's planning workflow
+   to GitHub Projects so an operator can build a roadmap, create tasks, and
+   update their priority quickly.
+2. **Source-candidate review usability** — make each source candidate URL a
+   clickable external link that opens in a new browser tab, and request/display
+   longer article descriptions so an operator has more context before choosing
+   a source for extraction.
+
 ## Phase 5 - Durable Execution
 
 Add Temporal, long-running workflows, and human-in-the-loop operations.

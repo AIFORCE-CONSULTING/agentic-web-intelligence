@@ -60,6 +60,14 @@ audit database is unavailable, authentication and authorization still enforce
 their rules rather than falling open. The service health endpoint continues to
 expose persistence availability to operators.
 
+## Administrator console
+
+The local web console exposes this read-only first slice at `/admin`. It
+supports first-time bootstrap and local sign-in, displays the active identity
+and workspace role, permits sign-out, and shows the security audit only to an
+administrator. User creation, invitations, role changes, session management,
+and enterprise identity configuration remain later administration increments.
+
 ## Enterprise compatibility
 
 The platform will add a configuration-driven OIDC adapter rather than choosing

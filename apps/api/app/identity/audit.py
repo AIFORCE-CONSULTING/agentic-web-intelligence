@@ -84,12 +84,13 @@ class SecurityAuditStore:
                 workspace_id,
                 limit,
             )
-        return [
-            SecurityAuditEvent(
-                **dict(row),
-                details=json.loads(row["details"])
+        events: list[SecurityAuditEvent] = []
+        for row in rows:
+            event = dict(row)
+            event["details"] = (
+                json.loads(row["details"])
                 if isinstance(row["details"], str)
-                else dict(row["details"]),
+                else dict(row["details"])
             )
-            for row in rows
-        ]
+            events.append(SecurityAuditEvent(**event))
+        return events

@@ -24,9 +24,11 @@ from app.identity.audit import SecurityAuditStore, SecurityAuditStoreUnavailable
 from app.identity.contracts import (
     AuthenticatedUser,
     BootstrapAdminRequest,
+    EnterpriseIdentityStatus,
     SecurityAuditEventList,
     SignInRequest,
 )
+from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
 from app.identity.store import IdentityStore, IdentityStoreUnavailable
 from app.prompt_templates import (
@@ -100,6 +102,7 @@ def create_app() -> FastAPI:
     app.state.identity_service = IdentityService(
         app.state.identity_store, settings.auth_bootstrap_secret
     )
+    app.state.enterprise_identity = EnterpriseIdentityBoundary(settings)
     app.state.mcp_host = GovernedWebMcpHost()
     app.add_middleware(
         CORSMiddleware,
@@ -253,6 +256,17 @@ def create_app() -> FastAPI:
             details={} if user else {"reason": "no_session"},
         )
         return response
+
+    @app.get(
+        "/v1/auth/enterprise/status",
+        response_model=EnterpriseIdentityStatus,
+        tags=["auth"],
+    )
+    async def enterprise_identity_status(http_request: Request) -> EnterpriseIdentityStatus:
+        """Report OIDC configuration readiness without disclosing client credentials."""
+
+        boundary: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
+        return boundary.status()
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def liveness() -> HealthResponse:

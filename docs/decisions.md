@@ -8,3 +8,4 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0004 — Governed web-research MVP](adr/0004-governed-web-research-mvp.md)
 - [ADR 0005 — Governed agent-runtime contract](adr/0005-governed-agent-runtime-contract.md)
 - [ADR 0006 — Local-first, enterprise-ready identity](adr/0006-local-first-enterprise-ready-identity.md)
+- [ADR 0007 — Provider-neutral OIDC configuration boundary](adr/0007-provider-neutral-oidc-configuration-boundary.md)

@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     searxng_base_url: str | None = None
     database_url: str | None = None
     auth_bootstrap_secret: str | None = None
+    oidc_provider_name: str | None = None
+    oidc_issuer_url: str | None = None
+    oidc_client_id: str | None = None
+    oidc_client_secret: str | None = None
+    oidc_redirect_uri: str | None = None
 
 
 @lru_cache

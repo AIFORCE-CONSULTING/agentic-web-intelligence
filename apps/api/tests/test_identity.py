@@ -8,6 +8,7 @@ import httpx
 import pytest
 
 from app.identity.contracts import AuthenticatedUser, SecurityAuditEvent
+from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import AuthenticationError, IdentityService
 from app.main import create_app
 from app.settings import Settings
@@ -55,6 +56,58 @@ def test_sign_in_does_not_distinguish_missing_from_invalid_credentials() -> None
     service = IdentityService(FakeStore(), "a" * 32)
     with pytest.raises(AuthenticationError, match="Invalid email or password"):
         asyncio.run(service.sign_in("missing@example.com", "not-the-password"))
+
+
+def test_enterprise_identity_boundary_requires_complete_safe_configuration() -> None:
+    disabled = EnterpriseIdentityBoundary(Settings()).status()
+    assert disabled.mode == "disabled"
+    assert disabled.issuer_url is None
+
+    incomplete = EnterpriseIdentityBoundary(
+        Settings(oidc_issuer_url="https://login.example.com/tenant")
+    ).status()
+    assert incomplete.mode == "invalid"
+    assert "OIDC_CLIENT_ID" in incomplete.detail
+
+    ready = EnterpriseIdentityBoundary(
+        Settings(
+            oidc_provider_name="Example Identity",
+            oidc_issuer_url="https://login.example.com/tenant/",
+            oidc_client_id="platform-client",
+            oidc_client_secret="not-exposed",
+            oidc_redirect_uri="https://platform.example.com/v1/auth/enterprise/callback",
+        )
+    ).status()
+    assert ready.mode == "ready"
+    assert ready.provider_name == "Example Identity"
+    assert ready.issuer_url == "https://login.example.com/tenant"
+
+
+def test_enterprise_identity_status_endpoint_never_returns_client_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "app.main.get_settings",
+        lambda: Settings(
+            oidc_issuer_url="https://login.example.com/tenant",
+            oidc_client_id="platform-client",
+            oidc_client_secret="not-exposed",
+            oidc_redirect_uri="https://platform.example.com/v1/auth/enterprise/callback",
+        ),
+    )
+    app = create_app()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/v1/auth/enterprise/status")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["mode"] == "ready"
+    assert "client_secret" not in response.text
+    assert "not-exposed" not in response.text
 
 
 def test_durable_routes_require_a_session_and_enforce_workspace_roles(

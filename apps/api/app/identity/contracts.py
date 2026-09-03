@@ -39,6 +39,15 @@ class AuthenticatedUser(BaseModel):
     authenticated_at: datetime
 
 
+class EnterpriseIdentityStatus(BaseModel):
+    """Safe, credential-free visibility into the enterprise identity boundary."""
+
+    mode: Literal["disabled", "invalid", "ready"]
+    provider_name: str | None = None
+    issuer_url: str | None = None
+    detail: str
+
+
 class SecurityAuditEvent(BaseModel):
     """A sanitized, append-only record of a platform security decision."""
 

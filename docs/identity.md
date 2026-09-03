@@ -20,6 +20,7 @@ expire after eight hours and are revoked on sign-out.
 - `POST /v1/auth/sign-in` — local credential sign-in
 - `POST /v1/auth/sign-out` — revoke the current session
 - `GET /v1/auth/me` — current user and default workspace role
+- `GET /v1/auth/enterprise/status` — credential-free enterprise OIDC configuration status
 
 ## Authorization and workspace isolation
 
@@ -66,11 +67,31 @@ The local web console exposes this read-only first slice at `/admin`. It
 supports first-time bootstrap and local sign-in, displays the active identity
 and workspace role, permits sign-out, and shows the security audit only to an
 administrator. User creation, invitations, role changes, session management,
-and enterprise identity configuration remain later administration increments.
+and an enterprise-identity configuration UI remain later administration increments.
 
-## Enterprise compatibility
+## Enterprise identity boundary
 
-The platform will add a configuration-driven OIDC adapter rather than choosing
-a single vendor. This supports self-hosted providers such as Keycloak and
-enterprise providers such as Entra, Okta, and Auth0. Provider groups may later
-map to platform roles, but the platform remains the final authorization point.
+The platform has a provider-neutral, server-only OIDC configuration boundary.
+It supports self-hosted providers such as Keycloak and enterprise providers
+such as Entra, Okta, and Auth0 without making one of them a platform dependency.
+
+An operator enables the boundary by providing all of these server environment
+variables together:
+
+- `OIDC_ISSUER_URL` — the provider's issuer URL; HTTPS is required outside localhost.
+- `OIDC_CLIENT_ID` and `OIDC_CLIENT_SECRET` — confidential-client credentials.
+- `OIDC_REDIRECT_URI` — the future API callback address; HTTPS is required outside localhost.
+- `OIDC_PROVIDER_NAME` — optional operator-facing label.
+
+The API validates the configuration shape and exposes only its safe state at
+`GET /v1/auth/enterprise/status`. It never returns the client secret, and it
+does not contact the configured issuer merely to report status. This means a
+local installation stays fully functional with no enterprise identity provider.
+
+This is deliberately not an SSO login implementation yet: there is no browser
+redirect, authorization-code exchange, token validation, account provisioning,
+or group-to-role mapping. The next adapter increment must validate discovery
+and ID-token issuer/audience/signature/nonce server-side, map the immutable
+issuer-plus-subject identity to a platform user, and then issue the same
+platform-owned session used by local sign-in. Provider groups can inform a
+mapping, but the platform remains the final authorization point.

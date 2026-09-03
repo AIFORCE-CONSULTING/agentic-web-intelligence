@@ -74,8 +74,10 @@ nav:
       - ADR 0003 — Web intelligence via MCP: adr/0003-web-intelligence-mcp.md
       - ADR 0004 — Governed web-research MVP: adr/0004-governed-web-research-mvp.md
       - ADR 0005 — Governed agent-runtime contract: adr/0005-governed-agent-runtime-contract.md
+      - ADR 0006 — Local-first identity: adr/0006-local-first-enterprise-ready-identity.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
+  - Identity: identity.md
   - Governed research prompt: governed-research-prompt.md
   - Contributing:
       - Contribution guide: contributing.md

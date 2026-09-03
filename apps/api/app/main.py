@@ -4,7 +4,7 @@ import asyncio
 from typing import Literal
 
 import httpx
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -15,6 +15,9 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.identity.contracts import AuthenticatedUser, BootstrapAdminRequest, SignInRequest
+from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
+from app.identity.store import IdentityStore, IdentityStoreUnavailable
 from app.prompt_templates import (
     GovernedResearchPromptRequest,
     PromptTemplateInfo,
@@ -81,6 +84,10 @@ def create_app() -> FastAPI:
     app.state.research_store = ResearchStore(settings.database_url)
     app.state.runtime_store = RuntimeStore(settings.database_url)
     app.state.runtime_service = RuntimeService(app.state.runtime_store)
+    app.state.identity_store = IdentityStore(settings.database_url)
+    app.state.identity_service = IdentityService(
+        app.state.identity_store, settings.auth_bootstrap_secret
+    )
     app.state.mcp_host = GovernedWebMcpHost(
         audit_recorder=app.state.research_store.record_mcp_tool_event
     )
@@ -91,6 +98,85 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
+
+    def set_session_cookie(response: Response, token: str) -> None:
+        """Set an opaque, HttpOnly session token that browser JavaScript cannot read."""
+
+        response.set_cookie(
+            key=SESSION_COOKIE_NAME,
+            value=token,
+            max_age=8 * 60 * 60,
+            httponly=True,
+            secure=settings.app_environment != "development",
+            samesite="lax",
+            path="/",
+        )
+
+    @app.post(
+        "/v1/auth/bootstrap",
+        response_model=AuthenticatedUser,
+        status_code=201,
+        tags=["auth"],
+    )
+    async def bootstrap_local_administrator(
+        request: BootstrapAdminRequest, response: Response, http_request: Request
+    ) -> AuthenticatedUser:
+        """Create the only initial local administrator when deployment secret proof succeeds."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            user, token = await service.bootstrap_admin(
+                request.bootstrap_secret, str(request.email), request.password
+            )
+        except AuthenticationError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        set_session_cookie(response, token)
+        return user
+
+    @app.post("/v1/auth/sign-in", response_model=AuthenticatedUser, tags=["auth"])
+    async def sign_in_local_user(
+        request: SignInRequest, response: Response, http_request: Request
+    ) -> AuthenticatedUser:
+        """Authenticate a local user without disclosing whether an account exists."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            user, token = await service.sign_in(str(request.email), request.password)
+        except AuthenticationError as error:
+            raise HTTPException(status_code=401, detail=str(error)) from error
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        set_session_cookie(response, token)
+        return user
+
+    @app.get("/v1/auth/me", response_model=AuthenticatedUser, tags=["auth"])
+    async def current_authenticated_user(http_request: Request) -> AuthenticatedUser:
+        """Return the server-validated identity associated with the opaque browser session."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            user = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication is required.")
+        return user
+
+    @app.post("/v1/auth/sign-out", status_code=204, tags=["auth"])
+    async def sign_out_local_user(response: Response, http_request: Request) -> Response:
+        """Revoke the server session and remove its browser cookie."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            await service.sign_out(http_request.cookies.get(SESSION_COOKIE_NAME))
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        return response
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def liveness() -> HealthResponse:

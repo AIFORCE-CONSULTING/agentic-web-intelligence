@@ -7,6 +7,7 @@ import httpx
 import pytest
 
 from app.main import create_app
+from app.identity.contracts import AuthenticatedUser
 from app.settings import Settings
 from app.web_research.contracts import (
     Evidence,
@@ -27,6 +28,26 @@ from app.web_research.search import SearxngSearchProvider
 
 async def permit_public_destination(_: str) -> None:
     """Avoid external DNS in unit tests whose focus is extraction behavior."""
+
+
+def authenticated_app(app, role: str = "operator"):
+    """Provide a trusted session identity for durable-resource route tests."""
+
+    user = AuthenticatedUser(
+        id=uuid4(),
+        email="operator@example.com",
+        workspace_id=uuid4(),
+        workspace_name="Test workspace",
+        role=role,
+        authenticated_at=datetime.now(UTC),
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, _: object) -> AuthenticatedUser:
+            return user
+
+    app.state.identity_service = FakeIdentityService()
+    return app, user
 
 
 def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -65,8 +86,10 @@ def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.Monke
 
 
 def test_mcp_host_advertises_only_governed_read_only_tools() -> None:
+    app, _ = authenticated_app(create_app())
+
     async def request() -> tuple[httpx.Response, httpx.Response]:
-        transport = httpx.ASGITransport(app=create_app())
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             catalog = await client.get("/v1/mcp/tools")
             listing = await client.post(
@@ -96,8 +119,13 @@ def test_mcp_host_initializes_and_dispatches_only_approved_tools(
         )
 
     monkeypatch.setattr("app.web_research.mcp_host.run_search_workflow", search)
-    app = create_app()
-    app.state.mcp_host = GovernedWebMcpHost()
+    app, _ = authenticated_app(create_app())
+
+    class FakeStore:
+        async def record_mcp_tool_event(self, *_: object) -> None:
+            return None
+
+    app.state.research_store = FakeStore()
 
     async def request() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
         transport = httpx.ASGITransport(app=app)
@@ -144,19 +172,25 @@ def test_mcp_host_initializes_and_dispatches_only_approved_tools(
 
 
 def test_mcp_host_records_direct_tool_execution(monkeypatch: pytest.MonkeyPatch) -> None:
-    records: list[tuple[str | None, str, str, dict[str, object]]] = []
+    records: list[tuple[object, str | None, str, str, dict[str, object]]] = []
 
     async def search(_: str, __: int) -> SearchResponse:
         return SearchResponse(query="evidence", results=[])
 
-    async def record(
-        request_id: str | None, tool_name: str, outcome: str, details: dict[str, object]
-    ) -> None:
-        records.append((request_id, tool_name, outcome, details))
+    class FakeStore:
+        async def record_mcp_tool_event(
+            self,
+            workspace_id: object,
+            request_id: str | None,
+            tool_name: str,
+            outcome: str,
+            details: dict[str, object],
+        ) -> None:
+            records.append((workspace_id, request_id, tool_name, outcome, details))
 
     monkeypatch.setattr("app.web_research.mcp_host.run_search_workflow", search)
-    app = create_app()
-    app.state.mcp_host = GovernedWebMcpHost(audit_recorder=record)
+    app, user = authenticated_app(create_app())
+    app.state.research_store = FakeStore()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -174,7 +208,9 @@ def test_mcp_host_records_direct_tool_execution(monkeypatch: pytest.MonkeyPatch)
     response = asyncio.run(request())
 
     assert response.status_code == 200
-    assert records == [("execution-1", "web.search", "succeeded", {"result_count": 0})]
+    assert records == [
+        (user.workspace_id, "execution-1", "web.search", "succeeded", {"result_count": 0})
+    ]
 
 
 def test_governed_research_prompt_catalog_and_renderer() -> None:
@@ -367,9 +403,10 @@ def test_extract_endpoint_returns_policy_errors_as_unprocessable(
         raise ToolPolicyError("Attachments and file downloads are not permitted.")
 
     monkeypatch.setattr("app.main.run_extract_workflow", reject)
+    app, _ = authenticated_app(create_app())
 
     async def request() -> httpx.Response:
-        transport = httpx.ASGITransport(app=create_app())
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             return await client.post(
                 "/v1/research/extract", json={"url": "https://example.com/data.zip"}
@@ -388,9 +425,10 @@ def test_extract_endpoint_returns_upstream_failures_as_bad_gateway(
         raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
 
     monkeypatch.setattr("app.main.run_extract_workflow", rejected)
+    app, _ = authenticated_app(create_app())
 
     async def request() -> httpx.Response:
-        transport = httpx.ASGITransport(app=create_app())
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             return await client.post("/v1/research/extract", json={"url": "https://example.com"})
 
@@ -407,7 +445,7 @@ def test_run_extraction_records_policy_denial(monkeypatch: pytest.MonkeyPatch) -
         def __init__(self) -> None:
             self.denials: list[tuple[object, str, str]] = []
 
-        async def run_exists(self, _: object) -> bool:
+        async def run_exists(self, *_: object) -> bool:
             return True
 
         async def record_policy_denial(
@@ -419,7 +457,7 @@ def test_run_extraction_records_policy_denial(monkeypatch: pytest.MonkeyPatch) -
         raise ToolPolicyError("Non-public network addresses are not permitted.")
 
     monkeypatch.setattr("app.main.run_extract_workflow", reject)
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     store = FakeStore()
     app.state.research_store = store
 
@@ -447,7 +485,7 @@ def test_run_extraction_records_source_retrieval_failure(
         def __init__(self) -> None:
             self.failures: list[tuple[object, str, str, int | None]] = []
 
-        async def run_exists(self, _: object) -> bool:
+        async def run_exists(self, *_: object) -> bool:
             return True
 
         async def record_extraction_failure(
@@ -459,7 +497,7 @@ def test_run_extraction_records_source_retrieval_failure(
         raise ToolRetrievalError("The selected source rejected automated access (HTTP 403).", 403)
 
     monkeypatch.setattr("app.main.run_extract_workflow", rejected)
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     store = FakeStore()
     app.state.research_store = store
 
@@ -494,7 +532,7 @@ def test_batch_run_extraction_is_sequential_and_records_each_outcome(
         def __init__(self) -> None:
             self.events: list[tuple[object, ...]] = []
 
-        async def get_run(self, _: object) -> ResearchRun:
+        async def get_run(self, *_: object) -> ResearchRun:
             return ResearchRun(
                 id=run_id,
                 question="evidence",
@@ -544,7 +582,7 @@ def test_batch_run_extraction_is_sequential_and_records_each_outcome(
         )
 
     monkeypatch.setattr("app.main.run_extract_workflow", extract)
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     store = FakeStore()
     app.state.research_store = store
 
@@ -572,7 +610,7 @@ def test_batch_run_extraction_rejects_urls_outside_candidates() -> None:
     run_id = uuid4()
 
     class FakeStore:
-        async def get_run(self, _: object) -> ResearchRun:
+        async def get_run(self, *_: object) -> ResearchRun:
             return ResearchRun(
                 id=run_id,
                 question="evidence",
@@ -584,7 +622,7 @@ def test_batch_run_extraction_rejects_urls_outside_candidates() -> None:
                 ],
             )
 
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
 
     async def request() -> httpx.Response:
@@ -644,9 +682,10 @@ def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.Mon
         raise ToolProviderError("The search provider is unavailable.")
 
     monkeypatch.setattr("app.main.run_search_workflow", unavailable)
+    app, _ = authenticated_app(create_app())
 
     async def request() -> httpx.Response:
-        transport = httpx.ASGITransport(app=create_app())
+        transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
             return await client.post("/v1/research/search", json={"query": "evidence"})
 
@@ -663,7 +702,7 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
         def __init__(self) -> None:
             self.sources: list[SearchResult] = []
 
-        async def create_run(self, question: str) -> ResearchRun:
+        async def create_run(self, _: object, question: str) -> ResearchRun:
             return ResearchRun(
                 id=run_id,
                 question=question,
@@ -675,7 +714,7 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
         async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
             self.sources = sources
 
-        async def get_run(self, _: object) -> ResearchRun:
+        async def get_run(self, *_: object) -> ResearchRun:
             return ResearchRun(
                 id=run_id,
                 question="evidence",
@@ -692,7 +731,7 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
         )
 
     monkeypatch.setattr("app.main.run_search_workflow", search)
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
 
     async def request() -> httpx.Response:
@@ -711,7 +750,7 @@ def test_run_library_lists_bounded_summaries() -> None:
     run_id = uuid4()
 
     class FakeStore:
-        async def list_runs(self, limit: int) -> list[ResearchRunSummary]:
+        async def list_runs(self, _: object, limit: int) -> list[ResearchRunSummary]:
             assert limit == 25
             return [
                 ResearchRunSummary(
@@ -725,7 +764,7 @@ def test_run_library_lists_bounded_summaries() -> None:
                 )
             ]
 
-    app = create_app()
+    app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
 
     async def request() -> httpx.Response:

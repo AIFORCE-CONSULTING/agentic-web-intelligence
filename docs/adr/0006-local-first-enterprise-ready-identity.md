@@ -30,7 +30,6 @@ flow.
 ## Consequences
 
 The initial slice provides bootstrap, sign-in, sign-out, and current-user
-endpoints only. It does not make existing Phase 2 or 3 endpoints private yet;
-authorization is the next Phase 4 increment. Password recovery, invitations,
-service identities, multi-workspace administration, and OIDC configuration UI
-remain separate scoped work.
+endpoints, then scopes durable Phase 2 and Phase 3 resources to an authenticated
+workspace. Password recovery, invitations, service identities, multi-workspace
+administration, and OIDC configuration UI remain separate scoped work.

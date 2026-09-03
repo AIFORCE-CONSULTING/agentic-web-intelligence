@@ -15,6 +15,11 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.identity.authorization import (
+    AuthorizationError,
+    WorkspacePermission,
+    require_permission,
+)
 from app.identity.contracts import AuthenticatedUser, BootstrapAdminRequest, SignInRequest
 from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
 from app.identity.store import IdentityStore, IdentityStoreUnavailable
@@ -88,9 +93,7 @@ def create_app() -> FastAPI:
     app.state.identity_service = IdentityService(
         app.state.identity_store, settings.auth_bootstrap_secret
     )
-    app.state.mcp_host = GovernedWebMcpHost(
-        audit_recorder=app.state.research_store.record_mcp_tool_event
-    )
+    app.state.mcp_host = GovernedWebMcpHost()
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -111,6 +114,24 @@ def create_app() -> FastAPI:
             samesite="lax",
             path="/",
         )
+
+    async def require_workspace_permission(
+        http_request: Request, permission: WorkspacePermission
+    ) -> AuthenticatedUser:
+        """Authenticate the browser session and apply the fixed server-owned role policy."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            user = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if user is None:
+            raise HTTPException(status_code=401, detail="Authentication is required.")
+        try:
+            require_permission(user, permission)
+        except AuthorizationError as error:
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        return user
 
     @app.post(
         "/v1/auth/bootstrap",
@@ -272,9 +293,10 @@ def create_app() -> FastAPI:
             parsed_run_id = UUID(run_id)
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_workspace_permission(http_request, "runtime.read")
         store: RuntimeStore = http_request.app.state.runtime_store
         try:
-            run = await store.get_run(parsed_run_id)
+            run = await store.get_run(parsed_run_id, user.workspace_id)
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if run is None:
@@ -287,9 +309,10 @@ def create_app() -> FastAPI:
     ) -> RuntimeRunList:
         """List bounded runtime state for operator inspection."""
 
+        user = await require_workspace_permission(http_request, "runtime.read")
         store: RuntimeStore = http_request.app.state.runtime_store
         try:
-            return RuntimeRunList(runs=await store.list_runs(limit))
+            return RuntimeRunList(runs=await store.list_runs(limit, user.workspace_id))
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -299,9 +322,12 @@ def create_app() -> FastAPI:
     ) -> McpToolAuditList:
         """List bounded, durable outcomes from direct MCP tool calls."""
 
+        user = await require_workspace_permission(http_request, "mcp.audit.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            return McpToolAuditList(events=await store.list_mcp_tool_events(limit))
+            return McpToolAuditList(
+                events=await store.list_mcp_tool_events(user.workspace_id, limit)
+            )
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -309,7 +335,13 @@ def create_app() -> FastAPI:
     async def serve_mcp(payload: dict[str, object], http_request: Request) -> dict[str, object]:
         """Serve the Phase 2 MCP JSON-RPC tool protocol over HTTP."""
 
-        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        user = await require_workspace_permission(http_request, "mcp.use")
+        store: ResearchStore = http_request.app.state.research_store
+        host = GovernedWebMcpHost(
+            audit_recorder=lambda request_id, tool_name, outcome, details: store.record_mcp_tool_event(
+                user.workspace_id, request_id, tool_name, outcome, details
+            )
+        )
         return await host.handle(payload)
 
     @app.get("/v1/prompts", response_model=PromptTemplateList, tags=["prompts"])
@@ -335,9 +367,10 @@ def create_app() -> FastAPI:
         return render_governed_research_prompt(request)
 
     @app.post("/v1/research/extract", response_model=Evidence, tags=["research"])
-    async def extract_public_page(request: ExtractRequest) -> Evidence:
+    async def extract_public_page(request: ExtractRequest, http_request: Request) -> Evidence:
         """Return bounded evidence from one approved public HTML page."""
 
+        await require_workspace_permission(http_request, "research.write")
         try:
             return await run_extract_workflow(request.url)
         except ToolPolicyError as error:
@@ -346,9 +379,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/v1/research/search", response_model=SearchResponse, tags=["research"])
-    async def search_public_web(request: SearchRequest) -> SearchResponse:
+    async def search_public_web(request: SearchRequest, http_request: Request) -> SearchResponse:
         """Return bounded candidate sources from the internal search provider."""
 
+        await require_workspace_permission(http_request, "research.write")
         try:
             return await run_search_workflow(request.query, request.max_results)
         except ToolProviderError as error:
@@ -360,9 +394,10 @@ def create_app() -> FastAPI:
     ) -> ResearchRun:
         """Persist a discovery run and its source provenance as one durable record."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            run = await store.create_run(request.question)
+            run = await store.create_run(user.workspace_id, request.question)
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:
@@ -373,7 +408,7 @@ def create_app() -> FastAPI:
                 for index, result in enumerate(search.results, start=1)
             ]
             await store.save_sources(run.id, sources)
-            persisted_run = await store.get_run(run.id)
+            persisted_run = await store.get_run(user.workspace_id, run.id)
             assert persisted_run is not None
             return persisted_run
         except ResearchStoreUnavailable as error:
@@ -383,11 +418,12 @@ def create_app() -> FastAPI:
     async def get_research_run(run_id: str, http_request: Request) -> ResearchRun:
         """Retrieve sources, evidence, and audit events from a prior research run."""
 
+        user = await require_workspace_permission(http_request, "research.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
 
-            run = await store.get_run(UUID(run_id))
+            run = await store.get_run(user.workspace_id, UUID(run_id))
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         except ResearchStoreUnavailable as error:
@@ -402,9 +438,10 @@ def create_app() -> FastAPI:
     ) -> ResearchRunList:
         """List recent durable runs without returning the potentially large evidence bodies."""
 
+        user = await require_workspace_permission(http_request, "research.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            return ResearchRunList(runs=await store.list_runs(limit))
+            return ResearchRunList(runs=await store.list_runs(user.workspace_id, limit))
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -414,6 +451,7 @@ def create_app() -> FastAPI:
     ) -> Evidence:
         """Extract approved evidence and attach it to an existing durable run."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
@@ -422,7 +460,7 @@ def create_app() -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         try:
-            if not await store.run_exists(parsed_run_id):
+            if not await store.run_exists(user.workspace_id, parsed_run_id):
                 raise HTTPException(status_code=404, detail="Research run was not found.")
             try:
                 evidence = await run_extract_workflow(request.url)
@@ -449,6 +487,7 @@ def create_app() -> FastAPI:
     ) -> BatchExtractResponse:
         """Sequentially extract selected candidates and preserve every outcome."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
@@ -457,7 +496,7 @@ def create_app() -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         try:
-            run = await store.get_run(parsed_run_id)
+            run = await store.get_run(user.workspace_id, parsed_run_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="Research run was not found.")
             if len(set(request.urls)) != len(request.urls):

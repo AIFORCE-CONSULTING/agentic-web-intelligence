@@ -32,12 +32,15 @@ CREATE TABLE IF NOT EXISTS workspace_memberships (
 CREATE TABLE IF NOT EXISTS user_sessions (
     id UUID PRIMARY KEY,
     user_id UUID NOT NULL REFERENCES platform_users(id) ON DELETE CASCADE,
+    workspace_id UUID REFERENCES workspaces(id) ON DELETE CASCADE,
     token_hash TEXT NOT NULL UNIQUE,
     expires_at TIMESTAMPTZ NOT NULL,
     revoked_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS user_sessions_token_hash_idx ON user_sessions(token_hash);
+ALTER TABLE user_sessions ADD COLUMN IF NOT EXISTS workspace_id UUID;
+CREATE INDEX IF NOT EXISTS user_sessions_workspace_id_idx ON user_sessions(workspace_id);
 """
 
 SESSION_LIFETIME = timedelta(hours=8)
@@ -116,14 +119,26 @@ class IdentityStore:
             )
         return (row["id"], row["password_hash"]) if row is not None else None
 
-    async def create_session(self, user_id: UUID, token: str) -> None:
+    async def get_local_user_workspace(self, user_id: UUID) -> UUID | None:
+        """Select the sole local workspace membership for this initial Phase 4 slice."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return await connection.fetchval(
+                "SELECT workspace_id FROM workspace_memberships "
+                "WHERE user_id = $1 ORDER BY created_at LIMIT 1",
+                user_id,
+            )
+
+    async def create_session(self, user_id: UUID, workspace_id: UUID, token: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
-                """INSERT INTO user_sessions (id, user_id, token_hash, expires_at)
-                VALUES ($1, $2, $3, $4)""",
+                """INSERT INTO user_sessions (id, user_id, workspace_id, token_hash, expires_at)
+                VALUES ($1, $2, $3, $4, $5)""",
                 uuid4(),
                 user_id,
+                workspace_id,
                 _token_hash(token),
                 datetime.now(UTC) + SESSION_LIFETIME,
             )
@@ -137,11 +152,13 @@ class IdentityStore:
                 memberships.role, sessions.created_at
                 FROM user_sessions AS sessions
                 JOIN platform_users AS users ON users.id = sessions.user_id
-                JOIN workspace_memberships AS memberships ON memberships.user_id = users.id
+                JOIN workspace_memberships AS memberships
+                    ON memberships.user_id = users.id
+                    AND memberships.workspace_id = sessions.workspace_id
                 JOIN workspaces ON workspaces.id = memberships.workspace_id
                 WHERE sessions.token_hash = $1 AND sessions.revoked_at IS NULL
                 AND sessions.expires_at > now()
-                AND users.is_active = TRUE ORDER BY memberships.created_at LIMIT 1""",
+                AND users.is_active = TRUE""",
                 _token_hash(token),
             )
         if row is None:

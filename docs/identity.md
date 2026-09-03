@@ -21,9 +21,29 @@ expire after eight hours and are revoked on sign-out.
 - `POST /v1/auth/sign-out` — revoke the current session
 - `GET /v1/auth/me` — current user and default workspace role
 
-This is an authentication foundation, not authorization. Existing Phase 2 and
-Phase 3 endpoints retain their current access behavior until the next Phase 4
-authorization increment deliberately scopes them to an authenticated workspace.
+## Authorization and workspace isolation
+
+The platform owns a fixed role policy rather than accepting permissions from a
+browser or agent instruction:
+
+- **Administrator** — all current workspace capabilities, including MCP audit history.
+- **Operator** — create, retrieve, and extend governed research; use approved MCP tools;
+  inspect runtime runs.
+- **Viewer** — retrieve workspace research and inspect runtime runs only.
+
+Durable research runs, runtime runs, and MCP audit records are written with the
+authenticated session's workspace ID. Reads filter by that same ID, so a valid
+session from another workspace receives the same not-found result as an unknown
+record. Browser sessions also store their selected workspace server-side; a
+membership change cannot be supplied by a caller or agent as request text.
+
+Pre-existing durable records without a workspace ID are deliberately excluded
+from authenticated reads rather than guessed into a workspace. A future
+administrator migration tool can assign them explicitly when that is safe.
+
+Health checks, API documentation, and the prompt/tool catalogs remain public.
+The actions that consume tools or access durable platform records require an
+authenticated session and the appropriate workspace role.
 
 ## Enterprise compatibility
 

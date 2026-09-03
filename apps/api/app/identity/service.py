@@ -32,13 +32,16 @@ class IdentityService:
         ):
             raise AuthenticationError("Local administrator bootstrap is not authorized.")
         user = await self._store.create_bootstrap_admin(email, _password_hash.hash(password))
-        return user, await self._new_session(user.id)
+        return user, await self._new_session(user.id, user.workspace_id)
 
     async def sign_in(self, email: str, password: str) -> tuple[AuthenticatedUser, str]:
         credential = await self._store.authenticate_local(email)
         if credential is None or not _password_hash.verify(password, credential[1]):
             raise AuthenticationError("Invalid email or password.")
-        token = await self._new_session(credential[0])
+        membership = await self._store.get_local_user_workspace(credential[0])
+        if membership is None:
+            raise AuthenticationError("Invalid email or password.")
+        token = await self._new_session(credential[0], membership)
         user = await self._store.get_session_user(token)
         assert user is not None
         return user, token
@@ -50,7 +53,7 @@ class IdentityService:
         if token:
             await self._store.revoke_session(token)
 
-    async def _new_session(self, user_id: UUID) -> str:
+    async def _new_session(self, user_id: UUID, workspace_id: UUID) -> str:
         token = secrets.token_urlsafe(32)
-        await self._store.create_session(user_id, token)
+        await self._store.create_session(user_id, workspace_id, token)
         return token

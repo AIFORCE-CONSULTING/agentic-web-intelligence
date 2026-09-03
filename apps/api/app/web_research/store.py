@@ -18,6 +18,7 @@ from app.web_research.contracts import (
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS research_runs (
     id UUID PRIMARY KEY,
+    workspace_id UUID,
     question TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN ('searching', 'ready', 'failed')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS research_audit_events (
 );
 CREATE TABLE IF NOT EXISTS mcp_tool_audit_events (
     id UUID PRIMARY KEY,
+    workspace_id UUID,
     request_id TEXT,
     tool_name TEXT NOT NULL,
     outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed', 'denied')),
@@ -64,6 +66,12 @@ CREATE INDEX IF NOT EXISTS research_audit_events_run_id_idx
     ON research_audit_events(run_id, occurred_at);
 CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_occurred_at_idx
     ON mcp_tool_audit_events(occurred_at DESC);
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS workspace_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS workspace_id UUID;
+CREATE INDEX IF NOT EXISTS research_runs_workspace_updated_at_idx
+    ON research_runs(workspace_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_workspace_occurred_at_idx
+    ON mcp_tool_audit_events(workspace_id, occurred_at DESC);
 """
 
 
@@ -94,15 +102,16 @@ class ResearchStore:
                 raise ResearchStoreUnavailable("Research persistence is unavailable.") from error
         return self._pool
 
-    async def create_run(self, question: str) -> ResearchRun:
+    async def create_run(self, workspace_id: UUID, question: str) -> ResearchRun:
         run_id = uuid4()
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             row = await connection.fetchrow(
-                """INSERT INTO research_runs (id, question, status)
-                   VALUES ($1, $2, 'searching')
+                """INSERT INTO research_runs (id, workspace_id, question, status)
+                   VALUES ($1, $2, $3, 'searching')
                    RETURNING id, question, status, created_at, updated_at""",
                 run_id,
+                workspace_id,
                 question,
             )
             await self._append_audit(
@@ -118,30 +127,41 @@ class ResearchStore:
             await connection.fetchval("SELECT 1")
 
     async def record_mcp_tool_event(
-        self, request_id: str | None, tool_name: str, outcome: str, details: dict[str, object]
+        self,
+        workspace_id: UUID,
+        request_id: str | None,
+        tool_name: str,
+        outcome: str,
+        details: dict[str, object],
     ) -> None:
         """Append one direct MCP execution outcome without creating a research run."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
-                """INSERT INTO mcp_tool_audit_events (id, request_id, tool_name, outcome, details)
-                   VALUES ($1, $2, $3, $4, $5::jsonb)""",
+                """INSERT INTO mcp_tool_audit_events
+                   (id, workspace_id, request_id, tool_name, outcome, details)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
                 uuid4(),
+                workspace_id,
                 request_id,
                 tool_name,
                 outcome,
                 json.dumps(details),
             )
 
-    async def list_mcp_tool_events(self, limit: int) -> list[McpToolAuditEvent]:
+    async def list_mcp_tool_events(
+        self, workspace_id: UUID, limit: int
+    ) -> list[McpToolAuditEvent]:
         """Return recent direct MCP outcomes without retaining retrieved page content."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
                 """SELECT id, request_id, tool_name, outcome, occurred_at, details
-                   FROM mcp_tool_audit_events ORDER BY occurred_at DESC LIMIT $1""",
+                   FROM mcp_tool_audit_events WHERE workspace_id = $1
+                   ORDER BY occurred_at DESC LIMIT $2""",
+                workspace_id,
                 limit,
             )
         events: list[McpToolAuditEvent] = []
@@ -202,13 +222,17 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
-    async def run_exists(self, run_id: UUID) -> bool:
+    async def run_exists(self, workspace_id: UUID, run_id: UUID) -> bool:
         """Confirm a run exists before invoking an external retrieval action for it."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             return bool(
-                await connection.fetchval("SELECT 1 FROM research_runs WHERE id = $1", run_id)
+                await connection.fetchval(
+                    "SELECT 1 FROM research_runs WHERE id = $1 AND workspace_id = $2",
+                    run_id,
+                    workspace_id,
+                )
             )
 
     async def record_policy_denial(
@@ -297,10 +321,14 @@ class ResearchStore:
                 run_id,
             )
 
-    async def get_run(self, run_id: UUID) -> ResearchRun | None:
+    async def get_run(self, workspace_id: UUID, run_id: UUID) -> ResearchRun | None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
-            run = await connection.fetchrow("SELECT * FROM research_runs WHERE id = $1", run_id)
+            run = await connection.fetchrow(
+                "SELECT * FROM research_runs WHERE id = $1 AND workspace_id = $2",
+                run_id,
+                workspace_id,
+            )
             if run is None:
                 return None
             sources = await connection.fetch(
@@ -330,7 +358,7 @@ class ResearchStore:
             ],
         )
 
-    async def list_runs(self, limit: int) -> list[ResearchRunSummary]:
+    async def list_runs(self, workspace_id: UUID, limit: int) -> list[ResearchRunSummary]:
         """Return a bounded run library without loading evidence text into the list view."""
 
         pool = await self._connection_pool()
@@ -342,9 +370,11 @@ class ResearchStore:
                    FROM research_runs AS runs
                    LEFT JOIN research_sources AS sources ON sources.run_id = runs.id
                    LEFT JOIN research_evidence AS evidence ON evidence.run_id = runs.id
+                   WHERE runs.workspace_id = $1
                    GROUP BY runs.id
                    ORDER BY runs.updated_at DESC
-                   LIMIT $1""",
+                   LIMIT $2""",
+                workspace_id,
                 limit,
             )
         return [ResearchRunSummary(**dict(row)) for row in rows]

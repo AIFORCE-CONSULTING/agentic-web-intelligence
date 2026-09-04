@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from urllib.parse import urlparse
 
 from app.identity.contracts import EnterpriseIdentityStatus
+from app.secrets import DeploymentSecrets, SecretName
 from app.settings import Settings
 
 
@@ -51,8 +52,9 @@ def _require_non_blank(value: str, field_name: str) -> str:
 class EnterpriseIdentityBoundary:
     """Expose configuration readiness without exposing credentials or contacting a provider."""
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(self, settings: Settings, secrets: DeploymentSecrets | None = None) -> None:
         self._settings = settings
+        self._secrets = secrets or DeploymentSecrets(settings)
 
     def configuration(self) -> EnterpriseIdentityConfiguration | None:
         """Return validated OIDC configuration, or None when enterprise SSO is disabled."""
@@ -60,7 +62,7 @@ class EnterpriseIdentityBoundary:
         values = {
             "OIDC_ISSUER_URL": self._settings.oidc_issuer_url,
             "OIDC_CLIENT_ID": self._settings.oidc_client_id,
-            "OIDC_CLIENT_SECRET": self._settings.oidc_client_secret,
+            "OIDC_CLIENT_SECRET": self._secrets.get(SecretName.OIDC_CLIENT_SECRET),
             "OIDC_REDIRECT_URI": self._settings.oidc_redirect_uri,
         }
         supplied = {name: value for name, value in values.items() if value}

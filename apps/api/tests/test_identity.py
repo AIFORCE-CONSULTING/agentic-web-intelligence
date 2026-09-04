@@ -7,6 +7,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.identity.audit import AuditDetailPolicyError, validate_audit_details
 from app.identity.contracts import (
     AuthenticatedServiceIdentity,
     AuthenticatedUser,
@@ -16,6 +17,7 @@ from app.identity.contracts import (
 from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import AuthenticationError, IdentityService
 from app.main import create_app
+from app.secrets import DeploymentSecrets, SecretName
 from app.settings import Settings
 
 
@@ -86,6 +88,36 @@ def test_enterprise_identity_boundary_requires_complete_safe_configuration() -> 
     assert ready.mode == "ready"
     assert ready.provider_name == "Example Identity"
     assert ready.issuer_url == "https://login.example.com/tenant"
+
+
+def test_deployment_secrets_are_allowlisted_and_redacted_before_persistence() -> None:
+    secrets = DeploymentSecrets(
+        Settings(
+            auth_bootstrap_secret="bootstrap-secret",
+            oidc_client_secret="oidc-secret",
+            github_connector_token="github-secret",
+        )
+    )
+
+    assert secrets.get(SecretName.AUTH_BOOTSTRAP) == "bootstrap-secret"
+    assert [status.configured for status in secrets.status().secrets] == [True, True, True]
+    assert secrets.status().secrets[0].valid is False
+    assert secrets.redact(
+        {"message": "bootstrap-secret and github-secret", "nested": ["oidc-secret"]}
+    ) == {"message": "[REDACTED] and [REDACTED]", "nested": ["[REDACTED]"]}
+
+
+def test_security_audit_detail_schema_rejects_sensitive_and_unknown_fields() -> None:
+    assert validate_audit_details(
+        "authorization.denied", {"permission": "research.write"}
+    ) == {"permission": "research.write"}
+
+    with pytest.raises(AuditDetailPolicyError, match="sensitive"):
+        validate_audit_details("auth.sign_in", {"password": "never-persist"})
+    with pytest.raises(AuditDetailPolicyError, match="unapproved"):
+        validate_audit_details("auth.sign_in", {"request_headers": {"cookie": "no"}})
+    with pytest.raises(AuditDetailPolicyError, match="not registered"):
+        validate_audit_details("connector.github.failed", {"reason": "no"})
 
 
 def test_enterprise_identity_status_endpoint_never_returns_client_credentials(

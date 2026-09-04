@@ -1,5 +1,6 @@
 """Postgres-backed, append-only records for governed research runs."""
 
+from collections.abc import Callable
 import json
 from uuid import UUID, uuid4
 
@@ -78,9 +79,14 @@ CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_workspace_occurred_at_idx
 class ResearchStore:
     """Lazy Postgres store so API startup does not race optional Compose services."""
 
-    def __init__(self, database_url: str | None) -> None:
+    def __init__(
+        self,
+        database_url: str | None,
+        redact: Callable[[object], object] | None = None,
+    ) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._redact = redact or (lambda value: value)
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -147,7 +153,7 @@ class ResearchStore:
                 request_id,
                 tool_name,
                 outcome,
-                json.dumps(details),
+                json.dumps(self._redact(details)),
             )
 
     async def list_mcp_tool_events(
@@ -379,9 +385,12 @@ class ResearchStore:
             )
         return [ResearchRunSummary(**dict(row)) for row in rows]
 
-    @staticmethod
     async def _append_audit(
-        connection: asyncpg.Connection, run_id: UUID, event_type: str, details: dict[str, object]
+        self,
+        connection: asyncpg.Connection,
+        run_id: UUID,
+        event_type: str,
+        details: dict[str, object],
     ) -> None:
         await connection.execute(
             """INSERT INTO research_audit_events (id, run_id, event_type, details)
@@ -389,7 +398,7 @@ class ResearchStore:
             uuid4(),
             run_id,
             event_type,
-            json.dumps(details),
+            json.dumps(self._redact(details)),
         )
 
     @staticmethod

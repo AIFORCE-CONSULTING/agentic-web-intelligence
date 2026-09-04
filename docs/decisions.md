@@ -10,3 +10,4 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0006 — Local-first, enterprise-ready identity](adr/0006-local-first-enterprise-ready-identity.md)
 - [ADR 0007 — Provider-neutral OIDC configuration boundary](adr/0007-provider-neutral-oidc-configuration-boundary.md)
 - [ADR 0008 — Revocable, least-privilege service identities](adr/0008-service-identities-are-revocable-and-least-privilege.md)
+- [ADR 0009 — Centralized deployment secrets](adr/0009-centralized-deployment-secrets.md)

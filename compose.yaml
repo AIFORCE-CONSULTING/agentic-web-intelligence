@@ -16,6 +16,7 @@ services:
       OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
       OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
       OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+      GITHUB_CONNECTOR_TOKEN: ${GITHUB_CONNECTOR_TOKEN:-}
       DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
     ports:
       - "8000:8000"

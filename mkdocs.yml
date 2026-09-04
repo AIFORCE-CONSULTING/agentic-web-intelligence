@@ -77,6 +77,7 @@ nav:
       - ADR 0006 — Local-first identity: adr/0006-local-first-enterprise-ready-identity.md
       - ADR 0007 — Provider-neutral OIDC boundary: adr/0007-provider-neutral-oidc-configuration-boundary.md
       - ADR 0008 — Service identities: adr/0008-service-identities-are-revocable-and-least-privilege.md
+      - ADR 0009 — Deployment secrets: adr/0009-centralized-deployment-secrets.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Identity: identity.md

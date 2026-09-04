@@ -115,3 +115,23 @@ Creation and revocation are recorded in the workspace security audit. A future
 worker or integration must use a service identity only when it becomes a
 separately deployed caller; the current API process does not need one to call
 its own internal modules.
+
+## Deployment secrets
+
+The API has one allowlisted, environment-backed secret registry. Local
+deployments supply values through the environment or uncommitted .env file;
+future deployments can replace that provider with a managed vault adapter
+without changing callers. The current registry covers the administrator
+bootstrap secret, OIDC confidential-client secret, and the reserved GitHub
+connector token.
+
+Administrators can inspect configured, missing, or invalid secret names at
+GET /v1/secrets/status. Values are never returned. Before security, MCP, and
+runtime audit detail—or runtime memory content—is persisted, configured values
+are recursively replaced with REDACTED, including inside nested request detail.
+Security-audit details are stricter still: each event type has a code-owned
+allowlist of scalar fields. Unknown event types, unapproved fields, nested
+objects, and names containing password, token, secret, authorization, cookie,
+or credential are rejected before a database write. The registry is deliberately
+fixed: untrusted requests, agents, and browser code cannot name an environment
+variable and cause the API to retrieve it.

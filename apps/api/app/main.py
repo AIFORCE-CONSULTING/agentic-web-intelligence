@@ -20,7 +20,12 @@ from app.identity.authorization import (
     WorkspacePermission,
     require_permission,
 )
-from app.identity.audit import SecurityAuditStore, SecurityAuditStoreUnavailable
+from app.identity.audit import (
+    AuditDetailPolicyError,
+    SecurityAuditStore,
+    SecurityAuditStoreUnavailable,
+    validate_audit_details,
+)
 from app.identity.contracts import (
     AuthenticatedServiceIdentity,
     AuthenticatedUser,
@@ -44,6 +49,7 @@ from app.prompt_templates import (
     render_governed_research_prompt,
 )
 from app.settings import get_settings
+from app.secrets import DeploymentSecrets, SecretName, SecretStatusList
 from app.web_research.contracts import (
     BatchExtractionOutcome,
     BatchExtractRequest,
@@ -98,15 +104,25 @@ def create_app() -> FastAPI:
         version="0.1.0",
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
     )
-    app.state.research_store = ResearchStore(settings.database_url)
-    app.state.runtime_store = RuntimeStore(settings.database_url)
+    app.state.deployment_secrets = DeploymentSecrets(settings)
+    app.state.research_store = ResearchStore(
+        settings.database_url, app.state.deployment_secrets.redact
+    )
+    app.state.runtime_store = RuntimeStore(
+        settings.database_url, app.state.deployment_secrets.redact
+    )
     app.state.runtime_service = RuntimeService(app.state.runtime_store)
     app.state.identity_store = IdentityStore(settings.database_url)
-    app.state.security_audit_store = SecurityAuditStore(settings.database_url)
-    app.state.identity_service = IdentityService(
-        app.state.identity_store, settings.auth_bootstrap_secret
+    app.state.security_audit_store = SecurityAuditStore(
+        settings.database_url, app.state.deployment_secrets.redact
     )
-    app.state.enterprise_identity = EnterpriseIdentityBoundary(settings)
+    app.state.identity_service = IdentityService(
+        app.state.identity_store,
+        app.state.deployment_secrets.get(SecretName.AUTH_BOOTSTRAP),
+    )
+    app.state.enterprise_identity = EnterpriseIdentityBoundary(
+        settings, app.state.deployment_secrets
+    )
     app.state.mcp_host = GovernedWebMcpHost()
     app.add_middleware(
         CORSMiddleware,
@@ -175,10 +191,11 @@ def create_app() -> FastAPI:
 
         store: SecurityAuditStore = http_request.app.state.security_audit_store
         try:
+            safe_details = validate_audit_details(event_type, details)
             audit_fields: dict[str, object] = {
                 "actor_user_id": actor.id if isinstance(actor, AuthenticatedUser) else None,
                 "workspace_id": actor.workspace_id if actor else None,
-                "details": details,
+                "details": safe_details,
             }
             if isinstance(actor, AuthenticatedServiceIdentity):
                 audit_fields["actor_service_identity_id"] = actor.id
@@ -187,7 +204,7 @@ def create_app() -> FastAPI:
                 outcome,
                 **audit_fields,
             )
-        except SecurityAuditStoreUnavailable:
+        except (AuditDetailPolicyError, SecurityAuditStoreUnavailable):
             # Authentication and authorization still enforce safely if the audit backend is down.
             return
 
@@ -283,6 +300,16 @@ def create_app() -> FastAPI:
 
         boundary: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
         return boundary.status()
+
+    @app.get("/v1/secrets/status", response_model=SecretStatusList, tags=["secrets"])
+    async def secret_status(http_request: Request) -> SecretStatusList:
+        """Show administrators configured secret names, never their values."""
+
+        administrator = await require_workspace_permission(http_request, "security.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
+        return deployment_secrets.status()
 
     @app.post(
         "/v1/service-identities",

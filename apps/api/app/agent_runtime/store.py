@@ -1,5 +1,6 @@
 """Postgres persistence and server-side guards for the Phase 3 runtime core."""
 
+from collections.abc import Callable
 import json
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
@@ -111,9 +112,14 @@ class RuntimeHandoffError(ValueError):
 class RuntimeStore:
     """Lazy durable store; agents have no mutation path to role or capability fields."""
 
-    def __init__(self, database_url: str | None) -> None:
+    def __init__(
+        self,
+        database_url: str | None,
+        redact: Callable[[object], object] | None = None,
+    ) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._redact = redact or (lambda value: value)
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -485,7 +491,7 @@ class RuntimeStore:
                 memory_id,
                 run_id,
                 memory_type,
-                json.dumps(content),
+                json.dumps(self._redact(content)),
                 source_step_id,
                 expires_at,
             )
@@ -556,9 +562,12 @@ class RuntimeStore:
             )
         return [RuntimeRunSummary(**dict(row)) for row in rows]
 
-    @staticmethod
     async def _append_event(
-        connection: asyncpg.Connection, run_id: UUID, event_type: str, details: dict[str, object]
+        self,
+        connection: asyncpg.Connection,
+        run_id: UUID,
+        event_type: str,
+        details: dict[str, object],
     ) -> None:
         await connection.execute(
             "INSERT INTO agent_runtime_events (id, run_id, event_type, details) "
@@ -566,7 +575,7 @@ class RuntimeStore:
             uuid4(),
             run_id,
             event_type,
-            json.dumps(details),
+            json.dumps(self._redact(details)),
         )
 
     @staticmethod

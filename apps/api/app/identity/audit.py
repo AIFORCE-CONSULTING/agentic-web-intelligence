@@ -1,11 +1,24 @@
-"""Append-only, sanitized audit records for authentication and authorization events."""
+"""Append-only, schema-gated audit records for authentication and authorization events."""
 
 import json
+from collections.abc import Callable
 from uuid import UUID, uuid4
 
 import asyncpg
 
 from app.identity.contracts import SecurityAuditEvent
+
+_SENSITIVE_FIELD_MARKERS = frozenset(
+    {"authorization", "cookie", "credential", "password", "secret", "token"}
+)
+_ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
+    "auth.bootstrap": frozenset({"reason"}),
+    "auth.sign_in": frozenset({"reason"}),
+    "auth.sign_out": frozenset({"reason"}),
+    "authorization.denied": frozenset({"permission", "reason"}),
+    "service_identity.created": frozenset({"service_identity_id", "name"}),
+    "service_identity.revoked": frozenset({"service_identity_id"}),
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS security_audit_events (
@@ -28,12 +41,45 @@ class SecurityAuditStoreUnavailable(RuntimeError):
     """Raised when audit persistence cannot be reached."""
 
 
+class AuditDetailPolicyError(ValueError):
+    """Raised when a record attempts to persist details outside its fixed schema."""
+
+
+def validate_audit_details(event_type: str, details: dict[str, object] | None) -> dict[str, object]:
+    """Allow only scalar, non-sensitive fields explicitly owned by an audit event type."""
+
+    if event_type not in _ALLOWED_DETAIL_FIELDS:
+        raise AuditDetailPolicyError(f"Audit event '{event_type}' is not registered.")
+    candidate = details or {}
+    unknown = set(candidate) - _ALLOWED_DETAIL_FIELDS[event_type]
+    if unknown:
+        raise AuditDetailPolicyError(
+            f"Audit event '{event_type}' contains unapproved fields: {', '.join(sorted(unknown))}."
+        )
+    for key, value in candidate.items():
+        normalized_key = key.lower().replace("-", "_")
+        if any(marker in normalized_key for marker in _SENSITIVE_FIELD_MARKERS):
+            raise AuditDetailPolicyError(
+                f"Audit field '{key}' is sensitive and cannot be persisted."
+            )
+        if not isinstance(value, str | int | float | bool | type(None)):
+            raise AuditDetailPolicyError(f"Audit field '{key}' must be a scalar value.")
+        if isinstance(value, str) and len(value) > 256:
+            raise AuditDetailPolicyError(f"Audit field '{key}' exceeds the 256-character limit.")
+    return dict(candidate)
+
+
 class SecurityAuditStore:
     """Separate persistence boundary that never accepts secrets or raw session tokens."""
 
-    def __init__(self, database_url: str | None) -> None:
+    def __init__(
+        self,
+        database_url: str | None,
+        redact: Callable[[object], object] | None = None,
+    ) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._redact = redact or (lambda value: value)
 
     async def _connection_pool(self) -> asyncpg.Pool:
         if not self._database_url:
@@ -61,6 +107,7 @@ class SecurityAuditStore:
         workspace_id: UUID | None = None,
         details: dict[str, object] | None = None,
     ) -> None:
+        safe_details = validate_audit_details(event_type, details)
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
@@ -74,7 +121,7 @@ class SecurityAuditStore:
                 workspace_id,
                 event_type,
                 outcome,
-                json.dumps(details or {}),
+                json.dumps(self._redact(safe_details)),
             )
 
     async def list_workspace_events(

@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     oidc_client_id: str | None = None
     oidc_client_secret: str | None = None
     oidc_redirect_uri: str | None = None
+    github_connector_token: str | None = None
 
 
 @lru_cache

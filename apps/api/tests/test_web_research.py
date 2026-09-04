@@ -108,6 +108,41 @@ def test_mcp_host_advertises_only_governed_read_only_tools() -> None:
     assert all(tool["annotations"]["destructiveHint"] is False for tool in tools)
 
 
+def test_tool_registry_exposes_complete_governance_only_to_administrators() -> None:
+    administrator_app, _ = authenticated_app(create_app(), role="administrator")
+    operator_app, _ = authenticated_app(create_app(), role="operator")
+
+    async def request() -> tuple[httpx.Response, httpx.Response]:
+        administrator_transport = httpx.ASGITransport(administrator_app)
+        operator_transport = httpx.ASGITransport(operator_app)
+        async with (
+            httpx.AsyncClient(
+                transport=administrator_transport, base_url="http://testserver"
+            ) as administrator_client,
+            httpx.AsyncClient(
+                transport=operator_transport, base_url="http://testserver"
+            ) as operator_client,
+        ):
+            return (
+                await administrator_client.get("/v1/tools/registry"),
+                await operator_client.get("/v1/tools/registry"),
+            )
+
+    registry, denied = asyncio.run(request())
+
+    assert registry.status_code == 200
+    assert denied.status_code == 403
+    tools = registry.json()["tools"]
+    assert [tool["name"] for tool in tools] == ["web.search", "web.extract"]
+    assert [tool["output_contract"] for tool in tools] == ["SearchResponse", "Evidence"]
+    assert all(tool["owner"] == "platform.web_research" for tool in tools)
+    assert all(tool["required_permission"] == "mcp.use" for tool in tools)
+    assert all(tool["secret_dependencies"] == [] for tool in tools)
+    assert all(tool["enabled_by_default"] for tool in tools)
+    assert all(tool["audit_required"] for tool in tools)
+    assert all("properties" in tool["input_schema"] for tool in tools)
+
+
 def test_mcp_host_initializes_and_dispatches_only_approved_tools(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

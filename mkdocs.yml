@@ -78,6 +78,7 @@ nav:
       - ADR 0007 — Provider-neutral OIDC boundary: adr/0007-provider-neutral-oidc-configuration-boundary.md
       - ADR 0008 — Service identities: adr/0008-service-identities-are-revocable-and-least-privilege.md
       - ADR 0009 — Deployment secrets: adr/0009-centralized-deployment-secrets.md
+      - ADR 0010 — Tool-registry governance: adr/0010-code-owned-tool-registry-governance.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Identity: identity.md

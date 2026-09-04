@@ -68,7 +68,7 @@ from app.web_research.contracts import (
     ToolProviderError,
     ToolRetrievalError,
 )
-from app.web_research.mcp_host import GovernedWebMcpHost
+from app.web_research.mcp_host import GovernedWebMcpHost, ToolRegistryList
 from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
 
@@ -123,7 +123,9 @@ def create_app() -> FastAPI:
     app.state.enterprise_identity = EnterpriseIdentityBoundary(
         settings, app.state.deployment_secrets
     )
-    app.state.mcp_host = GovernedWebMcpHost()
+    app.state.mcp_host = GovernedWebMcpHost(
+        deployment_secrets=app.state.deployment_secrets
+    )
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -484,6 +486,16 @@ def create_app() -> FastAPI:
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return {"tools": host.list_tools()}
 
+    @app.get("/v1/tools/registry", response_model=ToolRegistryList, tags=["tools"])
+    async def list_governed_tool_registry(http_request: Request) -> ToolRegistryList:
+        """Show an administrator the complete code-owned policy for platform tools."""
+
+        administrator = await require_workspace_permission(http_request, "mcp.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        return host.registry()
+
     @app.get("/v1/runtime/runs/{run_id}", response_model=RuntimeRun, tags=["runtime"])
     async def get_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
         """Inspect a runtime run without exposing mutation of its authority fields."""
@@ -551,14 +563,18 @@ def create_app() -> FastAPI:
     async def serve_mcp(payload: dict[str, object], http_request: Request) -> dict[str, object]:
         """Serve the Phase 2 MCP JSON-RPC tool protocol over HTTP."""
 
-        user = await require_workspace_permission(http_request, "mcp.use")
+        base_host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        user = await require_workspace_permission(
+            http_request, base_host.required_permission(payload)
+        )
         store: ResearchStore = http_request.app.state.research_store
         host = GovernedWebMcpHost(
             audit_recorder=lambda request_id, tool_name, outcome, details: (
                 store.record_mcp_tool_event(
                     user.workspace_id, request_id, tool_name, outcome, details
                 )
-            )
+            ),
+            deployment_secrets=http_request.app.state.deployment_secrets,
         )
         return await host.handle(payload)
 

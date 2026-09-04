@@ -95,10 +95,22 @@ class ServiceHealthResponse(HealthResponse):
     services: list[DependencyHealth]
 
 
+class OperationalSecurityStatus(BaseModel):
+    """Administrator-only posture view with no credentials or identity data."""
+
+    environment: str
+    identity_persistence: DependencyHealth
+    security_audit_persistence: DependencyHealth
+    secrets: SecretStatusList
+    enterprise_identity: EnterpriseIdentityStatus
+    tool_registry: ToolRegistryList
+
+
 def create_app() -> FastAPI:
     """Create the platform API with explicit cross-origin policy."""
 
     settings = get_settings()
+    settings.validate_runtime_configuration()
     app = FastAPI(
         title="Agentic Web Intelligence API",
         version="0.1.0",
@@ -133,6 +145,27 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
+
+    @app.middleware("http")
+    async def add_security_response_headers(request: Request, call_next):
+        """Apply safe browser defaults without changing API payloads."""
+
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), geolocation=(), microphone=()"
+        )
+        if request.url.path.startswith(
+            ("/v1/auth", "/v1/secrets", "/v1/service-identities", "/v1/operations")
+        ):
+            response.headers.setdefault("Cache-Control", "no-store")
+        if settings.app_environment == "production":
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
 
     def set_session_cookie(response: Response, token: str) -> None:
         """Set an opaque, HttpOnly session token that browser JavaScript cannot read."""
@@ -312,6 +345,55 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="A human administrator is required.")
         deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
         return deployment_secrets.status()
+
+    @app.get(
+        "/v1/operations/security-status",
+        response_model=OperationalSecurityStatus,
+        tags=["operations"],
+    )
+    async def operational_security_status(http_request: Request) -> OperationalSecurityStatus:
+        """Report the administrator's safe Phase 4 security posture and dependencies."""
+
+        administrator = await require_workspace_permission(http_request, "security.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+
+        async def persistence_status(
+            name: str, store: object, unavailable_error: type[Exception]
+        ) -> DependencyHealth:
+            try:
+                await store.healthcheck()  # type: ignore[union-attr]
+            except unavailable_error:
+                return DependencyHealth(
+                    name=name,
+                    status="unavailable" if settings.database_url else "unconfigured",
+                    detail="Postgres is not available for this security boundary.",
+                )
+            return DependencyHealth(
+                name=name,
+                status="ready",
+                detail="Postgres is available for this security boundary.",
+            )
+
+        identity_store: IdentityStore = http_request.app.state.identity_store
+        audit_store: SecurityAuditStore = http_request.app.state.security_audit_store
+        deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
+        enterprise_identity: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        identity_status, audit_status = await asyncio.gather(
+            persistence_status("Identity persistence", identity_store, IdentityStoreUnavailable),
+            persistence_status(
+                "Security audit persistence", audit_store, SecurityAuditStoreUnavailable
+            ),
+        )
+        return OperationalSecurityStatus(
+            environment=settings.app_environment,
+            identity_persistence=identity_status,
+            security_audit_persistence=audit_status,
+            secrets=deployment_secrets.status(),
+            enterprise_identity=enterprise_identity.status(),
+            tool_registry=host.registry(),
+        )
 
     @app.post(
         "/v1/service-identities",

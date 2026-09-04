@@ -35,6 +35,22 @@ type SecurityAuditEvent = {
   details: Record<string, unknown>;
 };
 type SecurityAuditEventList = { events: SecurityAuditEvent[] };
+type SecretStatus = {
+  name: string; configured: boolean; valid: boolean; purpose: string; detail: string;
+};
+type ToolRegistryEntry = {
+  name: string; owner: string; purpose: string; required_permission: string;
+  secret_dependencies: string[]; enabled_by_default: boolean; audit_required: boolean;
+  output_contract: string;
+};
+type OperationalSecurityStatus = {
+  environment: string;
+  identity_persistence: DependencyHealth;
+  security_audit_persistence: DependencyHealth;
+  secrets: { secrets: SecretStatus[] };
+  enterprise_identity: { mode: "disabled" | "invalid" | "ready"; provider_name?: string | null; detail: string };
+  tool_registry: { tools: ToolRegistryEntry[] };
+};
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -126,6 +142,7 @@ function DeveloperHub({
 function AdminConsole() {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
+  const [posture, setPosture] = useState<OperationalSecurityStatus | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [bootstrapSecret, setBootstrapSecret] = useState("");
@@ -138,16 +155,22 @@ function AdminConsole() {
     setUser(currentUser);
     if (currentUser.role !== "administrator") {
       setEvents([]);
+      setPosture(null);
       return;
     }
-    const audit = await apiRequest<SecurityAuditEventList>("/v1/audit/security");
+    const [audit, securityPosture] = await Promise.all([
+      apiRequest<SecurityAuditEventList>("/v1/audit/security"),
+      apiRequest<OperationalSecurityStatus>("/v1/operations/security-status"),
+    ]);
     setEvents(audit.events);
+    setPosture(securityPosture);
   }
 
   useEffect(() => {
     void loadAdminData().catch((reason) => {
       setUser(null);
       setEvents([]);
+      setPosture(null);
       if (reason instanceof Error && reason.message !== "Authentication is required.") {
         setError(reason.message);
       }
@@ -205,6 +228,7 @@ function AdminConsole() {
       if (!response.ok) throw new Error("Unable to sign out.");
       setUser(null);
       setEvents([]);
+      setPosture(null);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to sign out.");
     } finally {
@@ -245,6 +269,18 @@ function AdminConsole() {
           <div className="section-heading"><div><p className="eyebrow">Authenticated session</p><h2 id="identity-heading">Current identity</h2></div><button type="button" className="secondary" onClick={() => void signOut()} disabled={busy}>Sign out</button></div>
           <dl className="identity-grid"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Role</dt><dd><span className={`role ${user.role}`}>{user.role}</span></dd></div><div><dt>Workspace</dt><dd>{user.workspace_name}</dd></div><div><dt>Session established</dt><dd>{new Date(user.authenticated_at).toLocaleString()}</dd></div></dl>
         </section>
+        {user.role === "administrator" && posture && <section aria-labelledby="security-posture-heading">
+          <div className="section-heading"><div><p className="eyebrow">Deployment controls</p><h2 id="security-posture-heading">Security posture</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          <p className="hint">Safe configuration and dependency status for this deployment. Secret values are never displayed.</p>
+          <div className="posture-grid">
+            {[posture.identity_persistence, posture.security_audit_persistence].map((item) => <article className={"service-card " + item.status} key={item.name}><div><strong>{item.name}</strong><span>{item.status}</span></div><p>{item.detail}</p></article>)}
+            <article className={"service-card " + (posture.enterprise_identity.mode === "invalid" ? "unavailable" : posture.enterprise_identity.mode === "ready" ? "ready" : "unconfigured")}><div><strong>Enterprise identity</strong><span>{posture.enterprise_identity.mode}</span></div><p>{posture.enterprise_identity.detail}</p></article>
+          </div>
+          <div className="posture-details">
+            <article><h3>Deployment secrets</h3><ul>{posture.secrets.secrets.map((secret) => <li key={secret.name}><strong>{secret.name}</strong><span className={secret.configured && secret.valid ? "ready-text" : "warning-text"}>{secret.detail}</span><small>{secret.purpose}</small></li>)}</ul></article>
+            <article><h3>Governed tools</h3><ul>{posture.tool_registry.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong><span>{tool.required_permission} · {tool.audit_required ? "audited" : "not audited"}</span><small>{tool.purpose}</small></li>)}</ul></article>
+          </div>
+        </section>}
         {user.role === "administrator" ? <section aria-labelledby="security-audit-heading">
           <div className="section-heading"><div><p className="eyebrow">Append-only record</p><h2 id="security-audit-heading">Security audit</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
           <p className="hint">Authentication and authorization decisions only. Secrets and raw session tokens are never shown or stored.</p>

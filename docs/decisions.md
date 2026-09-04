@@ -12,3 +12,4 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0008 — Revocable, least-privilege service identities](adr/0008-service-identities-are-revocable-and-least-privilege.md)
 - [ADR 0009 — Centralized deployment secrets](adr/0009-centralized-deployment-secrets.md)
 - [ADR 0010 — Code-owned tool-registry governance](adr/0010-code-owned-tool-registry-governance.md)
+- [ADR 0011 — Operational security posture](adr/0011-operational-security-posture.md)

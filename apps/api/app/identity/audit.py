@@ -1,7 +1,7 @@
 """Append-only, schema-gated audit records for authentication and authorization events."""
 
-import json
 from collections.abc import Callable
+import json
 from uuid import UUID, uuid4
 
 import asyncpg
@@ -123,6 +123,13 @@ class SecurityAuditStore:
                 outcome,
                 json.dumps(self._redact(safe_details)),
             )
+
+    async def healthcheck(self) -> None:
+        """Confirm audit persistence is reachable without reading audit content."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.fetchval("SELECT 1")
 
     async def list_workspace_events(
         self, workspace_id: UUID, limit: int

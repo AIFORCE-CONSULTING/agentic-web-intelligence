@@ -96,6 +96,13 @@ class IdentityStore:
         async with pool.acquire() as connection:
             return bool(await connection.fetchval("SELECT EXISTS(SELECT 1 FROM platform_users)"))
 
+    async def healthcheck(self) -> None:
+        """Confirm identity persistence is reachable without disclosing identity data."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.fetchval("SELECT 1")
+
     async def create_bootstrap_admin(self, email: str, password_hash: str) -> AuthenticatedUser:
         pool = await self._connection_pool()
         user_id, workspace_id = uuid4(), uuid4()

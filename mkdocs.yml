@@ -80,10 +80,12 @@ nav:
       - ADR 0009 — Deployment secrets: adr/0009-centralized-deployment-secrets.md
       - ADR 0010 — Tool-registry governance: adr/0010-code-owned-tool-registry-governance.md
       - ADR 0011 — Operational security posture: adr/0011-operational-security-posture.md
+      - ADR 0012 — GitHub Projects connector: adr/0012-human-operated-github-projects-connector.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Identity: identity.md
   - Operations: operations.md
+  - GitHub Projects: github-projects.md
   - Governed research prompt: governed-research-prompt.md
   - Contributing:
       - Contribution guide: contributing.md

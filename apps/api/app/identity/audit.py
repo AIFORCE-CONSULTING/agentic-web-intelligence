@@ -18,6 +18,12 @@ _ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
     "authorization.denied": frozenset({"permission", "reason"}),
     "service_identity.created": frozenset({"service_identity_id", "name"}),
     "service_identity.revoked": frozenset({"service_identity_id"}),
+    "connector.github.draft_item.created": frozenset(
+        {"project_number", "item_id", "priority"}
+    ),
+    "connector.github.draft_item.priority_updated": frozenset(
+        {"project_number", "item_id", "priority"}
+    ),
 }
 
 SCHEMA = """

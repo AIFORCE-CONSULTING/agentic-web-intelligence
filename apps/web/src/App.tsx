@@ -50,7 +50,17 @@ type OperationalSecurityStatus = {
   secrets: { secrets: SecretStatus[] };
   enterprise_identity: { mode: "disabled" | "invalid" | "ready"; provider_name?: string | null; detail: string };
   tool_registry: { tools: ToolRegistryEntry[] };
+  github_projects: GitHubProjectStatus;
 };
+type GitHubProjectStatus = {
+  mode: "disabled" | "invalid" | "ready"; owner?: string | null;
+  project_number?: number | null; project_url?: string | null; detail: string;
+};
+type GitHubProjectInfo = {
+  title: string; owner: string; project_number: number; project_url: string; priority_options: string[];
+};
+type GitHubDraftItem = { id: string; title: string; priority?: string | null };
+type GitHubDraftItemList = { items: GitHubDraftItem[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -143,6 +153,13 @@ function AdminConsole() {
   const [user, setUser] = useState<AuthenticatedUser | null>(null);
   const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
   const [posture, setPosture] = useState<OperationalSecurityStatus | null>(null);
+  const [githubStatus, setGithubStatus] = useState<GitHubProjectStatus | null>(null);
+  const [githubProject, setGithubProject] = useState<GitHubProjectInfo | null>(null);
+  const [draftItems, setDraftItems] = useState<GitHubDraftItem[]>([]);
+  const [roadmapError, setRoadmapError] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftPriority, setDraftPriority] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [bootstrapSecret, setBootstrapSecret] = useState("");
@@ -153,6 +170,34 @@ function AdminConsole() {
   async function loadAdminData() {
     const currentUser = await apiRequest<AuthenticatedUser>("/v1/auth/me");
     setUser(currentUser);
+    setRoadmapError(null);
+    if (currentUser.role === "administrator" || currentUser.role === "operator") {
+      const status = await apiRequest<GitHubProjectStatus>("/v1/github/projects/status");
+      setGithubStatus(status);
+      if (status.mode === "ready") {
+        try {
+          const [project, items] = await Promise.all([
+            apiRequest<GitHubProjectInfo>("/v1/github/projects/roadmap"),
+            apiRequest<GitHubDraftItemList>("/v1/github/projects/draft-items"),
+          ]);
+          setGithubProject(project);
+          setDraftItems(items.items);
+        } catch (reason) {
+          setGithubProject(null);
+          setDraftItems([]);
+          setRoadmapError(
+            reason instanceof Error ? reason.message : "Unable to load the GitHub roadmap."
+          );
+        }
+      } else {
+        setGithubProject(null);
+        setDraftItems([]);
+      }
+    } else {
+      setGithubStatus(null);
+      setGithubProject(null);
+      setDraftItems([]);
+    }
     if (currentUser.role !== "administrator") {
       setEvents([]);
       setPosture(null);
@@ -164,6 +209,48 @@ function AdminConsole() {
     ]);
     setEvents(audit.events);
     setPosture(securityPosture);
+  }
+
+  async function createDraftItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<GitHubDraftItem>("/v1/github/projects/draft-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: draftTitle,
+          body: draftBody || undefined,
+          priority: draftPriority || undefined,
+        }),
+      });
+      setDraftTitle("");
+      setDraftBody("");
+      setDraftPriority("");
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to create the roadmap item.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateDraftPriority(itemId: string, priority: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<GitHubDraftItem>(`/v1/github/projects/draft-items/${encodeURIComponent(itemId)}/priority`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority }),
+      });
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to update Priority.");
+    } finally {
+      setBusy(false);
+    }
   }
 
   useEffect(() => {
@@ -269,12 +356,28 @@ function AdminConsole() {
           <div className="section-heading"><div><p className="eyebrow">Authenticated session</p><h2 id="identity-heading">Current identity</h2></div><button type="button" className="secondary" onClick={() => void signOut()} disabled={busy}>Sign out</button></div>
           <dl className="identity-grid"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Role</dt><dd><span className={`role ${user.role}`}>{user.role}</span></dd></div><div><dt>Workspace</dt><dd>{user.workspace_name}</dd></div><div><dt>Session established</dt><dd>{new Date(user.authenticated_at).toLocaleString()}</dd></div></dl>
         </section>
+        {(user.role === "administrator" || user.role === "operator") && githubStatus && <section aria-labelledby="roadmap-heading">
+          <div className="section-heading"><div><p className="eyebrow">GitHub Projects</p><h2 id="roadmap-heading">Roadmap</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          {githubStatus.mode !== "ready" && <p className="hint">{githubStatus.detail}</p>}
+          {roadmapError && <p className="error" role="alert">{roadmapError}</p>}
+          {githubProject && <>
+            <p className="hint">Managing draft-only cards in <a href={githubProject.project_url} target="_blank" rel="noreferrer">{githubProject.title}</a>. No repository Issues are created.</p>
+            <form className="auth-form roadmap-form" onSubmit={createDraftItem}>
+              <label>Task title<input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} maxLength={256} required /></label>
+              <label>Notes<textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={65536} /></label>
+              <label>Priority<select value={draftPriority} onChange={(event) => setDraftPriority(event.target.value)}><option value="">Not set</option>{githubProject.priority_options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>
+              <button type="submit" disabled={busy}>{busy ? "Saving…" : "Create draft task"}</button>
+            </form>
+            {draftItems.length ? <ol className="roadmap-items">{draftItems.map((item) => <li key={item.id}><div><strong>{item.title}</strong><small>Draft item</small></div><label>Priority<select value={item.priority ?? ""} onChange={(event) => { if (event.target.value) void updateDraftPriority(item.id, event.target.value); }} disabled={busy}><option value="" disabled>Not set</option>{githubProject.priority_options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label></li>)}</ol> : <p>No draft tasks yet.</p>}
+          </>}
+        </section>}
         {user.role === "administrator" && posture && <section aria-labelledby="security-posture-heading">
           <div className="section-heading"><div><p className="eyebrow">Deployment controls</p><h2 id="security-posture-heading">Security posture</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
           <p className="hint">Safe configuration and dependency status for this deployment. Secret values are never displayed.</p>
           <div className="posture-grid">
             {[posture.identity_persistence, posture.security_audit_persistence].map((item) => <article className={"service-card " + item.status} key={item.name}><div><strong>{item.name}</strong><span>{item.status}</span></div><p>{item.detail}</p></article>)}
             <article className={"service-card " + (posture.enterprise_identity.mode === "invalid" ? "unavailable" : posture.enterprise_identity.mode === "ready" ? "ready" : "unconfigured")}><div><strong>Enterprise identity</strong><span>{posture.enterprise_identity.mode}</span></div><p>{posture.enterprise_identity.detail}</p></article>
+            <article className={"service-card " + (posture.github_projects.mode === "invalid" ? "unavailable" : posture.github_projects.mode === "ready" ? "ready" : "unconfigured")}><div><strong>GitHub Projects</strong><span>{posture.github_projects.mode}</span></div><p>{posture.github_projects.detail}</p></article>
           </div>
           <div className="posture-details">
             <article><h3>Deployment secrets</h3><ul>{posture.secrets.secrets.map((secret) => <li key={secret.name}><strong>{secret.name}</strong><span className={secret.configured && secret.valid ? "ready-text" : "warning-text"}>{secret.detail}</span><small>{secret.purpose}</small></li>)}</ul></article>

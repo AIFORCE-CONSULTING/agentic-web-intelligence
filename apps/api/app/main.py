@@ -15,6 +15,20 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.github_projects.contracts import (
+    CreateDraftItemRequest,
+    GitHubDraftItem,
+    GitHubDraftItemList,
+    GitHubProjectInfo,
+    GitHubProjectStatus,
+    UpdateDraftItemPriorityRequest,
+)
+from app.github_projects.service import (
+    GitHubProjectsBoundary,
+    GitHubProjectsConfigurationError,
+    GitHubProjectsProviderError,
+    GitHubProjectsService,
+)
 from app.identity.authorization import (
     AuthorizationError,
     WorkspacePermission,
@@ -104,6 +118,7 @@ class OperationalSecurityStatus(BaseModel):
     secrets: SecretStatusList
     enterprise_identity: EnterpriseIdentityStatus
     tool_registry: ToolRegistryList
+    github_projects: GitHubProjectStatus
 
 
 def create_app() -> FastAPI:
@@ -135,6 +150,10 @@ def create_app() -> FastAPI:
     app.state.enterprise_identity = EnterpriseIdentityBoundary(
         settings, app.state.deployment_secrets
     )
+    app.state.github_projects_boundary = GitHubProjectsBoundary(
+        settings, app.state.deployment_secrets
+    )
+    app.state.github_projects = GitHubProjectsService(app.state.github_projects_boundary)
     app.state.mcp_host = GovernedWebMcpHost(
         deployment_secrets=app.state.deployment_secrets
     )
@@ -158,7 +177,13 @@ def create_app() -> FastAPI:
             "Permissions-Policy", "camera=(), geolocation=(), microphone=()"
         )
         if request.url.path.startswith(
-            ("/v1/auth", "/v1/secrets", "/v1/service-identities", "/v1/operations")
+            (
+                "/v1/auth",
+                "/v1/secrets",
+                "/v1/service-identities",
+                "/v1/operations",
+                "/v1/github",
+            )
         ):
             response.headers.setdefault("Cache-Control", "no-store")
         if settings.app_environment == "production":
@@ -242,6 +267,14 @@ def create_app() -> FastAPI:
         except (AuditDetailPolicyError, SecurityAuditStoreUnavailable):
             # Authentication and authorization still enforce safely if the audit backend is down.
             return
+
+    async def require_human_project_manager(http_request: Request) -> AuthenticatedUser:
+        """Restrict external Project changes to authenticated human administrators or operators."""
+
+        identity = await require_workspace_permission(http_request, "github.projects.manage")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human operator is required.")
+        return identity
 
     @app.post(
         "/v1/auth/bootstrap",
@@ -379,6 +412,7 @@ def create_app() -> FastAPI:
         audit_store: SecurityAuditStore = http_request.app.state.security_audit_store
         deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
         enterprise_identity: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
+        github_projects: GitHubProjectsBoundary = http_request.app.state.github_projects_boundary
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         identity_status, audit_status = await asyncio.gather(
             persistence_status("Identity persistence", identity_store, IdentityStoreUnavailable),
@@ -393,7 +427,121 @@ def create_app() -> FastAPI:
             secrets=deployment_secrets.status(),
             enterprise_identity=enterprise_identity.status(),
             tool_registry=host.registry(),
+            github_projects=github_projects.status(),
         )
+
+    @app.get(
+        "/v1/github/projects/status",
+        response_model=GitHubProjectStatus,
+        tags=["github-projects"],
+    )
+    async def github_projects_status(http_request: Request) -> GitHubProjectStatus:
+        """Show credential-free readiness for the one Project this deployment may manage."""
+
+        await require_human_project_manager(http_request)
+        boundary: GitHubProjectsBoundary = http_request.app.state.github_projects_boundary
+        return boundary.status()
+
+    @app.get(
+        "/v1/github/projects/roadmap",
+        response_model=GitHubProjectInfo,
+        tags=["github-projects"],
+    )
+    async def github_project_roadmap(http_request: Request) -> GitHubProjectInfo:
+        """Read the configured Project and its current selectable Priority values."""
+
+        await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            return await service.project_info()
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.get(
+        "/v1/github/projects/draft-items",
+        response_model=GitHubDraftItemList,
+        tags=["github-projects"],
+    )
+    async def list_github_project_draft_items(http_request: Request) -> GitHubDraftItemList:
+        """List bounded draft-only roadmap items; repository Issues are intentionally excluded."""
+
+        await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            return await service.list_draft_items()
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.post(
+        "/v1/github/projects/draft-items",
+        response_model=GitHubDraftItem,
+        status_code=201,
+        tags=["github-projects"],
+    )
+    async def create_github_project_draft_item(
+        request: CreateDraftItemRequest, http_request: Request
+    ) -> GitHubDraftItem:
+        """Create a draft-only roadmap card; no repository Issue is created."""
+
+        operator = await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            item = await service.create_draft_item(request.title, request.body, request.priority)
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        status = http_request.app.state.github_projects_boundary.status()
+        await record_security_event(
+            http_request,
+            "connector.github.draft_item.created",
+            "succeeded",
+            actor=operator,
+            details={
+                "project_number": status.project_number,
+                "item_id": item.id,
+                "priority": item.priority,
+            },
+        )
+        return item
+
+    @app.patch(
+        "/v1/github/projects/draft-items/{item_id}/priority",
+        response_model=GitHubDraftItem,
+        tags=["github-projects"],
+    )
+    async def update_github_project_draft_item_priority(
+        item_id: str, request: UpdateDraftItemPriorityRequest, http_request: Request
+    ) -> GitHubDraftItem:
+        """Set only the existing Priority field for a draft item in the configured Project."""
+
+        if len(item_id) > 256:
+            raise HTTPException(status_code=422, detail="item_id is too long.")
+        operator = await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            item = await service.update_draft_item_priority(item_id, request.priority)
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        status = http_request.app.state.github_projects_boundary.status()
+        await record_security_event(
+            http_request,
+            "connector.github.draft_item.priority_updated",
+            "succeeded",
+            actor=operator,
+            details={
+                "project_number": status.project_number,
+                "item_id": item.id,
+                "priority": item.priority,
+            },
+        )
+        return item
 
     @app.post(
         "/v1/service-identities",

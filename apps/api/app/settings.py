@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     oidc_client_secret: str | None = None
     oidc_redirect_uri: str | None = None
     github_connector_token: str | None = None
+    github_project_owner: str | None = None
+    # Kept as text so Docker Compose's empty-string default means "not configured".
+    github_project_number: str | None = None
 
     def validate_runtime_configuration(self) -> None:
         """Reject deployment combinations that would weaken browser or identity security."""

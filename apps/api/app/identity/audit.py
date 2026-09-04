@@ -11,6 +11,7 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS security_audit_events (
     id UUID PRIMARY KEY,
     actor_user_id UUID,
+    actor_service_identity_id UUID,
     workspace_id UUID,
     event_type TEXT NOT NULL,
     outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'denied')),
@@ -19,6 +20,7 @@ CREATE TABLE IF NOT EXISTS security_audit_events (
 );
 CREATE INDEX IF NOT EXISTS security_audit_events_workspace_occurred_at_idx
     ON security_audit_events(workspace_id, occurred_at DESC);
+ALTER TABLE security_audit_events ADD COLUMN IF NOT EXISTS actor_service_identity_id UUID;
 """
 
 
@@ -55,6 +57,7 @@ class SecurityAuditStore:
         event_type: str,
         outcome: str,
         actor_user_id: UUID | None = None,
+        actor_service_identity_id: UUID | None = None,
         workspace_id: UUID | None = None,
         details: dict[str, object] | None = None,
     ) -> None:
@@ -62,10 +65,12 @@ class SecurityAuditStore:
         async with pool.acquire() as connection:
             await connection.execute(
                 """INSERT INTO security_audit_events
-                (id, actor_user_id, workspace_id, event_type, outcome, details)
-                VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
+                (id, actor_user_id, actor_service_identity_id, workspace_id,
+                event_type, outcome, details)
+                VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)""",
                 uuid4(),
                 actor_user_id,
+                actor_service_identity_id,
                 workspace_id,
                 event_type,
                 outcome,
@@ -78,7 +83,8 @@ class SecurityAuditStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT id, actor_user_id, workspace_id, event_type, outcome, occurred_at, details
+                """SELECT id, actor_user_id, actor_service_identity_id, workspace_id,
+                event_type, outcome, occurred_at, details
                 FROM security_audit_events WHERE workspace_id = $1
                 ORDER BY occurred_at DESC LIMIT $2""",
                 workspace_id,

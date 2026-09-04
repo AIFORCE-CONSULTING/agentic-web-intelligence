@@ -2,7 +2,11 @@
 
 from typing import Literal
 
-from app.identity.contracts import AuthenticatedUser, WorkspaceRole
+from app.identity.contracts import (
+    AuthenticatedServiceIdentity,
+    AuthenticatedUser,
+    WorkspaceRole,
+)
 
 WorkspacePermission = Literal[
     "research.read",
@@ -11,6 +15,7 @@ WorkspacePermission = Literal[
     "mcp.use",
     "mcp.audit.read",
     "security.audit.read",
+    "service.identity.manage",
 ]
 
 ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
@@ -22,6 +27,7 @@ ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
             "mcp.use",
             "mcp.audit.read",
             "security.audit.read",
+            "service.identity.manage",
         }
     ),
     "operator": frozenset({"research.read", "research.write", "runtime.read", "mcp.use"}),
@@ -33,8 +39,16 @@ class AuthorizationError(PermissionError):
     """Raised when a valid identity lacks a server-owned workspace permission."""
 
 
-def require_permission(user: AuthenticatedUser, permission: WorkspacePermission) -> None:
+def require_permission(
+    identity: AuthenticatedUser | AuthenticatedServiceIdentity, permission: WorkspacePermission
+) -> None:
     """Allow only permissions granted by the fixed role policy."""
 
-    if permission not in ROLE_PERMISSIONS[user.role]:
+    if isinstance(identity, AuthenticatedServiceIdentity):
+        if permission not in identity.permissions:
+            raise AuthorizationError(
+                "This service identity is not permitted to perform this action."
+            )
+        return
+    if permission not in ROLE_PERMISSIONS[identity.role]:
         raise AuthorizationError("Your workspace role is not permitted to perform this action.")

@@ -7,7 +7,12 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.identity.contracts import AuthenticatedUser, SecurityAuditEvent
+from app.identity.contracts import (
+    AuthenticatedServiceIdentity,
+    AuthenticatedUser,
+    CreatedServiceIdentity,
+    SecurityAuditEvent,
+)
 from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import AuthenticationError, IdentityService
 from app.main import create_app
@@ -110,6 +115,93 @@ def test_enterprise_identity_status_endpoint_never_returns_client_credentials(
     assert "not-exposed" not in response.text
 
 
+def test_service_identity_is_machine_scoped_and_cannot_manage_identities(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id = uuid4()
+    administrator = AuthenticatedUser(
+        id=uuid4(),
+        email="admin@example.com",
+        workspace_id=workspace_id,
+        workspace_name="Workspace A",
+        role="administrator",
+        authenticated_at=datetime.now(UTC),
+    )
+    machine = AuthenticatedServiceIdentity(
+        id=uuid4(),
+        name="research-worker",
+        workspace_id=workspace_id,
+        workspace_name="Workspace A",
+        permissions=frozenset({"research.read"}),
+        authenticated_at=datetime.now(UTC),
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, token: str | None) -> AuthenticatedUser | None:
+            return administrator if token == "admin-session" else None
+
+        async def current_service_identity(
+            self, authorization_header: str | None
+        ) -> AuthenticatedServiceIdentity | None:
+            return machine if authorization_header == "Bearer awi_si_test" else None
+
+        async def create_service_identity(self, workspace, admin_id, name, permissions):
+            assert workspace == workspace_id
+            assert admin_id == administrator.id
+            assert name == "research-worker"
+            assert permissions == {"research.read"}
+            return CreatedServiceIdentity(
+                id=machine.id,
+                name=name,
+                workspace_id=workspace_id,
+                permissions=frozenset(permissions),
+                created_at=datetime.now(UTC),
+                token="awi_si_returned-once",
+            )
+
+    class FakeResearchStore:
+        async def list_runs(self, received_workspace_id, limit: int) -> list[object]:
+            assert received_workspace_id == workspace_id
+            assert limit == 25
+            return []
+
+    class FakeSecurityAuditStore:
+        async def record(self, *_: object, **__: object) -> None:
+            return None
+
+    monkeypatch.setattr(
+        "app.main.get_settings",
+        lambda: Settings(database_url="postgresql://test", searxng_base_url=None),
+    )
+    app = create_app()
+    app.state.identity_service = FakeIdentityService()
+    app.state.research_store = FakeResearchStore()
+    app.state.security_audit_store = FakeSecurityAuditStore()
+
+    async def request() -> tuple[httpx.Response, httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            client.cookies.set("platform_session", "admin-session")
+            created = await client.post(
+                "/v1/service-identities",
+                json={"name": "research-worker", "permissions": ["research.read"]},
+            )
+            client.cookies.clear()
+            readable = await client.get(
+                "/v1/research/runs", headers={"Authorization": "Bearer awi_si_test"}
+            )
+            denied = await client.get(
+                "/v1/service-identities", headers={"Authorization": "Bearer awi_si_test"}
+            )
+            return created, readable, denied
+
+    created, readable, denied = asyncio.run(request())
+    assert created.status_code == 201
+    assert created.json()["token"] == "awi_si_returned-once"
+    assert readable.status_code == 200
+    assert denied.status_code == 403
+
+
 def test_durable_routes_require_a_session_and_enforce_workspace_roles(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -181,7 +273,13 @@ def test_durable_routes_require_a_session_and_enforce_workspace_roles(
     assert store.list_workspace_id == workspace_id
     assert denied.status_code == 403
     assert audit_store.records == [
-        ("authorization.denied", "denied", None, None, {"reason": "no_session"}),
+        (
+            "authorization.denied",
+            "denied",
+            None,
+            None,
+            {"reason": "no_authenticated_identity"},
+        ),
         (
             "authorization.denied",
             "denied",

@@ -22,10 +22,14 @@ from app.identity.authorization import (
 )
 from app.identity.audit import SecurityAuditStore, SecurityAuditStoreUnavailable
 from app.identity.contracts import (
+    AuthenticatedServiceIdentity,
     AuthenticatedUser,
     BootstrapAdminRequest,
+    CreatedServiceIdentity,
+    CreateServiceIdentityRequest,
     EnterpriseIdentityStatus,
     SecurityAuditEventList,
+    ServiceIdentityList,
     SignInRequest,
 )
 from app.identity.enterprise import EnterpriseIdentityBoundary
@@ -127,49 +131,61 @@ def create_app() -> FastAPI:
 
     async def require_workspace_permission(
         http_request: Request, permission: WorkspacePermission
-    ) -> AuthenticatedUser:
-        """Authenticate the browser session and apply the fixed server-owned role policy."""
+    ) -> AuthenticatedUser | AuthenticatedServiceIdentity:
+        """Authenticate a browser user or service token, then apply server-owned policy."""
 
         service: IdentityService = http_request.app.state.identity_service
         try:
-            user = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
+            identity = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
+            if identity is None and http_request.headers.get("Authorization"):
+                identity = await service.current_service_identity(
+                    http_request.headers.get("Authorization")
+                )
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-        if user is None:
+        if identity is None:
             await record_security_event(
-                http_request, "authorization.denied", "denied", details={"reason": "no_session"}
+                http_request,
+                "authorization.denied",
+                "denied",
+                details={"reason": "no_authenticated_identity"},
             )
             raise HTTPException(status_code=401, detail="Authentication is required.")
         try:
-            require_permission(user, permission)
+            require_permission(identity, permission)
         except AuthorizationError as error:
             await record_security_event(
                 http_request,
                 "authorization.denied",
                 "denied",
-                actor=user,
+                actor=identity,
                 details={"permission": permission},
             )
             raise HTTPException(status_code=403, detail=str(error)) from error
-        return user
+        return identity
 
     async def record_security_event(
         http_request: Request,
         event_type: str,
         outcome: str,
-        actor: AuthenticatedUser | None = None,
+        actor: AuthenticatedUser | AuthenticatedServiceIdentity | None = None,
         details: dict[str, object] | None = None,
     ) -> None:
         """Best-effort audit that never stores credentials or changes an access decision."""
 
         store: SecurityAuditStore = http_request.app.state.security_audit_store
         try:
+            audit_fields: dict[str, object] = {
+                "actor_user_id": actor.id if isinstance(actor, AuthenticatedUser) else None,
+                "workspace_id": actor.workspace_id if actor else None,
+                "details": details,
+            }
+            if isinstance(actor, AuthenticatedServiceIdentity):
+                audit_fields["actor_service_identity_id"] = actor.id
             await store.record(
                 event_type,
                 outcome,
-                actor_user_id=actor.id if actor else None,
-                workspace_id=actor.workspace_id if actor else None,
-                details=details,
+                **audit_fields,
             )
         except SecurityAuditStoreUnavailable:
             # Authentication and authorization still enforce safely if the audit backend is down.
@@ -267,6 +283,95 @@ def create_app() -> FastAPI:
 
         boundary: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
         return boundary.status()
+
+    @app.post(
+        "/v1/service-identities",
+        response_model=CreatedServiceIdentity,
+        status_code=201,
+        tags=["service-identities"],
+    )
+    async def create_service_identity(
+        request: CreateServiceIdentityRequest, http_request: Request
+    ) -> CreatedServiceIdentity:
+        """Create a workspace-bound machine identity; its token is returned once only."""
+
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            created = await service.create_service_identity(
+                administrator.workspace_id,
+                administrator.id,
+                request.name,
+                request.permissions,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "service_identity.created",
+            "succeeded",
+            actor=administrator,
+            details={"service_identity_id": str(created.id), "name": created.name},
+        )
+        return created
+
+    @app.get(
+        "/v1/service-identities",
+        response_model=ServiceIdentityList,
+        tags=["service-identities"],
+    )
+    async def list_service_identities(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> ServiceIdentityList:
+        """List credential-free service identity records for the administrator's workspace."""
+
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            return ServiceIdentityList(
+                identities=await service.list_service_identities(administrator.workspace_id, limit)
+            )
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.delete(
+        "/v1/service-identities/{identity_id}", status_code=204, tags=["service-identities"]
+    )
+    async def revoke_service_identity(identity_id: str, http_request: Request) -> Response:
+        """Irreversibly revoke a workspace-bound machine credential."""
+
+        from uuid import UUID
+
+        try:
+            parsed_identity_id = UUID(identity_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="identity_id must be a UUID.") from error
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            revoked = await service.revoke_service_identity(
+                parsed_identity_id, administrator.workspace_id
+            )
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not revoked:
+            raise HTTPException(status_code=404, detail="Service identity was not found.")
+        await record_security_event(
+            http_request,
+            "service_identity.revoked",
+            "succeeded",
+            actor=administrator,
+            details={"service_identity_id": str(parsed_identity_id)},
+        )
+        return Response(status_code=204)
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def liveness() -> HealthResponse:
@@ -422,8 +527,10 @@ def create_app() -> FastAPI:
         user = await require_workspace_permission(http_request, "mcp.use")
         store: ResearchStore = http_request.app.state.research_store
         host = GovernedWebMcpHost(
-            audit_recorder=lambda request_id, tool_name, outcome, details: store.record_mcp_tool_event(
-                user.workspace_id, request_id, tool_name, outcome, details
+            audit_recorder=lambda request_id, tool_name, outcome, details: (
+                store.record_mcp_tool_event(
+                    user.workspace_id, request_id, tool_name, outcome, details
+                )
             )
         )
         return await host.handle(payload)

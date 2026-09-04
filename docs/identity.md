@@ -95,3 +95,23 @@ and ID-token issuer/audience/signature/nonce server-side, map the immutable
 issuer-plus-subject identity to a platform user, and then issue the same
 platform-owned session used by local sign-in. Provider groups can inform a
 mapping, but the platform remains the final authorization point.
+
+## Service identities
+
+Service identities are for future platform-to-platform calls such as workers,
+schedulers, and integrations. They are not human accounts, browser sessions,
+or agent roles. A workspace administrator can create one through the API with
+an explicit least-privilege permission set; the generated bearer token is shown
+only in the creation response and only its hash is stored.
+
+- POST /v1/service-identities — create a service identity and receive its token once.
+- GET /v1/service-identities — list credential-free identity records in the workspace.
+- DELETE /v1/service-identities/{identity_id} — revoke a service token permanently.
+
+Service tokens use an Authorization Bearer token with the awi_si_ prefix and
+can receive only research, runtime, or MCP permissions. They cannot create
+identities, access the security audit, or assume an administrator role.
+Creation and revocation are recorded in the workspace security audit. A future
+worker or integration must use a service identity only when it becomes a
+separately deployed caller; the current API process does not need one to call
+its own internal modules.

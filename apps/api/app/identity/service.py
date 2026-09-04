@@ -6,7 +6,13 @@ from uuid import UUID
 
 from pwdlib import PasswordHash
 
-from app.identity.contracts import AuthenticatedUser
+from app.identity.contracts import (
+    AuthenticatedServiceIdentity,
+    AuthenticatedUser,
+    CreatedServiceIdentity,
+    ServiceIdentityInfo,
+    ServiceIdentityPermission,
+)
 from app.identity.store import IdentityStore
 
 SESSION_COOKIE_NAME = "platform_session"
@@ -52,6 +58,45 @@ class IdentityService:
     async def sign_out(self, token: str | None) -> None:
         if token:
             await self._store.revoke_session(token)
+
+    async def create_service_identity(
+        self,
+        workspace_id: UUID,
+        administrator_id: UUID,
+        name: str,
+        permissions: set[ServiceIdentityPermission],
+    ) -> CreatedServiceIdentity:
+        """Create a revocable machine credential, returning its raw value exactly once."""
+
+        token = f"awi_si_{secrets.token_urlsafe(32)}"
+        identity = await self._store.create_service_identity(
+            workspace_id,
+            name,
+            frozenset(permissions),
+            administrator_id,
+            token,
+        )
+        return CreatedServiceIdentity(**identity.model_dump(), token=token)
+
+    async def current_service_identity(
+        self, authorization_header: str | None
+    ) -> AuthenticatedServiceIdentity | None:
+        """Verify only the platform-issued Bearer token shape; no browser cookie is involved."""
+
+        if not authorization_header:
+            return None
+        scheme, _, token = authorization_header.partition(" ")
+        if scheme.lower() != "bearer" or not token.startswith("awi_si_"):
+            return None
+        return await self._store.get_service_identity(token)
+
+    async def list_service_identities(
+        self, workspace_id: UUID, limit: int
+    ) -> list[ServiceIdentityInfo]:
+        return await self._store.list_service_identities(workspace_id, limit)
+
+    async def revoke_service_identity(self, identity_id: UUID, workspace_id: UUID) -> bool:
+        return await self._store.revoke_service_identity(identity_id, workspace_id)
 
     async def _new_session(self, user_id: UUID, workspace_id: UUID) -> str:
         token = secrets.token_urlsafe(32)

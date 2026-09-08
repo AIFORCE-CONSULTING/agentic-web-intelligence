@@ -57,17 +57,18 @@ def validate_audit_details(event_type: str, details: dict[str, object] | None) -
     if event_type not in _ALLOWED_DETAIL_FIELDS:
         raise AuditDetailPolicyError(f"Audit event '{event_type}' is not registered.")
     candidate = details or {}
-    unknown = set(candidate) - _ALLOWED_DETAIL_FIELDS[event_type]
-    if unknown:
-        raise AuditDetailPolicyError(
-            f"Audit event '{event_type}' contains unapproved fields: {', '.join(sorted(unknown))}."
-        )
     for key, value in candidate.items():
         normalized_key = key.lower().replace("-", "_")
         if any(marker in normalized_key for marker in _SENSITIVE_FIELD_MARKERS):
             raise AuditDetailPolicyError(
                 f"Audit field '{key}' is sensitive and cannot be persisted."
             )
+    unknown = set(candidate) - _ALLOWED_DETAIL_FIELDS[event_type]
+    if unknown:
+        raise AuditDetailPolicyError(
+            f"Audit event '{event_type}' contains unapproved fields: {', '.join(sorted(unknown))}."
+        )
+    for key, value in candidate.items():
         if not isinstance(value, str | int | float | bool | type(None)):
             raise AuditDetailPolicyError(f"Audit field '{key}' must be a scalar value.")
         if isinstance(value, str) and len(value) > 256:

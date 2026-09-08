@@ -27,7 +27,7 @@ def test_github_projects_boundary_requires_one_project_and_server_secret() -> No
     ready = GitHubProjectsBoundary(
         Settings(
             github_project_owner="AIFORCE-CONSULTING",
-            github_project_number=12,
+            github_project_number="12",
             github_connector_token="not-exposed",
         )
     ).status()
@@ -88,7 +88,7 @@ def test_github_projects_creates_draft_then_sets_existing_priority() -> None:
         GitHubProjectsBoundary(
             Settings(
                 github_project_owner="AIFORCE-CONSULTING",
-                github_project_number=12,
+                github_project_number="12",
                 github_connector_token="connector-secret",
             )
         ),
@@ -119,7 +119,7 @@ def test_github_projects_lists_an_empty_draft_roadmap() -> None:
         GitHubProjectsBoundary(
             Settings(
                 github_project_owner="AIFORCE-CONSULTING",
-                github_project_number=12,
+                github_project_number="12",
                 github_connector_token="connector-secret",
             )
         ),
@@ -138,7 +138,7 @@ def test_github_projects_uses_submitted_title_when_github_omits_content() -> Non
         GitHubProjectsBoundary(
             Settings(
                 github_project_owner="AIFORCE-CONSULTING",
-                github_project_number=12,
+                github_project_number="12",
                 github_connector_token="connector-secret",
             )
         ),

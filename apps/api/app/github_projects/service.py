@@ -321,7 +321,9 @@ class GitHubProjectsService:
         if response.get("errors"):
             raise GitHubProjectsProviderError("GitHub rejected the Priority update.")
         data = response.get("data")
-        updated_value = data.get("updateProjectV2ItemFieldValue") if isinstance(data, Mapping) else None
+        updated_value = (
+            data.get("updateProjectV2ItemFieldValue") if isinstance(data, Mapping) else None
+        )
         if not isinstance(updated_value, Mapping):
             raise GitHubProjectsProviderError(
                 "GitHub returned an invalid Priority-update response."

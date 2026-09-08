@@ -565,10 +565,10 @@ export function App() {
         <section aria-labelledby="sources-heading">
           <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Select source candidates</h2></div><span className="badge">{selectedSourceUrls.length} selected</span></div>
           {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
-            <li key={`${source.rank}-${source.url}`}><label className="source">
+            <li className="source-candidate" key={`${source.rank}-${source.url}`}><label className="source">
               <input type="checkbox" checked={selectedSourceUrls.includes(source.url)} onChange={() => toggleSource(source.url)} disabled={busy} />
-              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong><small>{source.url}</small>{source.snippet && <span>{source.snippet}</span>}</span>
-            </label></li>
+              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}</span>
+            </label><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a></li>
           ))}</ol> : <p>No public source candidates were returned for this question.</p>}
         </section>
 

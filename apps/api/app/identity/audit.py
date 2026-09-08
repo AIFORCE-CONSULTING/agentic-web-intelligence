@@ -57,7 +57,7 @@ def validate_audit_details(event_type: str, details: dict[str, object] | None) -
     if event_type not in _ALLOWED_DETAIL_FIELDS:
         raise AuditDetailPolicyError(f"Audit event '{event_type}' is not registered.")
     candidate = details or {}
-    for key, value in candidate.items():
+    for key in candidate:
         normalized_key = key.lower().replace("-", "_")
         if any(marker in normalized_key for marker in _SENSITIVE_FIELD_MARKERS):
             raise AuditDetailPolicyError(

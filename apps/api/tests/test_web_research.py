@@ -6,8 +6,8 @@ from uuid import uuid4
 import httpx
 import pytest
 
-from app.main import create_app
 from app.identity.contracts import AuthenticatedUser
+from app.main import create_app
 from app.settings import Settings
 from app.web_research.contracts import (
     Evidence,
@@ -21,7 +21,7 @@ from app.web_research.contracts import (
     ToolRetrievalError,
 )
 from app.web_research.extractor import WebExtractor
-from app.web_research.mcp_host import MCP_PROTOCOL_VERSION, GovernedWebMcpHost
+from app.web_research.mcp_host import MCP_PROTOCOL_VERSION
 from app.web_research.policy import validate_public_destination
 from app.web_research.search import SearxngSearchProvider
 

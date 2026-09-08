@@ -1,7 +1,7 @@
 """Postgres persistence and server-side guards for the Phase 3 runtime core."""
 
-from collections.abc import Callable
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 

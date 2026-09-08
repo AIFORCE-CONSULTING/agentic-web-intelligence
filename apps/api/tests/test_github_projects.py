@@ -1,8 +1,8 @@
 """Tests for the narrow server-only GitHub Projects connector."""
 
 import asyncio
-from datetime import UTC, datetime
 import json
+from datetime import UTC, datetime
 from uuid import uuid4
 
 import httpx
@@ -53,9 +53,12 @@ def test_github_projects_creates_draft_then_sets_existing_priority() -> None:
                         "options": [{"id": "high", "name": {"raw": "High"}}],
                     }
                 ],
-            )
+        )
         if request.url.path.endswith("/drafts"):
-            assert json.loads(request.content) == {"title": "Document connector", "body": "Operator work"}
+            assert json.loads(request.content) == {
+                "title": "Document connector",
+                "body": "Operator work",
+            }
             return httpx.Response(
                 201,
                 json={

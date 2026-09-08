@@ -1,7 +1,7 @@
 """Append-only, schema-gated audit records for authentication and authorization events."""
 
-from collections.abc import Callable
 import json
+from collections.abc import Callable
 from uuid import UUID, uuid4
 
 import asyncpg

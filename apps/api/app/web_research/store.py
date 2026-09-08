@@ -1,7 +1,7 @@
 """Postgres-backed, append-only records for governed research runs."""
 
-from collections.abc import Callable
 import json
+from collections.abc import Callable
 from uuid import UUID, uuid4
 
 import asyncpg

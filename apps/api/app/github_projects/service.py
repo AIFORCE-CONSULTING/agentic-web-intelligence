@@ -1,13 +1,18 @@
 """A narrow GitHub Projects V2 REST/GraphQL adapter owned by the API server."""
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
-import re
 from typing import Any
 
 import httpx
 
-from app.github_projects.contracts import GitHubDraftItem, GitHubDraftItemList, GitHubProjectInfo, GitHubProjectStatus
+from app.github_projects.contracts import (
+    GitHubDraftItem,
+    GitHubDraftItemList,
+    GitHubProjectInfo,
+    GitHubProjectStatus,
+)
 from app.secrets import DeploymentSecrets, SecretName
 from app.settings import Settings
 
@@ -123,7 +128,9 @@ class GitHubProjectsService:
 
         configuration = self._require_configuration()
         project = await self._request(
-            configuration, "GET", f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}"
+            configuration,
+            "GET",
+            f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}",
         )
         priority_field = await self._priority_field(configuration)
         title = project.get("title")
@@ -176,7 +183,9 @@ class GitHubProjectsService:
 
         configuration = self._require_configuration()
         project = await self._request(
-            configuration, "GET", f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}"
+            configuration,
+            "GET",
+            f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}",
         )
         project_id = project.get("node_id")
         if not isinstance(project_id, str):
@@ -235,7 +244,9 @@ class GitHubProjectsService:
     def _require_configuration(self) -> GitHubProjectsConfiguration:
         configuration = self._boundary.configuration()
         if configuration is None:
-            raise GitHubProjectsConfigurationError("GitHub Projects is not configured for this deployment.")
+            raise GitHubProjectsConfigurationError(
+                "GitHub Projects is not configured for this deployment."
+            )
         return configuration
 
     async def _priority_field(self, configuration: GitHubProjectsConfiguration) -> _PriorityField:
@@ -285,7 +296,9 @@ class GitHubProjectsService:
         priority: str,
     ) -> None:
         project = await self._request(
-            configuration, "GET", f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}"
+            configuration,
+            "GET",
+            f"/orgs/{configuration.owner}/projectsV2/{configuration.project_number}",
         )
         project_id = project.get("node_id")
         if not isinstance(project_id, str):
@@ -308,8 +321,11 @@ class GitHubProjectsService:
         if response.get("errors"):
             raise GitHubProjectsProviderError("GitHub rejected the Priority update.")
         data = response.get("data")
-        if not isinstance(data, Mapping) or not isinstance(data.get("updateProjectV2ItemFieldValue"), Mapping):
-            raise GitHubProjectsProviderError("GitHub returned an invalid Priority-update response.")
+        updated_value = data.get("updateProjectV2ItemFieldValue") if isinstance(data, Mapping) else None
+        if not isinstance(updated_value, Mapping):
+            raise GitHubProjectsProviderError(
+                "GitHub returned an invalid Priority-update response."
+            )
 
     async def _request(
         self,
@@ -325,7 +341,10 @@ class GitHubProjectsService:
         }
         try:
             async with httpx.AsyncClient(
-                base_url="https://api.github.com", headers=headers, timeout=10.0, transport=self._transport
+                base_url="https://api.github.com",
+                headers=headers,
+                timeout=10.0,
+                transport=self._transport,
             ) as client:
                 response = await client.request(method, path, json=payload)
         except httpx.HTTPError as error:

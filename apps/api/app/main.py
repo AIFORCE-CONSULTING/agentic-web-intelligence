@@ -29,16 +29,16 @@ from app.github_projects.service import (
     GitHubProjectsProviderError,
     GitHubProjectsService,
 )
-from app.identity.authorization import (
-    AuthorizationError,
-    WorkspacePermission,
-    require_permission,
-)
 from app.identity.audit import (
     AuditDetailPolicyError,
     SecurityAuditStore,
     SecurityAuditStoreUnavailable,
     validate_audit_details,
+)
+from app.identity.authorization import (
+    AuthorizationError,
+    WorkspacePermission,
+    require_permission,
 )
 from app.identity.contracts import (
     AuthenticatedServiceIdentity,
@@ -62,8 +62,8 @@ from app.prompt_templates import (
     governed_research_template_info,
     render_governed_research_prompt,
 )
-from app.settings import get_settings
 from app.secrets import DeploymentSecrets, SecretName, SecretStatusList
+from app.settings import get_settings
 from app.web_research.contracts import (
     BatchExtractionOutcome,
     BatchExtractRequest,

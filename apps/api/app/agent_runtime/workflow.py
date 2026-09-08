@@ -1,6 +1,7 @@
 """A deterministic LangGraph planner that stops before any agent execution."""
 
 from typing import TypedDict
+from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 
@@ -14,6 +15,7 @@ class PlanningWorkflowState(TypedDict, total=False):
     """State carried only inside the trusted server-side planning graph."""
 
     goal: str
+    workspace_id: UUID
     run: RuntimeRun
 
 
@@ -30,7 +32,7 @@ def build_deterministic_planning_workflow(service: RuntimeService) -> StateGraph
     """Build the server-only planner; it always stops at the approval boundary."""
 
     async def start_run(state: PlanningWorkflowState) -> PlanningWorkflowState:
-        return {"run": await service.start_run(state["goal"])}
+        return {"run": await service.start_run(state["goal"], state["workspace_id"])}
 
     async def materialize_plan(state: PlanningWorkflowState) -> PlanningWorkflowState:
         run = state["run"]
@@ -46,10 +48,14 @@ def build_deterministic_planning_workflow(service: RuntimeService) -> StateGraph
     )
 
 
-async def run_deterministic_planner(service: RuntimeService, goal: str) -> RuntimeRun:
+async def run_deterministic_planner(
+    service: RuntimeService, goal: str, workspace_id: UUID
+) -> RuntimeRun:
     """Create an approved runtime plan without tool execution or an LLM call."""
 
-    result = await build_deterministic_planning_workflow(service).compile().ainvoke({"goal": goal})
+    result = await build_deterministic_planning_workflow(service).compile().ainvoke(
+        {"goal": goal, "workspace_id": workspace_id}
+    )
     return result["run"]
 
 

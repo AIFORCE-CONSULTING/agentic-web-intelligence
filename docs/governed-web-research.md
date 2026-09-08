@@ -11,6 +11,21 @@ only `web.search` and `web.extract`. `GET /v1/mcp/tools` is a convenient
 operator-readable view of that same allow-listed registry. Provider-specific
 tools are never advertised to agents.
 
+## Tool-registry governance
+
+Every agent-visible tool is a code-owned registry entry, not just a dispatch
+case. An entry must declare its owner, purpose, required workspace permission,
+input schema, output contract, server-side secret dependencies, enabled-by-
+default state, and whether execution audit is mandatory. The API enforces the
+declared permission before dispatch and refuses an enabled tool whose required
+secret is not configured.
+
+Administrators can inspect the full safe policy inventory at
+GET /v1/tools/registry. It contains no secret values. The existing web tools
+have no credential dependency, are enabled by default, are read-only, and
+require an execution audit. A future connector must be registered with the
+same metadata before it can become callable.
+
 Every direct `tools/call` outcome is stored in Postgres without retaining the
 retrieved page text. Operators can inspect the 25 most recent outcomes through
 `GET /v1/mcp/audit`; it records the tool, success/failure/denial outcome, and

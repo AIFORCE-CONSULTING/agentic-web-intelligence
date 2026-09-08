@@ -1,6 +1,7 @@
 """Postgres persistence and server-side guards for the Phase 3 runtime core."""
 
 import json
+from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
 from uuid import UUID, uuid4
 
@@ -21,6 +22,7 @@ from app.agent_runtime.policy import MAX_RESEARCH_ATTEMPTS
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runtime_runs (
     id UUID PRIMARY KEY,
+    workspace_id UUID,
     goal TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN (
         'requested', 'planning', 'awaiting_approval', 'executing', 'reviewing',
@@ -78,6 +80,9 @@ CREATE INDEX IF NOT EXISTS agent_runtime_events_run_id_idx
     ON agent_runtime_events(run_id, occurred_at);
 CREATE INDEX IF NOT EXISTS agent_runtime_memories_run_id_idx
     ON agent_runtime_memories(run_id, expires_at);
+ALTER TABLE agent_runtime_runs ADD COLUMN IF NOT EXISTS workspace_id UUID;
+CREATE INDEX IF NOT EXISTS agent_runtime_runs_workspace_updated_at_idx
+    ON agent_runtime_runs(workspace_id, updated_at DESC);
 """
 
 RUN_MEMORY_RETENTION = timedelta(hours=24)
@@ -107,9 +112,14 @@ class RuntimeHandoffError(ValueError):
 class RuntimeStore:
     """Lazy durable store; agents have no mutation path to role or capability fields."""
 
-    def __init__(self, database_url: str | None) -> None:
+    def __init__(
+        self,
+        database_url: str | None,
+        redact: Callable[[object], object] | None = None,
+    ) -> None:
         self._database_url = database_url
         self._pool: asyncpg.Pool | None = None
+        self._redact = redact or (lambda value: value)
 
     async def close(self) -> None:
         if self._pool is not None:
@@ -133,7 +143,7 @@ class RuntimeStore:
                 ) from error
         return self._pool
 
-    async def create_run(self, goal: str) -> RuntimeRun:
+    async def create_run(self, goal: str, workspace_id: UUID) -> RuntimeRun:
         """Create a requested run and its fixed, server-assigned planner step."""
 
         pool = await self._connection_pool()
@@ -141,8 +151,10 @@ class RuntimeStore:
         planner_step_id = uuid4()
         async with pool.acquire() as connection, connection.transaction():
             await connection.execute(
-                "INSERT INTO agent_runtime_runs (id, goal, status) VALUES ($1, $2, 'requested')",
+                """INSERT INTO agent_runtime_runs (id, workspace_id, goal, status)
+                VALUES ($1, $2, $3, 'requested')""",
                 run_id,
+                workspace_id,
                 goal,
             )
             await connection.execute(
@@ -479,7 +491,7 @@ class RuntimeStore:
                 memory_id,
                 run_id,
                 memory_type,
-                json.dumps(content),
+                json.dumps(self._redact(content)),
                 source_step_id,
                 expires_at,
             )
@@ -492,11 +504,16 @@ class RuntimeStore:
             )
         return self._memory_from_row(row)
 
-    async def get_run(self, run_id: UUID) -> RuntimeRun | None:
+    async def get_run(
+        self, run_id: UUID, workspace_id: UUID | None = None
+    ) -> RuntimeRun | None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             run = await connection.fetchrow(
-                "SELECT * FROM agent_runtime_runs WHERE id = $1", run_id
+                "SELECT * FROM agent_runtime_runs WHERE id = $1 "
+                "AND ($2::uuid IS NULL OR workspace_id = $2)",
+                run_id,
+                workspace_id,
             )
             if run is None:
                 return None
@@ -529,21 +546,28 @@ class RuntimeStore:
             events=[self._event_from_row(row) for row in events],
         )
 
-    async def list_runs(self, limit: int) -> list[RuntimeRunSummary]:
+    async def list_runs(
+        self, limit: int, workspace_id: UUID | None = None
+    ) -> list[RuntimeRunSummary]:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
                 """SELECT runs.*, COUNT(steps.id)::integer AS step_count
                 FROM agent_runtime_runs AS runs
                 LEFT JOIN agent_runtime_steps AS steps ON steps.run_id = runs.id
-                GROUP BY runs.id ORDER BY runs.updated_at DESC LIMIT $1""",
+                WHERE ($1::uuid IS NULL OR runs.workspace_id = $1)
+                GROUP BY runs.id ORDER BY runs.updated_at DESC LIMIT $2""",
+                workspace_id,
                 limit,
             )
         return [RuntimeRunSummary(**dict(row)) for row in rows]
 
-    @staticmethod
     async def _append_event(
-        connection: asyncpg.Connection, run_id: UUID, event_type: str, details: dict[str, object]
+        self,
+        connection: asyncpg.Connection,
+        run_id: UUID,
+        event_type: str,
+        details: dict[str, object],
     ) -> None:
         await connection.execute(
             "INSERT INTO agent_runtime_events (id, run_id, event_type, details) "
@@ -551,7 +575,7 @@ class RuntimeStore:
             uuid4(),
             run_id,
             event_type,
-            json.dumps(details),
+            json.dumps(self._redact(details)),
         )
 
     @staticmethod

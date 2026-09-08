@@ -25,12 +25,49 @@ type BatchExtractionOutcome = {
   url: string; status: "succeeded" | "failed" | "denied"; reason?: string | null;
 };
 type BatchExtractResponse = { run_id: string; outcomes: BatchExtractionOutcome[] };
+type AuthenticatedUser = {
+  id: string; email: string; workspace_id: string; workspace_name: string;
+  role: "administrator" | "operator" | "viewer"; authenticated_at: string;
+};
+type SecurityAuditEvent = {
+  id: string; actor_user_id?: string | null; workspace_id?: string | null;
+  event_type: string; outcome: "succeeded" | "denied"; occurred_at: string;
+  details: Record<string, unknown>;
+};
+type SecurityAuditEventList = { events: SecurityAuditEvent[] };
+type SecretStatus = {
+  name: string; configured: boolean; valid: boolean; purpose: string; detail: string;
+};
+type ToolRegistryEntry = {
+  name: string; owner: string; purpose: string; required_permission: string;
+  secret_dependencies: string[]; enabled_by_default: boolean; audit_required: boolean;
+  output_contract: string;
+};
+type OperationalSecurityStatus = {
+  environment: string;
+  identity_persistence: DependencyHealth;
+  security_audit_persistence: DependencyHealth;
+  secrets: { secrets: SecretStatus[] };
+  enterprise_identity: { mode: "disabled" | "invalid" | "ready"; provider_name?: string | null; detail: string };
+  tool_registry: { tools: ToolRegistryEntry[] };
+  github_projects: GitHubProjectStatus;
+};
+type GitHubProjectStatus = {
+  mode: "disabled" | "invalid" | "ready"; owner?: string | null;
+  project_number?: number | null; project_url?: string | null; detail: string;
+};
+type GitHubProjectInfo = {
+  title: string; owner: string; project_number: number; project_url: string; priority_options: string[];
+};
+type GitHubDraftItem = { id: string; title: string; priority?: string | null };
+type GitHubDraftItemList = { items: GitHubDraftItem[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
+const isAdminRoute = window.location.pathname === "/admin";
 
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
-  const response = await fetch(`${apiBaseUrl}${path}`, options);
+  const response = await fetch(`${apiBaseUrl}${path}`, { credentials: "include", ...options });
   if (!response.ok) {
     const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
     throw new Error(payload?.detail ?? "The platform request could not be completed.");
@@ -59,8 +96,9 @@ function latestExtractionAttemptFor(run: ResearchRun): ExtractionAttempt | null 
 function PrimaryNavigation() {
   return (
     <nav className="primary-nav" aria-label="Primary navigation">
-      <a className={!isDeveloperRoute ? "active" : ""} href="/">Research workspace</a>
+      <a className={!isDeveloperRoute && !isAdminRoute ? "active" : ""} href="/">Research workspace</a>
       <a className={isDeveloperRoute ? "active" : ""} href="/developer">Developer hub</a>
+      <a className={isAdminRoute ? "active" : ""} href="/admin">Admin</a>
     </nav>
   );
 }
@@ -99,6 +137,7 @@ function DeveloperHub({
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/tools`} target="_blank" rel="noreferrer"><strong>MCP tool catalog</strong><span>Inspect the only agent-visible, read-only web tools.</span><small>{apiBaseUrl}/v1/mcp/tools</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/audit`} target="_blank" rel="noreferrer"><strong>MCP execution audit</strong><span>Review bounded, durable outcomes from direct MCP calls.</span><small>{apiBaseUrl}/v1/mcp/audit</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/runtime/runs`} target="_blank" rel="noreferrer"><strong>Agent runtime runs</strong><span>Inspect server-owned roles, capabilities, handoffs, and lifecycle events.</span><small>{apiBaseUrl}/v1/runtime/runs</small></a>
+          <a className="developer-card" href="/admin"><strong>Platform administration</strong><span>Sign in locally and inspect your workspace identity and security audit trail.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · included with the web-research stack</small></a>
         </div>
       </section>
@@ -107,6 +146,251 @@ function DeveloperHub({
         <p>The documentation site starts with the <code>web-research</code> profile. SearXNG remains internal-only; all web research goes through the governed API.</p>
       </section>
     </>
+  );
+}
+
+function AdminConsole() {
+  const [user, setUser] = useState<AuthenticatedUser | null>(null);
+  const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
+  const [posture, setPosture] = useState<OperationalSecurityStatus | null>(null);
+  const [githubStatus, setGithubStatus] = useState<GitHubProjectStatus | null>(null);
+  const [githubProject, setGithubProject] = useState<GitHubProjectInfo | null>(null);
+  const [draftItems, setDraftItems] = useState<GitHubDraftItem[]>([]);
+  const [roadmapError, setRoadmapError] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState("");
+  const [draftBody, setDraftBody] = useState("");
+  const [draftPriority, setDraftPriority] = useState("");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [bootstrapSecret, setBootstrapSecret] = useState("");
+  const [showBootstrap, setShowBootstrap] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function loadAdminData() {
+    const currentUser = await apiRequest<AuthenticatedUser>("/v1/auth/me");
+    setUser(currentUser);
+    setRoadmapError(null);
+    if (currentUser.role === "administrator" || currentUser.role === "operator") {
+      const status = await apiRequest<GitHubProjectStatus>("/v1/github/projects/status");
+      setGithubStatus(status);
+      if (status.mode === "ready") {
+        try {
+          const [project, items] = await Promise.all([
+            apiRequest<GitHubProjectInfo>("/v1/github/projects/roadmap"),
+            apiRequest<GitHubDraftItemList>("/v1/github/projects/draft-items"),
+          ]);
+          setGithubProject(project);
+          setDraftItems(items.items);
+        } catch (reason) {
+          setGithubProject(null);
+          setDraftItems([]);
+          setRoadmapError(
+            reason instanceof Error ? reason.message : "Unable to load the GitHub roadmap."
+          );
+        }
+      } else {
+        setGithubProject(null);
+        setDraftItems([]);
+      }
+    } else {
+      setGithubStatus(null);
+      setGithubProject(null);
+      setDraftItems([]);
+    }
+    if (currentUser.role !== "administrator") {
+      setEvents([]);
+      setPosture(null);
+      return;
+    }
+    const [audit, securityPosture] = await Promise.all([
+      apiRequest<SecurityAuditEventList>("/v1/audit/security"),
+      apiRequest<OperationalSecurityStatus>("/v1/operations/security-status"),
+    ]);
+    setEvents(audit.events);
+    setPosture(securityPosture);
+  }
+
+  async function createDraftItem(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<GitHubDraftItem>("/v1/github/projects/draft-items", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title: draftTitle,
+          body: draftBody || undefined,
+          priority: draftPriority || undefined,
+        }),
+      });
+      setDraftTitle("");
+      setDraftBody("");
+      setDraftPriority("");
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to create the roadmap item.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function updateDraftPriority(itemId: string, priority: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<GitHubDraftItem>(`/v1/github/projects/draft-items/${encodeURIComponent(itemId)}/priority`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ priority }),
+      });
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to update Priority.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  useEffect(() => {
+    void loadAdminData().catch((reason) => {
+      setUser(null);
+      setEvents([]);
+      setPosture(null);
+      if (reason instanceof Error && reason.message !== "Authentication is required.") {
+        setError(reason.message);
+      }
+    });
+  }, []);
+
+  async function signIn(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<AuthenticatedUser>("/v1/auth/sign-in", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+      setPassword("");
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to sign in.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function bootstrap(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<AuthenticatedUser>("/v1/auth/bootstrap", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ bootstrap_secret: bootstrapSecret, email, password }),
+      });
+      setBootstrapSecret("");
+      setPassword("");
+      setShowBootstrap(false);
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to initialize the administrator.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function signOut() {
+    setBusy(true);
+    setError(null);
+    try {
+      const response = await fetch(`${apiBaseUrl}/v1/auth/sign-out`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error("Unable to sign out.");
+      setUser(null);
+      setEvents([]);
+      setPosture(null);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to sign out.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main>
+      <header>
+        <p className="eyebrow">Platform control plane</p>
+        <PrimaryNavigation />
+        <h1>Administration</h1>
+        <p className="lead">Inspect the identity and security decisions that the server enforces for this workspace.</p>
+      </header>
+      {error && <p className="error" role="alert">{error}</p>}
+      {!user && <section aria-labelledby="admin-sign-in-heading">
+        <h2 id="admin-sign-in-heading">Sign in</h2>
+        <p className="hint">Use the local administrator account created during deployment bootstrap.</p>
+        <form className="auth-form" onSubmit={signIn}>
+          <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+          <label>Password<input type="password" value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          <button type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in"}</button>
+        </form>
+        <button type="button" className="link-button" onClick={() => setShowBootstrap((visible) => !visible)}>
+          {showBootstrap ? "Hide first-time setup" : "First-time setup"}
+        </button>
+        {showBootstrap && <form className="auth-form bootstrap-form" onSubmit={bootstrap}>
+          <p className="hint">Use this once with the deployment-controlled bootstrap secret. It is unavailable after the first administrator is created.</p>
+          <label>Bootstrap secret<input type="password" value={bootstrapSecret} onChange={(event) => setBootstrapSecret(event.target.value)} required /></label>
+          <label>Email<input type="email" value={email} onChange={(event) => setEmail(event.target.value)} required /></label>
+          <label>Password<input type="password" minLength={14} value={password} onChange={(event) => setPassword(event.target.value)} required /></label>
+          <button type="submit" disabled={busy}>{busy ? "Initializing…" : "Create administrator"}</button>
+        </form>}
+      </section>}
+      {user && <>
+        <section aria-labelledby="identity-heading">
+          <div className="section-heading"><div><p className="eyebrow">Authenticated session</p><h2 id="identity-heading">Current identity</h2></div><button type="button" className="secondary" onClick={() => void signOut()} disabled={busy}>Sign out</button></div>
+          <dl className="identity-grid"><div><dt>Email</dt><dd>{user.email}</dd></div><div><dt>Role</dt><dd><span className={`role ${user.role}`}>{user.role}</span></dd></div><div><dt>Workspace</dt><dd>{user.workspace_name}</dd></div><div><dt>Session established</dt><dd>{new Date(user.authenticated_at).toLocaleString()}</dd></div></dl>
+        </section>
+        {(user.role === "administrator" || user.role === "operator") && githubStatus && <section aria-labelledby="roadmap-heading">
+          <div className="section-heading"><div><p className="eyebrow">GitHub Projects</p><h2 id="roadmap-heading">Roadmap</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          {githubStatus.mode !== "ready" && <p className="hint">{githubStatus.detail}</p>}
+          {roadmapError && <p className="error" role="alert">{roadmapError}</p>}
+          {githubProject && <>
+            <p className="hint">Managing draft-only cards in <a href={githubProject.project_url} target="_blank" rel="noreferrer">{githubProject.title}</a>. No repository Issues are created.</p>
+            <form className="auth-form roadmap-form" onSubmit={createDraftItem}>
+              <label>Task title<input value={draftTitle} onChange={(event) => setDraftTitle(event.target.value)} maxLength={256} required /></label>
+              <label>Notes<textarea value={draftBody} onChange={(event) => setDraftBody(event.target.value)} maxLength={65536} /></label>
+              <label>Priority<select value={draftPriority} onChange={(event) => setDraftPriority(event.target.value)}><option value="">Not set</option>{githubProject.priority_options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label>
+              <button type="submit" disabled={busy}>{busy ? "Saving…" : "Create draft task"}</button>
+            </form>
+            {draftItems.length ? <ol className="roadmap-items">{draftItems.map((item) => <li key={item.id}><div><strong>{item.title}</strong><small>Draft item</small></div><label>Priority<select value={item.priority ?? ""} onChange={(event) => { if (event.target.value) void updateDraftPriority(item.id, event.target.value); }} disabled={busy}><option value="" disabled>Not set</option>{githubProject.priority_options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label></li>)}</ol> : <p>No draft tasks yet.</p>}
+          </>}
+        </section>}
+        {user.role === "administrator" && posture && <section aria-labelledby="security-posture-heading">
+          <div className="section-heading"><div><p className="eyebrow">Deployment controls</p><h2 id="security-posture-heading">Security posture</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          <p className="hint">Safe configuration and dependency status for this deployment. Secret values are never displayed.</p>
+          <div className="posture-grid">
+            {[posture.identity_persistence, posture.security_audit_persistence].map((item) => <article className={"service-card " + item.status} key={item.name}><div><strong>{item.name}</strong><span>{item.status}</span></div><p>{item.detail}</p></article>)}
+            <article className={"service-card " + (posture.enterprise_identity.mode === "invalid" ? "unavailable" : posture.enterprise_identity.mode === "ready" ? "ready" : "unconfigured")}><div><strong>Enterprise identity</strong><span>{posture.enterprise_identity.mode}</span></div><p>{posture.enterprise_identity.detail}</p></article>
+            <article className={"service-card " + (posture.github_projects.mode === "invalid" ? "unavailable" : posture.github_projects.mode === "ready" ? "ready" : "unconfigured")}><div><strong>GitHub Projects</strong><span>{posture.github_projects.mode}</span></div><p>{posture.github_projects.detail}</p></article>
+          </div>
+          <div className="posture-details">
+            <article><h3>Deployment secrets</h3><ul>{posture.secrets.secrets.map((secret) => <li key={secret.name}><strong>{secret.name}</strong><span className={secret.configured && secret.valid ? "ready-text" : "warning-text"}>{secret.detail}</span><small>{secret.purpose}</small></li>)}</ul></article>
+            <article><h3>Governed tools</h3><ul>{posture.tool_registry.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong><span>{tool.required_permission} · {tool.audit_required ? "audited" : "not audited"}</span><small>{tool.purpose}</small></li>)}</ul></article>
+          </div>
+        </section>}
+        {user.role === "administrator" ? <section aria-labelledby="security-audit-heading">
+          <div className="section-heading"><div><p className="eyebrow">Append-only record</p><h2 id="security-audit-heading">Security audit</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          <p className="hint">Authentication and authorization decisions only. Secrets and raw session tokens are never shown or stored.</p>
+          {events.length ? <ol className="security-audit">{events.map((item) => <li key={item.id} className={item.outcome}><div><strong>{item.event_type}</strong><span>{item.outcome}</span></div><time>{new Date(item.occurred_at).toLocaleString()}</time>{Object.keys(item.details).length > 0 && <pre>{JSON.stringify(item.details, null, 2)}</pre>}</li>)}</ol> : <p>No workspace security events have been recorded yet.</p>}
+        </section> : <section><h2>Administrator access required</h2><p>Your role can use its permitted workspace capabilities, but only an administrator may view the security audit trail.</p></section>}
+      </>}
+    </main>
   );
 }
 
@@ -157,7 +441,7 @@ export function App() {
   }
 
   useEffect(() => {
-    if (health) void refreshRunLibrary();
+    if (health && !isDeveloperRoute && !isAdminRoute) void refreshRunLibrary();
   }, [health]);
 
   async function reopenRun(runId: string) {
@@ -239,6 +523,8 @@ export function App() {
     }
   }
 
+  if (isAdminRoute) return <AdminConsole />;
+
   if (isDeveloperRoute) {
     return <main><DeveloperHub health={health} serviceHealth={serviceHealth} onRefresh={() => void refreshServiceHealth()} /></main>;
   }
@@ -279,10 +565,10 @@ export function App() {
         <section aria-labelledby="sources-heading">
           <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Select source candidates</h2></div><span className="badge">{selectedSourceUrls.length} selected</span></div>
           {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
-            <li key={`${source.rank}-${source.url}`}><label className="source">
+            <li className="source-candidate" key={`${source.rank}-${source.url}`}><label className="source">
               <input type="checkbox" checked={selectedSourceUrls.includes(source.url)} onChange={() => toggleSource(source.url)} disabled={busy} />
-              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong><small>{source.url}</small>{source.snippet && <span>{source.snippet}</span>}</span>
-            </label></li>
+              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}</span>
+            </label><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a></li>
           ))}</ol> : <p>No public source candidates were returned for this question.</p>}
         </section>
 

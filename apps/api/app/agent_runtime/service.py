@@ -33,10 +33,10 @@ class RuntimeService:
     def __init__(self, store: RuntimeStore) -> None:
         self._store = store
 
-    async def start_run(self, goal: str) -> RuntimeRun:
+    async def start_run(self, goal: str, workspace_id: UUID) -> RuntimeRun:
         """Create a server-owned planner assignment and begin the planning phase."""
 
-        run = await self._store.create_run(goal)
+        run = await self._store.create_run(goal, workspace_id)
         transitioned = await self._store.transition_run(run.id, "planning")
         assert transitioned is not None
         return transitioned

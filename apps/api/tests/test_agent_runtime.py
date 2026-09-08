@@ -238,7 +238,7 @@ def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
         def __init__(self) -> None:
             self.proposals: list[PlanStepProposal] = []
 
-        async def start_run(self, goal: str) -> RuntimeRun:
+        async def start_run(self, goal: str, _: object) -> RuntimeRun:
             return RuntimeRun(
                 id=run_id,
                 goal=goal,
@@ -258,7 +258,7 @@ def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
             )
 
     service = FakeService()
-    planned = asyncio.run(run_deterministic_planner(service, "Research a topic"))
+    planned = asyncio.run(run_deterministic_planner(service, "Research a topic", uuid4()))
 
     assert planned.status == "awaiting_approval"
     assert [(proposal.role, proposal.title) for proposal in service.proposals] == [

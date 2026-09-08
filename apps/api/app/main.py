@@ -15,7 +15,43 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.identity.contracts import AuthenticatedUser, BootstrapAdminRequest, SignInRequest
+from app.github_projects.contracts import (
+    CreateDraftItemRequest,
+    GitHubDraftItem,
+    GitHubDraftItemList,
+    GitHubProjectInfo,
+    GitHubProjectStatus,
+    UpdateDraftItemPriorityRequest,
+)
+from app.github_projects.service import (
+    GitHubProjectsBoundary,
+    GitHubProjectsConfigurationError,
+    GitHubProjectsProviderError,
+    GitHubProjectsService,
+)
+from app.identity.audit import (
+    AuditDetailPolicyError,
+    SecurityAuditStore,
+    SecurityAuditStoreUnavailable,
+    validate_audit_details,
+)
+from app.identity.authorization import (
+    AuthorizationError,
+    WorkspacePermission,
+    require_permission,
+)
+from app.identity.contracts import (
+    AuthenticatedServiceIdentity,
+    AuthenticatedUser,
+    BootstrapAdminRequest,
+    CreatedServiceIdentity,
+    CreateServiceIdentityRequest,
+    EnterpriseIdentityStatus,
+    SecurityAuditEventList,
+    ServiceIdentityList,
+    SignInRequest,
+)
+from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
 from app.identity.store import IdentityStore, IdentityStoreUnavailable
 from app.prompt_templates import (
@@ -26,6 +62,7 @@ from app.prompt_templates import (
     governed_research_template_info,
     render_governed_research_prompt,
 )
+from app.secrets import DeploymentSecrets, SecretName, SecretStatusList
 from app.settings import get_settings
 from app.web_research.contracts import (
     BatchExtractionOutcome,
@@ -45,7 +82,7 @@ from app.web_research.contracts import (
     ToolProviderError,
     ToolRetrievalError,
 )
-from app.web_research.mcp_host import GovernedWebMcpHost
+from app.web_research.mcp_host import GovernedWebMcpHost, ToolRegistryList
 from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
 
@@ -72,24 +109,53 @@ class ServiceHealthResponse(HealthResponse):
     services: list[DependencyHealth]
 
 
+class OperationalSecurityStatus(BaseModel):
+    """Administrator-only posture view with no credentials or identity data."""
+
+    environment: str
+    identity_persistence: DependencyHealth
+    security_audit_persistence: DependencyHealth
+    secrets: SecretStatusList
+    enterprise_identity: EnterpriseIdentityStatus
+    tool_registry: ToolRegistryList
+    github_projects: GitHubProjectStatus
+
+
 def create_app() -> FastAPI:
     """Create the platform API with explicit cross-origin policy."""
 
     settings = get_settings()
+    settings.validate_runtime_configuration()
     app = FastAPI(
         title="Agentic Web Intelligence API",
         version="0.1.0",
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
     )
-    app.state.research_store = ResearchStore(settings.database_url)
-    app.state.runtime_store = RuntimeStore(settings.database_url)
+    app.state.deployment_secrets = DeploymentSecrets(settings)
+    app.state.research_store = ResearchStore(
+        settings.database_url, app.state.deployment_secrets.redact
+    )
+    app.state.runtime_store = RuntimeStore(
+        settings.database_url, app.state.deployment_secrets.redact
+    )
     app.state.runtime_service = RuntimeService(app.state.runtime_store)
     app.state.identity_store = IdentityStore(settings.database_url)
-    app.state.identity_service = IdentityService(
-        app.state.identity_store, settings.auth_bootstrap_secret
+    app.state.security_audit_store = SecurityAuditStore(
+        settings.database_url, app.state.deployment_secrets.redact
     )
+    app.state.identity_service = IdentityService(
+        app.state.identity_store,
+        app.state.deployment_secrets.get(SecretName.AUTH_BOOTSTRAP),
+    )
+    app.state.enterprise_identity = EnterpriseIdentityBoundary(
+        settings, app.state.deployment_secrets
+    )
+    app.state.github_projects_boundary = GitHubProjectsBoundary(
+        settings, app.state.deployment_secrets
+    )
+    app.state.github_projects = GitHubProjectsService(app.state.github_projects_boundary)
     app.state.mcp_host = GovernedWebMcpHost(
-        audit_recorder=app.state.research_store.record_mcp_tool_event
+        deployment_secrets=app.state.deployment_secrets
     )
     app.add_middleware(
         CORSMiddleware,
@@ -98,6 +164,33 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
+
+    @app.middleware("http")
+    async def add_security_response_headers(request: Request, call_next):
+        """Apply safe browser defaults without changing API payloads."""
+
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault(
+            "Permissions-Policy", "camera=(), geolocation=(), microphone=()"
+        )
+        if request.url.path.startswith(
+            (
+                "/v1/auth",
+                "/v1/secrets",
+                "/v1/service-identities",
+                "/v1/operations",
+                "/v1/github",
+            )
+        ):
+            response.headers.setdefault("Cache-Control", "no-store")
+        if settings.app_environment == "production":
+            response.headers.setdefault(
+                "Strict-Transport-Security", "max-age=31536000; includeSubDomains"
+            )
+        return response
 
     def set_session_cookie(response: Response, token: str) -> None:
         """Set an opaque, HttpOnly session token that browser JavaScript cannot read."""
@@ -111,6 +204,77 @@ def create_app() -> FastAPI:
             samesite="lax",
             path="/",
         )
+
+    async def require_workspace_permission(
+        http_request: Request, permission: WorkspacePermission
+    ) -> AuthenticatedUser | AuthenticatedServiceIdentity:
+        """Authenticate a browser user or service token, then apply server-owned policy."""
+
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            identity = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
+            if identity is None and http_request.headers.get("Authorization"):
+                identity = await service.current_service_identity(
+                    http_request.headers.get("Authorization")
+                )
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if identity is None:
+            await record_security_event(
+                http_request,
+                "authorization.denied",
+                "denied",
+                details={"reason": "no_authenticated_identity"},
+            )
+            raise HTTPException(status_code=401, detail="Authentication is required.")
+        try:
+            require_permission(identity, permission)
+        except AuthorizationError as error:
+            await record_security_event(
+                http_request,
+                "authorization.denied",
+                "denied",
+                actor=identity,
+                details={"permission": permission},
+            )
+            raise HTTPException(status_code=403, detail=str(error)) from error
+        return identity
+
+    async def record_security_event(
+        http_request: Request,
+        event_type: str,
+        outcome: str,
+        actor: AuthenticatedUser | AuthenticatedServiceIdentity | None = None,
+        details: dict[str, object] | None = None,
+    ) -> None:
+        """Best-effort audit that never stores credentials or changes an access decision."""
+
+        store: SecurityAuditStore = http_request.app.state.security_audit_store
+        try:
+            safe_details = validate_audit_details(event_type, details)
+            audit_fields: dict[str, object] = {
+                "actor_user_id": actor.id if isinstance(actor, AuthenticatedUser) else None,
+                "workspace_id": actor.workspace_id if actor else None,
+                "details": safe_details,
+            }
+            if isinstance(actor, AuthenticatedServiceIdentity):
+                audit_fields["actor_service_identity_id"] = actor.id
+            await store.record(
+                event_type,
+                outcome,
+                **audit_fields,
+            )
+        except (AuditDetailPolicyError, SecurityAuditStoreUnavailable):
+            # Authentication and authorization still enforce safely if the audit backend is down.
+            return
+
+    async def require_human_project_manager(http_request: Request) -> AuthenticatedUser:
+        """Restrict external Project changes to authenticated human administrators or operators."""
+
+        identity = await require_workspace_permission(http_request, "github.projects.manage")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human operator is required.")
+        return identity
 
     @app.post(
         "/v1/auth/bootstrap",
@@ -129,12 +293,16 @@ def create_app() -> FastAPI:
                 request.bootstrap_secret, str(request.email), request.password
             )
         except AuthenticationError as error:
+            await record_security_event(
+                http_request, "auth.bootstrap", "denied", details={"reason": "invalid_proof"}
+            )
             raise HTTPException(status_code=401, detail=str(error)) from error
         except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         set_session_cookie(response, token)
+        await record_security_event(http_request, "auth.bootstrap", "succeeded", actor=user)
         return user
 
     @app.post("/v1/auth/sign-in", response_model=AuthenticatedUser, tags=["auth"])
@@ -147,10 +315,14 @@ def create_app() -> FastAPI:
         try:
             user, token = await service.sign_in(str(request.email), request.password)
         except AuthenticationError as error:
+            await record_security_event(
+                http_request, "auth.sign_in", "denied", details={"reason": "invalid_credentials"}
+            )
             raise HTTPException(status_code=401, detail=str(error)) from error
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         set_session_cookie(response, token)
+        await record_security_event(http_request, "auth.sign_in", "succeeded", actor=user)
         return user
 
     @app.get("/v1/auth/me", response_model=AuthenticatedUser, tags=["auth"])
@@ -172,11 +344,293 @@ def create_app() -> FastAPI:
 
         service: IdentityService = http_request.app.state.identity_service
         try:
+            user = await service.current_user(http_request.cookies.get(SESSION_COOKIE_NAME))
             await service.sign_out(http_request.cookies.get(SESSION_COOKIE_NAME))
         except IdentityStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         response.delete_cookie(SESSION_COOKIE_NAME, path="/")
+        await record_security_event(
+            http_request,
+            "auth.sign_out",
+            "succeeded" if user else "denied",
+            actor=user,
+            details={} if user else {"reason": "no_session"},
+        )
         return response
+
+    @app.get(
+        "/v1/auth/enterprise/status",
+        response_model=EnterpriseIdentityStatus,
+        tags=["auth"],
+    )
+    async def enterprise_identity_status(http_request: Request) -> EnterpriseIdentityStatus:
+        """Report OIDC configuration readiness without disclosing client credentials."""
+
+        boundary: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
+        return boundary.status()
+
+    @app.get("/v1/secrets/status", response_model=SecretStatusList, tags=["secrets"])
+    async def secret_status(http_request: Request) -> SecretStatusList:
+        """Show administrators configured secret names, never their values."""
+
+        administrator = await require_workspace_permission(http_request, "security.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
+        return deployment_secrets.status()
+
+    @app.get(
+        "/v1/operations/security-status",
+        response_model=OperationalSecurityStatus,
+        tags=["operations"],
+    )
+    async def operational_security_status(http_request: Request) -> OperationalSecurityStatus:
+        """Report the administrator's safe Phase 4 security posture and dependencies."""
+
+        administrator = await require_workspace_permission(http_request, "security.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+
+        async def persistence_status(
+            name: str, store: object, unavailable_error: type[Exception]
+        ) -> DependencyHealth:
+            try:
+                await store.healthcheck()  # type: ignore[union-attr]
+            except unavailable_error:
+                return DependencyHealth(
+                    name=name,
+                    status="unavailable" if settings.database_url else "unconfigured",
+                    detail="Postgres is not available for this security boundary.",
+                )
+            return DependencyHealth(
+                name=name,
+                status="ready",
+                detail="Postgres is available for this security boundary.",
+            )
+
+        identity_store: IdentityStore = http_request.app.state.identity_store
+        audit_store: SecurityAuditStore = http_request.app.state.security_audit_store
+        deployment_secrets: DeploymentSecrets = http_request.app.state.deployment_secrets
+        enterprise_identity: EnterpriseIdentityBoundary = http_request.app.state.enterprise_identity
+        github_projects: GitHubProjectsBoundary = http_request.app.state.github_projects_boundary
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        identity_status, audit_status = await asyncio.gather(
+            persistence_status("Identity persistence", identity_store, IdentityStoreUnavailable),
+            persistence_status(
+                "Security audit persistence", audit_store, SecurityAuditStoreUnavailable
+            ),
+        )
+        return OperationalSecurityStatus(
+            environment=settings.app_environment,
+            identity_persistence=identity_status,
+            security_audit_persistence=audit_status,
+            secrets=deployment_secrets.status(),
+            enterprise_identity=enterprise_identity.status(),
+            tool_registry=host.registry(),
+            github_projects=github_projects.status(),
+        )
+
+    @app.get(
+        "/v1/github/projects/status",
+        response_model=GitHubProjectStatus,
+        tags=["github-projects"],
+    )
+    async def github_projects_status(http_request: Request) -> GitHubProjectStatus:
+        """Show credential-free readiness for the one Project this deployment may manage."""
+
+        await require_human_project_manager(http_request)
+        boundary: GitHubProjectsBoundary = http_request.app.state.github_projects_boundary
+        return boundary.status()
+
+    @app.get(
+        "/v1/github/projects/roadmap",
+        response_model=GitHubProjectInfo,
+        tags=["github-projects"],
+    )
+    async def github_project_roadmap(http_request: Request) -> GitHubProjectInfo:
+        """Read the configured Project and its current selectable Priority values."""
+
+        await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            return await service.project_info()
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.get(
+        "/v1/github/projects/draft-items",
+        response_model=GitHubDraftItemList,
+        tags=["github-projects"],
+    )
+    async def list_github_project_draft_items(http_request: Request) -> GitHubDraftItemList:
+        """List bounded draft-only roadmap items; repository Issues are intentionally excluded."""
+
+        await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            return await service.list_draft_items()
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+
+    @app.post(
+        "/v1/github/projects/draft-items",
+        response_model=GitHubDraftItem,
+        status_code=201,
+        tags=["github-projects"],
+    )
+    async def create_github_project_draft_item(
+        request: CreateDraftItemRequest, http_request: Request
+    ) -> GitHubDraftItem:
+        """Create a draft-only roadmap card; no repository Issue is created."""
+
+        operator = await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            item = await service.create_draft_item(request.title, request.body, request.priority)
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        status = http_request.app.state.github_projects_boundary.status()
+        await record_security_event(
+            http_request,
+            "connector.github.draft_item.created",
+            "succeeded",
+            actor=operator,
+            details={
+                "project_number": status.project_number,
+                "item_id": item.id,
+                "priority": item.priority,
+            },
+        )
+        return item
+
+    @app.patch(
+        "/v1/github/projects/draft-items/{item_id}/priority",
+        response_model=GitHubDraftItem,
+        tags=["github-projects"],
+    )
+    async def update_github_project_draft_item_priority(
+        item_id: str, request: UpdateDraftItemPriorityRequest, http_request: Request
+    ) -> GitHubDraftItem:
+        """Set only the existing Priority field for a draft item in the configured Project."""
+
+        if len(item_id) > 256:
+            raise HTTPException(status_code=422, detail="item_id is too long.")
+        operator = await require_human_project_manager(http_request)
+        service: GitHubProjectsService = http_request.app.state.github_projects
+        try:
+            item = await service.update_draft_item_priority(item_id, request.priority)
+        except GitHubProjectsConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except GitHubProjectsProviderError as error:
+            raise HTTPException(status_code=502, detail=str(error)) from error
+        status = http_request.app.state.github_projects_boundary.status()
+        await record_security_event(
+            http_request,
+            "connector.github.draft_item.priority_updated",
+            "succeeded",
+            actor=operator,
+            details={
+                "project_number": status.project_number,
+                "item_id": item.id,
+                "priority": item.priority,
+            },
+        )
+        return item
+
+    @app.post(
+        "/v1/service-identities",
+        response_model=CreatedServiceIdentity,
+        status_code=201,
+        tags=["service-identities"],
+    )
+    async def create_service_identity(
+        request: CreateServiceIdentityRequest, http_request: Request
+    ) -> CreatedServiceIdentity:
+        """Create a workspace-bound machine identity; its token is returned once only."""
+
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            created = await service.create_service_identity(
+                administrator.workspace_id,
+                administrator.id,
+                request.name,
+                request.permissions,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "service_identity.created",
+            "succeeded",
+            actor=administrator,
+            details={"service_identity_id": str(created.id), "name": created.name},
+        )
+        return created
+
+    @app.get(
+        "/v1/service-identities",
+        response_model=ServiceIdentityList,
+        tags=["service-identities"],
+    )
+    async def list_service_identities(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> ServiceIdentityList:
+        """List credential-free service identity records for the administrator's workspace."""
+
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            return ServiceIdentityList(
+                identities=await service.list_service_identities(administrator.workspace_id, limit)
+            )
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.delete(
+        "/v1/service-identities/{identity_id}", status_code=204, tags=["service-identities"]
+    )
+    async def revoke_service_identity(identity_id: str, http_request: Request) -> Response:
+        """Irreversibly revoke a workspace-bound machine credential."""
+
+        from uuid import UUID
+
+        try:
+            parsed_identity_id = UUID(identity_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="identity_id must be a UUID.") from error
+        administrator = await require_workspace_permission(http_request, "service.identity.manage")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        service: IdentityService = http_request.app.state.identity_service
+        try:
+            revoked = await service.revoke_service_identity(
+                parsed_identity_id, administrator.workspace_id
+            )
+        except IdentityStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if not revoked:
+            raise HTTPException(status_code=404, detail="Service identity was not found.")
+        await record_security_event(
+            http_request,
+            "service_identity.revoked",
+            "succeeded",
+            actor=administrator,
+            details={"service_identity_id": str(parsed_identity_id)},
+        )
+        return Response(status_code=204)
 
     @app.get("/health/live", response_model=HealthResponse, tags=["health"])
     async def liveness() -> HealthResponse:
@@ -262,6 +716,16 @@ def create_app() -> FastAPI:
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return {"tools": host.list_tools()}
 
+    @app.get("/v1/tools/registry", response_model=ToolRegistryList, tags=["tools"])
+    async def list_governed_tool_registry(http_request: Request) -> ToolRegistryList:
+        """Show an administrator the complete code-owned policy for platform tools."""
+
+        administrator = await require_workspace_permission(http_request, "mcp.audit.read")
+        if not isinstance(administrator, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
+        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        return host.registry()
+
     @app.get("/v1/runtime/runs/{run_id}", response_model=RuntimeRun, tags=["runtime"])
     async def get_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
         """Inspect a runtime run without exposing mutation of its authority fields."""
@@ -272,9 +736,10 @@ def create_app() -> FastAPI:
             parsed_run_id = UUID(run_id)
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_workspace_permission(http_request, "runtime.read")
         store: RuntimeStore = http_request.app.state.runtime_store
         try:
-            run = await store.get_run(parsed_run_id)
+            run = await store.get_run(parsed_run_id, user.workspace_id)
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if run is None:
@@ -287,9 +752,10 @@ def create_app() -> FastAPI:
     ) -> RuntimeRunList:
         """List bounded runtime state for operator inspection."""
 
+        user = await require_workspace_permission(http_request, "runtime.read")
         store: RuntimeStore = http_request.app.state.runtime_store
         try:
-            return RuntimeRunList(runs=await store.list_runs(limit))
+            return RuntimeRunList(runs=await store.list_runs(limit, user.workspace_id))
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -299,17 +765,47 @@ def create_app() -> FastAPI:
     ) -> McpToolAuditList:
         """List bounded, durable outcomes from direct MCP tool calls."""
 
+        user = await require_workspace_permission(http_request, "mcp.audit.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            return McpToolAuditList(events=await store.list_mcp_tool_events(limit))
+            return McpToolAuditList(
+                events=await store.list_mcp_tool_events(user.workspace_id, limit)
+            )
         except ResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/v1/audit/security", response_model=SecurityAuditEventList, tags=["audit"])
+    async def list_security_audit(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> SecurityAuditEventList:
+        """Return sanitized security decisions for the authenticated administrator workspace."""
+
+        user = await require_workspace_permission(http_request, "security.audit.read")
+        store: SecurityAuditStore = http_request.app.state.security_audit_store
+        try:
+            return SecurityAuditEventList(
+                events=await store.list_workspace_events(user.workspace_id, limit)
+            )
+        except SecurityAuditStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post("/mcp", tags=["mcp"])
     async def serve_mcp(payload: dict[str, object], http_request: Request) -> dict[str, object]:
         """Serve the Phase 2 MCP JSON-RPC tool protocol over HTTP."""
 
-        host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        base_host: GovernedWebMcpHost = http_request.app.state.mcp_host
+        user = await require_workspace_permission(
+            http_request, base_host.required_permission(payload)
+        )
+        store: ResearchStore = http_request.app.state.research_store
+        host = GovernedWebMcpHost(
+            audit_recorder=lambda request_id, tool_name, outcome, details: (
+                store.record_mcp_tool_event(
+                    user.workspace_id, request_id, tool_name, outcome, details
+                )
+            ),
+            deployment_secrets=http_request.app.state.deployment_secrets,
+        )
         return await host.handle(payload)
 
     @app.get("/v1/prompts", response_model=PromptTemplateList, tags=["prompts"])
@@ -335,9 +831,10 @@ def create_app() -> FastAPI:
         return render_governed_research_prompt(request)
 
     @app.post("/v1/research/extract", response_model=Evidence, tags=["research"])
-    async def extract_public_page(request: ExtractRequest) -> Evidence:
+    async def extract_public_page(request: ExtractRequest, http_request: Request) -> Evidence:
         """Return bounded evidence from one approved public HTML page."""
 
+        await require_workspace_permission(http_request, "research.write")
         try:
             return await run_extract_workflow(request.url)
         except ToolPolicyError as error:
@@ -346,9 +843,10 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=502, detail=str(error)) from error
 
     @app.post("/v1/research/search", response_model=SearchResponse, tags=["research"])
-    async def search_public_web(request: SearchRequest) -> SearchResponse:
+    async def search_public_web(request: SearchRequest, http_request: Request) -> SearchResponse:
         """Return bounded candidate sources from the internal search provider."""
 
+        await require_workspace_permission(http_request, "research.write")
         try:
             return await run_search_workflow(request.query, request.max_results)
         except ToolProviderError as error:
@@ -360,9 +858,10 @@ def create_app() -> FastAPI:
     ) -> ResearchRun:
         """Persist a discovery run and its source provenance as one durable record."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            run = await store.create_run(request.question)
+            run = await store.create_run(user.workspace_id, request.question)
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:
@@ -373,7 +872,7 @@ def create_app() -> FastAPI:
                 for index, result in enumerate(search.results, start=1)
             ]
             await store.save_sources(run.id, sources)
-            persisted_run = await store.get_run(run.id)
+            persisted_run = await store.get_run(user.workspace_id, run.id)
             assert persisted_run is not None
             return persisted_run
         except ResearchStoreUnavailable as error:
@@ -383,11 +882,12 @@ def create_app() -> FastAPI:
     async def get_research_run(run_id: str, http_request: Request) -> ResearchRun:
         """Retrieve sources, evidence, and audit events from a prior research run."""
 
+        user = await require_workspace_permission(http_request, "research.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
 
-            run = await store.get_run(UUID(run_id))
+            run = await store.get_run(user.workspace_id, UUID(run_id))
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         except ResearchStoreUnavailable as error:
@@ -402,9 +902,10 @@ def create_app() -> FastAPI:
     ) -> ResearchRunList:
         """List recent durable runs without returning the potentially large evidence bodies."""
 
+        user = await require_workspace_permission(http_request, "research.read")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            return ResearchRunList(runs=await store.list_runs(limit))
+            return ResearchRunList(runs=await store.list_runs(user.workspace_id, limit))
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
@@ -414,6 +915,7 @@ def create_app() -> FastAPI:
     ) -> Evidence:
         """Extract approved evidence and attach it to an existing durable run."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
@@ -422,7 +924,7 @@ def create_app() -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         try:
-            if not await store.run_exists(parsed_run_id):
+            if not await store.run_exists(user.workspace_id, parsed_run_id):
                 raise HTTPException(status_code=404, detail="Research run was not found.")
             try:
                 evidence = await run_extract_workflow(request.url)
@@ -449,6 +951,7 @@ def create_app() -> FastAPI:
     ) -> BatchExtractResponse:
         """Sequentially extract selected candidates and preserve every outcome."""
 
+        user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
             from uuid import UUID
@@ -457,7 +960,7 @@ def create_app() -> FastAPI:
         except ValueError as error:
             raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
         try:
-            run = await store.get_run(parsed_run_id)
+            run = await store.get_run(user.workspace_id, parsed_run_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="Research run was not found.")
             if len(set(request.urls)) != len(request.urls):

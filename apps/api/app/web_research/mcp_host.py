@@ -10,8 +10,11 @@ from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, ValidationError
 
+from app.identity.authorization import WorkspacePermission
+from app.secrets import DeploymentSecrets, SecretName
+from app.settings import Settings
 from app.web_research.contracts import (
     Evidence,
     ExtractRequest,
@@ -33,13 +36,39 @@ class McpToolCallError(ValueError):
 AuditRecorder = Callable[[str | None, str, str, dict[str, object]], Awaitable[None]]
 
 
+class ToolRegistryEntry(BaseModel):
+    """Administrator-visible governance metadata for one approved platform tool."""
+
+    name: str
+    owner: str
+    purpose: str
+    required_permission: WorkspacePermission
+    secret_dependencies: list[SecretName] = Field(default_factory=list)
+    enabled_by_default: bool
+    audit_required: bool
+    input_schema: dict[str, Any]
+    output_contract: str
+
+
+class ToolRegistryList(BaseModel):
+    """Code-owned registry inventory; it contains policy metadata but no credentials."""
+
+    tools: list[ToolRegistryEntry]
+
+
 @dataclass(frozen=True)
 class McpToolDefinition:
-    """One agent-visible capability in the platform-owned tool registry."""
+    """One approved capability and the complete policy required to invoke it."""
 
     name: str
     description: str
     input_schema: dict[str, Any]
+    output_contract: str
+    required_permission: WorkspacePermission = "mcp.use"
+    owner: str = "platform.web_research"
+    secret_dependencies: tuple[SecretName, ...] = ()
+    enabled_by_default: bool = True
+    audit_required: bool = True
 
     def as_mcp_tool(self) -> dict[str, Any]:
         """Render the standard MCP ``tools/list`` representation."""
@@ -63,6 +92,7 @@ class GovernedWebToolPolicy:
                 "platform's approved search provider."
             ),
             input_schema=SearchRequest.model_json_schema(),
+            output_contract="SearchResponse",
         ),
         McpToolDefinition(
             name="web.extract",
@@ -70,16 +100,53 @@ class GovernedWebToolPolicy:
                 "Retrieve bounded evidence from one approved public HTML or plain-text page."
             ),
             input_schema=ExtractRequest.model_json_schema(),
+            output_contract="Evidence",
         ),
     )
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Return only the approved, read-only agent-facing tools."""
 
-        return [tool.as_mcp_tool() for tool in self._tools]
+        return [tool.as_mcp_tool() for tool in self._tools if tool.enabled_by_default]
 
-    async def call(self, name: str, arguments: Mapping[str, Any]) -> SearchResponse | Evidence:
+    def required_permission(self, name: str) -> WorkspacePermission:
+        """Return a tool's fixed permission; unknown names never broaden authority."""
+
+        tool = self._tool(name)
+        return tool.required_permission if tool else "mcp.use"
+
+    def registry(self) -> ToolRegistryList:
+        """Expose safe governance metadata without resolving or returning secret values."""
+
+        return ToolRegistryList(
+            tools=[
+                ToolRegistryEntry(
+                    name=tool.name,
+                    owner=tool.owner,
+                    purpose=tool.description,
+                    required_permission=tool.required_permission,
+                    secret_dependencies=list(tool.secret_dependencies),
+                    enabled_by_default=tool.enabled_by_default,
+                    audit_required=tool.audit_required,
+                    input_schema=tool.input_schema,
+                    output_contract=tool.output_contract,
+                )
+                for tool in self._tools
+            ]
+        )
+
+    async def call(
+        self, name: str, arguments: Mapping[str, Any], secrets: DeploymentSecrets
+    ) -> SearchResponse | Evidence:
         """Validate a named capability before it can reach an implementation."""
+
+        tool = self._tool(name)
+        if tool is None or not tool.enabled_by_default:
+            raise McpToolCallError(f"MCP tool '{name}' is not permitted by the platform policy.")
+        if tool.secret_dependencies and any(
+            secrets.get(secret) is None for secret in tool.secret_dependencies
+        ):
+            raise McpToolCallError(f"MCP tool '{name}' is not configured by the platform.")
 
         if name == "web.search":
             try:
@@ -97,6 +164,9 @@ class GovernedWebToolPolicy:
 
         raise McpToolCallError(f"MCP tool '{name}' is not permitted by the platform policy.")
 
+    def _tool(self, name: str) -> McpToolDefinition | None:
+        return next((tool for tool in self._tools if tool.name == name), None)
+
 
 class GovernedWebMcpHost:
     """Minimal JSON-RPC MCP transport for the governed web-tool policy."""
@@ -105,14 +175,30 @@ class GovernedWebMcpHost:
         self,
         policy: GovernedWebToolPolicy | None = None,
         audit_recorder: AuditRecorder | None = None,
+        deployment_secrets: DeploymentSecrets | None = None,
     ) -> None:
         self._policy = policy or GovernedWebToolPolicy()
         self._audit_recorder = audit_recorder
+        self._deployment_secrets = deployment_secrets or DeploymentSecrets(Settings())
 
     def list_tools(self) -> list[dict[str, Any]]:
         """Expose the policy registry for the HTTP catalog and MCP clients."""
 
         return self._policy.list_tools()
+
+    def required_permission(self, payload: Mapping[str, object]) -> WorkspacePermission:
+        """Select the policy-owned permission for a valid tool-call name only."""
+
+        params = payload.get("params")
+        if payload.get("method") != "tools/call" or not isinstance(params, Mapping):
+            return "mcp.use"
+        name = params.get("name")
+        return self._policy.required_permission(name) if isinstance(name, str) else "mcp.use"
+
+    def registry(self) -> ToolRegistryList:
+        """Return the full safe governance inventory for administrators."""
+
+        return self._policy.registry()
 
     async def handle(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Handle the MCP methods needed by Phase 2's tool-only server."""
@@ -148,7 +234,7 @@ class GovernedWebMcpHost:
                 request_id, -32602, "tools/call requires a tool name and object arguments."
             )
         try:
-            result = await self._policy.call(name, arguments)
+            result = await self._policy.call(name, arguments, self._deployment_secrets)
         except (McpToolCallError, ToolPolicyError, ToolProviderError, ToolRetrievalError) as error:
             outcome = (
                 "denied" if isinstance(error, McpToolCallError | ToolPolicyError) else "failed"

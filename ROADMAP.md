@@ -47,6 +47,17 @@ roadmap phase.
 
 Add Temporal, long-running workflows, and human-in-the-loop operations.
 
+- Define the durable-workflow contract, including authority, retry, timeout,
+  cancellation, idempotency, retention, and escalation rules.
+- Add a local Temporal deployment and a server-only adapter for one approved
+  runtime execution path.
+- Persist validated checkpoints and let authenticated operators inspect,
+  cancel, and resolve durable work.
+- Add explicit human approval and revision wait states without creating an
+  agent-controlled authority path.
+- Validate restart, resume, workspace isolation, cancellation, and ambiguous
+  effect behavior end to end.
+
 ## Phase 6 - Observability
 
 Add LangFuse, OpenTelemetry, metrics, and evaluation.

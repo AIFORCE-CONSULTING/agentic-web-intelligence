@@ -13,3 +13,5 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0009 — Centralized deployment secrets](adr/0009-centralized-deployment-secrets.md)
 - [ADR 0010 — Code-owned tool-registry governance](adr/0010-code-owned-tool-registry-governance.md)
 - [ADR 0011 — Operational security posture](adr/0011-operational-security-posture.md)
+- [ADR 0012 — GitHub Projects connector](adr/0012-human-operated-github-projects-connector.md)
+- [ADR 0013 — Governed durable-execution contract](adr/0013-governed-durable-execution-contract.md)

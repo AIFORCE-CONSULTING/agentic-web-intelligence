@@ -184,3 +184,31 @@ persisted atomically after the typed outcome is recorded. The revision reuses th
 researcher step, its original `web.search` and `web.extract` grants, and its
 idempotency identity. There is still no public trigger, reviewer MCP tool, or
 model-authored authority boundary.
+
+## Durable execution contract
+
+Phase 5 will let an already approved run survive an API restart or wait for a
+human decision. [ADR 0013](adr/0013-governed-durable-execution-contract.md)
+sets the boundary before a workflow engine is introduced.
+
+A durable workflow engine schedules and resumes approved work; it does not own
+authority. The runtime service continues to own goals, plans, roles,
+capabilities, state transitions, and handoff validation. A scheduled workflow
+receives only a versioned execution envelope that identifies the stored run,
+workspace, approved steps, policy version, idempotency keys, and deadlines.
+It cannot accept agent-authored roles, tools, credentials, or permission
+changes.
+
+Only explicitly transient dependency failures may retry, and every retry uses
+the original step idempotency key. Policy, validation, authorization,
+configuration, and ambiguous-effect failures never retry automatically.
+Cancellation is an authenticated operator action; workers honor it at
+checkpoints and cannot start new work after it is recorded. Exhausted retries,
+deadlines, and ambiguous results end in a typed terminal state or
+`needs_attention`, where an authorized operator decides the next action.
+
+PostgreSQL remains the canonical runtime record. The workflow engine holds
+operational execution history only; it must not become the only place needed to
+inspect or recover a run. Existing run-scoped memory still expires after 24
+hours, and durable execution must not persist secrets, raw credentials, or
+unbounded retrieved content.

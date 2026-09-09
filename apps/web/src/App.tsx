@@ -290,13 +290,21 @@ function AdminConsole() {
     }
   }
 
-  async function controlRuntimeRun(runId: string, action: "approve" | "reject" | "cancel") {
+  async function controlRuntimeRun(
+    runId: string,
+    action: "approve" | "reject" | "cancel" | "approve-revision" | "close-attention",
+  ) {
     setBusy(true);
     setError(null);
     try {
+      const encodedRunId = encodeURIComponent(runId);
       const path = action === "cancel"
-        ? `/v1/runtime/runs/${encodeURIComponent(runId)}/durable-execution/cancel`
-        : `/v1/runtime/runs/${encodeURIComponent(runId)}/approval/${action}`;
+        ? `/v1/runtime/runs/${encodedRunId}/durable-execution/cancel`
+        : action === "approve-revision"
+          ? `/v1/runtime/runs/${encodedRunId}/attention/approve-revision`
+          : action === "close-attention"
+            ? `/v1/runtime/runs/${encodedRunId}/attention/close`
+            : `/v1/runtime/runs/${encodedRunId}/approval/${action}`;
       await apiRequest<RuntimeRun>(path, {
         method: "POST",
       });
@@ -466,18 +474,23 @@ function DurableRunDetail({
 }: {
   run: RuntimeRun;
   busy: boolean;
-  onControl: (runId: string, action: "approve" | "reject" | "cancel") => Promise<void>;
+  onControl: (runId: string, action: "approve" | "reject" | "cancel" | "approve-revision" | "close-attention") => Promise<void>;
 }) {
   const scheduled = run.events.some((event) => event.event_type === "runtime.durable_execution.scheduled");
   const approved = run.events.some((event) => event.event_type === "runtime.approval.approved");
   const waitingForDecision = run.status === "awaiting_approval" && !approved;
+  const reviewAttention = run.status === "needs_attention" && run.events.some((event) => event.event_type === "runtime.review.needs_attention") && !run.events.some((event) => event.event_type === "runtime.durable_execution.needs_attention");
+  const exceptionApprovals = run.events.filter((event) => event.event_type === "runtime.review.exception_revision.approved").length;
+  const canApproveRevision = reviewAttention && exceptionApprovals < 3;
   const canCancel = scheduled && !["completed", "rejected", "failed", "cancelled", "needs_attention"].includes(run.status);
 
   return <article className="runtime-detail" aria-label="Selected durable runtime work">
     <div className="section-heading"><div><p className="eyebrow">Selected work</p><h3>{run.goal}</h3></div><span className={`runtime-status ${run.status}`}>{run.status.replaceAll("_", " ")}</span></div>
-    <p className="hint">{waitingForDecision ? "Waiting for an authorized human decision. No execution path can begin yet." : approved && run.status === "awaiting_approval" ? "Approval is recorded. Trusted platform code may now choose direct or durable execution based on the work." : "All actions remain bound to this stored run and workspace."}</p>
+    <p className="hint">{waitingForDecision ? "Waiting for an authorized human decision. No execution path can begin yet." : canApproveRevision ? `Routine review attempts are exhausted. An operator may approve exception revision ${exceptionApprovals + 1} of 3 using the same approved roles and tools.` : reviewAttention ? "The operator revision budget is exhausted. This work can only be closed." : approved && run.status === "awaiting_approval" ? "Approval is recorded. Trusted platform code may now choose direct or durable execution based on the work." : "All actions remain bound to this stored run and workspace."}</p>
     <div className="runtime-actions">
       {waitingForDecision && <><button type="button" onClick={() => void onControl(run.id, "approve")} disabled={busy}>Approve plan</button><button type="button" className="secondary" onClick={() => void onControl(run.id, "reject")} disabled={busy}>Reject</button></>}
+      {canApproveRevision && <button type="button" onClick={() => void onControl(run.id, "approve-revision")} disabled={busy}>Approve exception revision</button>}
+      {reviewAttention && <button type="button" className="secondary" onClick={() => void onControl(run.id, "close-attention")} disabled={busy}>Close work</button>}
       {canCancel && <button type="button" className="secondary" onClick={() => void onControl(run.id, "cancel")} disabled={busy}>Cancel</button>}
     </div>
     <div className="runtime-detail-grid">

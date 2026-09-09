@@ -41,6 +41,16 @@ otherwise depend on Temporal. The platform never relies on an open browser
 request, a model response, or a worker's in-memory state as the source of truth
 for a running job.
 
+Routine reviewer-to-researcher feedback is an existing plan handoff, not a new
+authority grant. The researcher gets three total attempts, including the first;
+the reviewer can therefore return the work twice automatically using the same
+assigned roles and capabilities. After that budget is exhausted, the run waits
+in `needs_attention`. An authenticated administrator or operator may approve up
+to three separately audited exception revisions. Each exception reuses the same
+goal, workspace, steps, and tool grants. It cannot add a role, tool, capability,
+agent, or durable workflow. After the exception budget is exhausted, the run
+can only be closed or cancelled.
+
 ### Authority and inputs
 
 Each scheduled workflow receives a versioned, immutable execution envelope
@@ -75,7 +85,8 @@ client, task queue name, or generic workflow-start capability.
   `needs_attention` with sanitized diagnostic metadata.
 - The existing researcher revision limit is a review-loop budget, not a
   generic activity retry budget. Durable retries do not create additional
-  reviewer-to-researcher revisions.
+  reviewer-to-researcher revisions. Operator-approved exceptions are separately
+  counted in PostgreSQL and are never inferred from a workflow retry.
 
 ### Cancellation, retention, and escalation
 

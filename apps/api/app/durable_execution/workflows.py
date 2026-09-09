@@ -5,6 +5,7 @@ from datetime import timedelta
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
+from app.agent_runtime.policy import MAX_RESEARCH_ATTEMPTS
 from app.durable_execution.contracts import DurableExecutionResult, RuntimeExecutionEnvelope
 
 
@@ -17,7 +18,10 @@ class GovernedRuntimeWorkflow:
         """Invoke fixed validated activities; Temporal does not own approval state."""
 
         try:
-            for _ in range(2):
+            # This is the fixed, policy-owned initial pass plus its two
+            # routine reviewer-to-researcher revisions. Operator exceptions
+            # are separate runtime decisions and require a later schedule.
+            for _ in range(MAX_RESEARCH_ATTEMPTS):
                 status = await workflow.execute_activity(
                     "execute_approved_runtime_run",
                     envelope,

@@ -10,13 +10,18 @@ from pydantic import ValidationError
 
 from app.agent_runtime.contracts import (
     PlanStepProposal,
+    RuntimeEvent,
     RuntimeHandoffRequest,
     RuntimeMemory,
     RuntimeRun,
     RuntimeRunRequest,
     RuntimeStep,
 )
-from app.agent_runtime.policy import ALLOWED_HANDOFFS, MAX_RESEARCH_ATTEMPTS
+from app.agent_runtime.policy import (
+    ALLOWED_HANDOFFS,
+    MAX_OPERATOR_REVISION_APPROVALS,
+    MAX_RESEARCH_ATTEMPTS,
+)
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import (
     ALLOWED_TRANSITIONS,
@@ -58,10 +63,10 @@ def test_handoff_request_rejects_forged_role_and_capability() -> None:
         )
 
 
-def test_runtime_state_machine_has_no_terminal_escape_hatch() -> None:
+def test_runtime_state_machine_limits_operator_attention_resolution() -> None:
     assert "completed" not in ALLOWED_TRANSITIONS["requested"]
     assert not ALLOWED_TRANSITIONS["completed"]
-    assert "executing" not in ALLOWED_TRANSITIONS["needs_attention"]
+    assert ALLOWED_TRANSITIONS["needs_attention"] == frozenset({"executing", "cancelled"})
 
 
 def test_runtime_transition_error_explains_rejected_state_change() -> None:
@@ -163,9 +168,10 @@ def test_runtime_service_assigns_fixed_policy_capabilities() -> None:
     assert assignments[1].allowed_capabilities == []
 
 
-def test_reviewer_can_request_only_one_researcher_revision() -> None:
+def test_reviewer_can_request_two_routine_revisions_within_three_total_attempts() -> None:
     assert ALLOWED_HANDOFFS["reviewer"] == frozenset({"researcher"})
-    assert MAX_RESEARCH_ATTEMPTS == 2
+    assert MAX_RESEARCH_ATTEMPTS == 3
+    assert MAX_OPERATOR_REVISION_APPROVALS == 3
 
 
 def test_runtime_service_rejects_unbounded_or_out_of_order_plan() -> None:
@@ -647,3 +653,87 @@ def test_deterministic_reviewer_requests_only_a_bounded_revision() -> None:
     assert service.feedback == [
         "No governed source reference was produced; repeat the approved research step."
     ]
+
+
+def test_runtime_service_allows_only_bounded_operator_review_exceptions() -> None:
+    run_id = uuid4()
+    researcher_id = uuid4()
+    reviewer_id = uuid4()
+    now = datetime.now(UTC)
+    run = RuntimeRun(
+        id=run_id,
+        goal="Research a topic",
+        status="needs_attention",
+        created_at=now,
+        updated_at=now,
+        steps=[
+            RuntimeStep(
+                id=researcher_id,
+                role="researcher",
+                title="Gather evidence",
+                status="completed",
+                allowed_capabilities=["web.search", "web.extract"],
+                attempt_count=MAX_RESEARCH_ATTEMPTS,
+                idempotency_key="researcher:test",
+                timeout_seconds=300,
+                created_at=now,
+                updated_at=now,
+            ),
+            RuntimeStep(
+                id=reviewer_id,
+                role="reviewer",
+                title="Review evidence",
+                status="completed",
+                allowed_capabilities=[],
+                attempt_count=MAX_RESEARCH_ATTEMPTS,
+                idempotency_key="reviewer:test",
+                timeout_seconds=120,
+                created_at=now,
+                updated_at=now,
+            ),
+        ],
+        events=[RuntimeEvent(event_type="runtime.review.needs_attention", occurred_at=now)],
+    )
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.approval_numbers: list[int] = []
+
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+        async def authorize_exception_revision(
+            self, _: object, __: object, ___: object
+        ) -> RuntimeRun:
+            self.approval_numbers.append(1)
+            return run.model_copy(update={"status": "executing"})
+
+    store = FakeStore()
+    revised = asyncio.run(RuntimeService(store).approve_exception_revision(run_id))
+
+    assert revised.status == "executing"
+    assert store.approval_numbers == [1]
+
+
+def test_runtime_service_rejects_revision_of_ambiguous_durable_work() -> None:
+    now = datetime.now(UTC)
+    run = RuntimeRun(
+        id=uuid4(),
+        goal="Research a topic",
+        status="needs_attention",
+        created_at=now,
+        updated_at=now,
+        events=[
+            RuntimeEvent(event_type="runtime.review.needs_attention", occurred_at=now),
+            RuntimeEvent(
+                event_type="runtime.durable_execution.needs_attention", occurred_at=now
+            ),
+        ],
+    )
+
+    class FakeStore:
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+    with pytest.raises(RuntimePlanError, match="ambiguous durable outcome"):
+        asyncio.run(RuntimeService(FakeStore()).approve_exception_revision(run.id))

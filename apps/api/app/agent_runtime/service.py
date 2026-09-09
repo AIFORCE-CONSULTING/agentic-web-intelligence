@@ -12,6 +12,7 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.policy import (
     ALLOWED_HANDOFFS,
+    MAX_OPERATOR_REVISION_APPROVALS,
     MAX_RESEARCH_ATTEMPTS,
     MAX_RESEARCH_STEPS,
     ROLE_CAPABILITIES,
@@ -73,7 +74,7 @@ class RuntimeService:
         """Record a terminal cancellation before durable workers can start more work."""
 
         run = await self._require_run(run_id)
-        if run.status in {"completed", "rejected", "failed", "cancelled", "needs_attention"}:
+        if run.status in {"completed", "rejected", "failed", "cancelled"}:
             raise RuntimePlanError("Only a nonterminal runtime run may be cancelled.")
         transitioned = await self._store.transition_run(run_id, "cancelled")
         assert transitioned is not None
@@ -219,6 +220,44 @@ class RuntimeService:
         transitioned = await self._store.transition_run(run_id, "needs_attention")
         assert transitioned is not None
         return transitioned
+
+    async def approve_exception_revision(self, run_id: UUID) -> RuntimeRun:
+        """Allow an operator-approved, bounded revision after review exhaustion only."""
+
+        run = await self._require_run(run_id)
+        if run.status != "needs_attention":
+            raise RuntimePlanError("Only a run awaiting operator attention may be revised.")
+        if not any(event.event_type == "runtime.review.needs_attention" for event in run.events):
+            raise RuntimePlanError("This attention state is not eligible for a review revision.")
+        if any(
+            event.event_type == "runtime.durable_execution.needs_attention" for event in run.events
+        ):
+            raise RuntimePlanError("An ambiguous durable outcome cannot be retried as a revision.")
+        approvals = sum(
+            event.event_type == "runtime.review.exception_revision.approved" for event in run.events
+        )
+        if approvals >= MAX_OPERATOR_REVISION_APPROVALS:
+            raise RuntimePlanError(
+                "The operator revision budget is exhausted; close the run instead."
+            )
+        researcher = next((step for step in run.steps if step.role == "researcher"), None)
+        reviewer = next((step for step in run.steps if step.role == "reviewer"), None)
+        if researcher is None or reviewer is None:
+            raise RuntimePlanError("Runtime run has no approved researcher/reviewer pair.")
+        revised = await self._store.authorize_exception_revision(run_id, researcher.id, reviewer.id)
+        assert revised is not None
+        return revised
+
+    async def close_attention_run(self, run_id: UUID) -> RuntimeRun:
+        """Close an unresolved operator-attention wait without restarting any work."""
+
+        run = await self._require_run(run_id)
+        if run.status != "needs_attention":
+            raise RuntimePlanError("Only a run awaiting operator attention may be closed.")
+        await self._store.record_event(run_id, "runtime.attention.closed", {})
+        closed = await self._store.transition_run(run_id, "cancelled")
+        assert closed is not None
+        return closed
 
     async def get_run(self, run_id: UUID) -> RuntimeRun:
         """Read one persisted run for an internal workflow node."""

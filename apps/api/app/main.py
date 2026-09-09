@@ -850,6 +850,76 @@ def create_app() -> FastAPI:
         return rejected
 
     @app.post(
+        "/v1/runtime/runs/{run_id}/attention/approve-revision",
+        response_model=RuntimeRun,
+        tags=["runtime"],
+    )
+    async def approve_runtime_revision(run_id: str, http_request: Request) -> RuntimeRun:
+        """Approve one bounded exception revision; it never changes plan authority."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        service: RuntimeService = http_request.app.state.runtime_service
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            revised = await service.approve_exception_revision(parsed_run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (DurableExecutionPolicyError, RuntimePlanError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.review.exception_revision.approved",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return revised
+
+    @app.post(
+        "/v1/runtime/runs/{run_id}/attention/close",
+        response_model=RuntimeRun,
+        tags=["runtime"],
+    )
+    async def close_runtime_attention(run_id: str, http_request: Request) -> RuntimeRun:
+        """Close one unresolved attention wait without restarting a run."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        service: RuntimeService = http_request.app.state.runtime_service
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            closed = await service.close_attention_run(parsed_run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (DurableExecutionPolicyError, RuntimePlanError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.attention.closed",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return closed
+
+    @app.post(
         "/v1/runtime/runs/{run_id}/durable-execution/cancel",
         response_model=RuntimeRun,
         tags=["runtime"],

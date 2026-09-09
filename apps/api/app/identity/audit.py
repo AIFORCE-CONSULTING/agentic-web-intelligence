@@ -28,6 +28,8 @@ _ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
     "runtime.approval.approved": frozenset({"run_id"}),
     "runtime.approval.rejected": frozenset({"run_id"}),
     "runtime.durable_execution.cancelled": frozenset({"run_id"}),
+    "runtime.review.exception_revision.approved": frozenset({"run_id"}),
+    "runtime.attention.closed": frozenset({"run_id"}),
 }
 
 SCHEMA = """

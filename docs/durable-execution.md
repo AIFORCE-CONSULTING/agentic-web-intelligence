@@ -40,6 +40,15 @@ human control for a run that trusted code has already scheduled. No action
 accepts a goal, role, tool, capability, workflow name, or scheduler credential
 from the caller. Service identities and viewers cannot invoke them.
 
+Routine reviewer feedback remains automatic and bounded: the approved
+researcher/reviewer pair can complete three total researcher attempts. When
+that budget is exhausted, the stored run waits in `needs_attention`. An
+authenticated administrator or operator can inspect it and approve up to three
+exception revisions from the Admin console. Each approval is recorded before
+execution resumes and reuses the original plan, roles, workspace, and tools.
+It does not start or signal Temporal. An ambiguous durable outcome is not
+eligible for this path; it can only be closed or cancelled.
+
 ## Operator visibility
 
 The Admin console's **Durable work** section is available to authenticated

@@ -15,6 +15,7 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.durable_execution.service import TemporalRuntimeBoundary
 from app.github_projects.contracts import (
     CreateDraftItemRequest,
     GitHubDraftItem,
@@ -139,6 +140,9 @@ def create_app() -> FastAPI:
         settings.database_url, app.state.deployment_secrets.redact
     )
     app.state.runtime_service = RuntimeService(app.state.runtime_store)
+    app.state.temporal_runtime = TemporalRuntimeBoundary(
+        settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
+    )
     app.state.identity_store = IdentityStore(settings.database_url)
     app.state.security_audit_store = SecurityAuditStore(
         settings.database_url, app.state.deployment_secrets.redact

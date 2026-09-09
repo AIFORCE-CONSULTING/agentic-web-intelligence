@@ -129,6 +129,7 @@ class RuntimeRun(BaseModel):
     status: RunStatus
     created_at: datetime
     updated_at: datetime
+    workspace_id: UUID | None = None
     steps: list[RuntimeStep] = Field(default_factory=list)
     handoffs: list[RuntimeHandoff] = Field(default_factory=list)
     memories: list[RuntimeMemory] = Field(default_factory=list)

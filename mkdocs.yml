@@ -84,6 +84,7 @@ nav:
       - ADR 0013 — Durable execution: adr/0013-governed-durable-execution-contract.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
+  - Durable execution: durable-execution.md
   - Identity: identity.md
   - Operations: operations.md
   - GitHub Projects: github-projects.md

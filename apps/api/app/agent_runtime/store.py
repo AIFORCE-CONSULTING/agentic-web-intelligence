@@ -540,6 +540,7 @@ class RuntimeStore:
             status=run["status"],
             created_at=run["created_at"],
             updated_at=run["updated_at"],
+            workspace_id=run["workspace_id"],
             steps=[self._step_from_row(row) for row in steps],
             handoffs=[self._handoff_from_row(row) for row in handoffs],
             memories=[self._memory_from_row(row) for row in memories],

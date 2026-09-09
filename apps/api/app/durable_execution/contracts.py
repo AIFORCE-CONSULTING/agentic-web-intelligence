@@ -18,4 +18,4 @@ class DurableExecutionResult:
     """Bounded workflow result; durable history never carries tool output."""
 
     run_id: str
-    status: Literal["completed", "failed", "needs_attention", "cancelled"]
+    status: Literal["completed", "failed", "needs_attention", "cancelled", "rejected"]

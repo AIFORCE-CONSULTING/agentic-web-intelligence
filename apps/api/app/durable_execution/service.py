@@ -61,3 +61,19 @@ class TemporalRuntimeBoundary:
             raise DurableExecutionUnavailable("Durable execution is not configured.")
         client = await Client.connect(self._address, namespace=self._namespace)
         await client.get_workflow_handle(f"runtime-{run_id}").cancel()
+
+    async def approve_scheduled_run(self, run_id: str) -> None:
+        """Signal approval to one server-derived workflow ID only."""
+
+        await self._signal_scheduled_run(run_id, "approve_execution")
+
+    async def reject_scheduled_run(self, run_id: str) -> None:
+        """Signal rejection to one server-derived workflow ID only."""
+
+        await self._signal_scheduled_run(run_id, "reject_execution")
+
+    async def _signal_scheduled_run(self, run_id: str, signal: str) -> None:
+        if not self._address:
+            raise DurableExecutionUnavailable("Durable execution is not configured.")
+        client = await Client.connect(self._address, namespace=self._namespace)
+        await client.get_workflow_handle(f"runtime-{run_id}").signal(signal)

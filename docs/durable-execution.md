@@ -24,14 +24,18 @@ or GitHub Projects connector token.
 ## Current boundary
 
 The worker registers exactly one fixed Temporal workflow and two server-owned
-activities: approved researcher execution and no-tool review. Each activity
+activities: approved researcher execution and no-tool review. A newly scheduled
+workflow first pauses at a durable approval gate; it performs no activity until
+an authenticated human administrator or operator approves it. Each activity
 reloads the persisted runtime run and verifies its workspace and current state
 before calling the existing runtime service.
 
 There is intentionally no public workflow-start endpoint, MCP tool, agent
 credential, or generic Temporal client. Scheduling can only be invoked by
 an authenticated human administrator or operator after a runtime plan has
-reached its existing approval gate. The control plane exposes two fixed
-workspace-scoped actions: schedule that run, and cancel a nonterminal run.
-Neither accepts a goal, role, tool, capability, workflow name, or scheduler
-credential from the caller. Service identities and viewers cannot invoke them.
+reached its existing approval gate. Scheduling creates a durable wait. The
+operator may then approve, reject, or cancel the known workspace-owned run;
+approval is recorded by the runtime service before the fixed Temporal signal is
+sent. Neither action accepts a goal, role, tool, capability, workflow name, or
+scheduler credential from the caller. Service identities and viewers cannot
+invoke them.

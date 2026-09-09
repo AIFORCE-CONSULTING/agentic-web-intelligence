@@ -10,11 +10,34 @@ from app.durable_execution.contracts import DurableExecutionResult, RuntimeExecu
 
 @workflow.defn
 class GovernedRuntimeWorkflow:
-    """Run the existing executor/reviewer loop without creating authority."""
+    """Pause for a fixed human decision, then run the fixed executor/reviewer loop."""
+
+    def __init__(self) -> None:
+        # A signal is merely a durable notification. It cannot carry a goal,
+        # capability, workflow name, or other authority-bearing input.
+        self._approval_decision: str | None = None
+
+    @workflow.signal
+    def approve_execution(self) -> None:
+        """Accept the one pre-defined execution path after API authorization."""
+
+        if self._approval_decision is None:
+            self._approval_decision = "approved"
+
+    @workflow.signal
+    def reject_execution(self) -> None:
+        """End the workflow after API code has recorded the rejection."""
+
+        if self._approval_decision is None:
+            self._approval_decision = "rejected"
 
     @workflow.run
     async def run(self, envelope: RuntimeExecutionEnvelope) -> DurableExecutionResult:
-        """Invoke fixed activities; each reloads and validates persisted authority."""
+        """Wait without consuming a worker, then invoke fixed validated activities."""
+
+        await workflow.wait_condition(lambda: self._approval_decision is not None)
+        if self._approval_decision == "rejected":
+            return DurableExecutionResult(run_id=envelope.run_id, status="rejected")
 
         for _ in range(2):
             status = await workflow.execute_activity(

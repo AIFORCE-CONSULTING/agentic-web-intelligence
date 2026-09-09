@@ -230,6 +230,33 @@ def test_runtime_service_rejects_disallowed_role_handoff() -> None:
         )
 
 
+def test_runtime_service_records_human_durable_approval_before_execution() -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.events: list[tuple[object, ...]] = []
+
+        async def get_run(self, _: object) -> RuntimeRun:
+            return RuntimeRun(
+                id=run_id,
+                goal="Research a topic",
+                status="awaiting_approval",
+                created_at=now,
+                updated_at=now,
+            )
+
+        async def record_event(self, *args: object) -> None:
+            self.events.append(args)
+
+    store = FakeStore()
+    approved = asyncio.run(RuntimeService(store).record_durable_approval(run_id))
+
+    assert approved.status == "awaiting_approval"
+    assert store.events == [(run_id, "runtime.durable_execution.approved", {})]
+
+
 def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
     run_id = uuid4()
     now = datetime.now(UTC)

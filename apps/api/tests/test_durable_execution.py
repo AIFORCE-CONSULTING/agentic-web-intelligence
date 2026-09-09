@@ -98,6 +98,35 @@ def test_temporal_boundary_cancels_only_the_server_derived_workflow_id(
     assert cancelled == ["cancelled"]
 
 
+def test_temporal_boundary_signals_only_fixed_approval_actions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    signals: list[tuple[str, str]] = []
+
+    class FakeHandle:
+        async def signal(self, signal_name: str) -> None:
+            signals.append(("runtime-run-123", signal_name))
+
+    class FakeClient:
+        def get_workflow_handle(self, workflow_id: str) -> FakeHandle:
+            assert workflow_id == "runtime-run-123"
+            return FakeHandle()
+
+    async def connect(_: str, namespace: str) -> FakeClient:
+        assert namespace == "default"
+        return FakeClient()
+
+    monkeypatch.setattr("app.durable_execution.service.Client.connect", connect)
+    boundary = TemporalRuntimeBoundary("temporal:7233", "default", "platform-runtime-v1")
+    asyncio.run(boundary.approve_scheduled_run("run-123"))
+    asyncio.run(boundary.reject_scheduled_run("run-123"))
+
+    assert signals == [
+        ("runtime-run-123", "approve_execution"),
+        ("runtime-run-123", "reject_execution"),
+    ]
+
+
 def test_runtime_execution_permission_excludes_viewers() -> None:
     viewer = AuthenticatedUser(
         id=uuid4(),

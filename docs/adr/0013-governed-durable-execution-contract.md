@@ -33,7 +33,11 @@ role assignment, capability grants, and creation of a durable workflow remain
 trusted server-side actions.
 
 The API records a durable-work request before scheduling it and returns a run
-identifier. It never relies on an open browser request, a model response, or a
+identifier. Scheduling creates an explicit durable approval wait: no activity
+runs until an authenticated human operator releases the one fixed execution
+path. The operator may instead reject or cancel the run. The decision is first
+recorded in PostgreSQL and only then signaled to its server-derived Temporal
+workflow ID. It never relies on an open browser request, a model response, or a
 worker's in-memory state as the source of truth for a running job.
 
 ### Authority and inputs

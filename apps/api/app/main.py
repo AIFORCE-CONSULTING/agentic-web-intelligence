@@ -782,7 +782,7 @@ def create_app() -> FastAPI:
         tags=["runtime"],
     )
     async def schedule_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Schedule one stored approval-gated run; no request body can add authority."""
+        """Create one durable approval wait; no request body can add authority."""
 
         from uuid import UUID
 
@@ -812,6 +812,84 @@ def create_app() -> FastAPI:
             details={"run_id": run_id},
         )
         return run
+
+    @app.post(
+        "/v1/runtime/runs/{run_id}/durable-execution/approve",
+        response_model=RuntimeRun,
+        tags=["runtime"],
+    )
+    async def approve_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Allow a human operator to release only the already-scheduled fixed workflow."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        service: RuntimeService = http_request.app.state.runtime_service
+        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            approved = await service.record_durable_approval(parsed_run_id)
+            await boundary.approve_scheduled_run(run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except DurableExecutionUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (DurableExecutionPolicyError, RuntimePlanError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.durable_execution.approved",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return approved
+
+    @app.post(
+        "/v1/runtime/runs/{run_id}/durable-execution/reject",
+        response_model=RuntimeRun,
+        tags=["runtime"],
+    )
+    async def reject_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Allow a human operator to reject a waiting workflow before any activity runs."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        service: RuntimeService = http_request.app.state.runtime_service
+        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            rejected = await service.reject_durable_execution(parsed_run_id)
+            await boundary.reject_scheduled_run(run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except DurableExecutionUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (DurableExecutionPolicyError, RuntimePlanError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.durable_execution.rejected",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return rejected
 
     @app.post(
         "/v1/runtime/runs/{run_id}/durable-execution/cancel",

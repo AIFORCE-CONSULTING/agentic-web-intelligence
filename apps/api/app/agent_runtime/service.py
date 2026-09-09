@@ -77,6 +77,25 @@ class RuntimeService:
         assert transitioned is not None
         return transitioned
 
+    async def record_durable_approval(self, run_id: UUID) -> RuntimeRun:
+        """Persist a human approval before a durable workflow may execute work."""
+
+        run = await self._require_run(run_id)
+        if run.status != "awaiting_approval":
+            raise RuntimePlanError("Only an approval-gated runtime run may be approved.")
+        await self._store.record_event(run_id, "runtime.durable_execution.approved", {})
+        return run
+
+    async def reject_durable_execution(self, run_id: UUID) -> RuntimeRun:
+        """Persist a terminal rejection before telling the workflow to stop waiting."""
+
+        run = await self._require_run(run_id)
+        if run.status != "awaiting_approval":
+            raise RuntimePlanError("Only an approval-gated runtime run may be rejected.")
+        rejected = await self._store.transition_run(run_id, "rejected")
+        assert rejected is not None
+        return rejected
+
     async def activate_researcher(self, run_id: UUID) -> RuntimeStep:
         """Activate the only step that may request Phase 2 web capabilities."""
 

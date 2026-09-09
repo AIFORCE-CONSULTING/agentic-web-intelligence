@@ -67,6 +67,16 @@ class RuntimeService:
             raise RuntimePlanError("Runtime run was not found.")
         return transitioned
 
+    async def cancel_run(self, run_id: UUID) -> RuntimeRun:
+        """Record a terminal cancellation before durable workers can start more work."""
+
+        run = await self._require_run(run_id)
+        if run.status in {"completed", "rejected", "failed", "cancelled", "needs_attention"}:
+            raise RuntimePlanError("Only a nonterminal runtime run may be cancelled.")
+        transitioned = await self._store.transition_run(run_id, "cancelled")
+        assert transitioned is not None
+        return transitioned
+
     async def activate_researcher(self, run_id: UUID) -> RuntimeStep:
         """Activate the only step that may request Phase 2 web capabilities."""
 

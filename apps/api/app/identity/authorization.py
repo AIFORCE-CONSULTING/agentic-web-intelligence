@@ -12,6 +12,7 @@ WorkspacePermission = Literal[
     "research.read",
     "research.write",
     "runtime.read",
+    "runtime.execute",
     "mcp.use",
     "mcp.audit.read",
     "security.audit.read",
@@ -25,6 +26,7 @@ ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
             "research.read",
             "research.write",
             "runtime.read",
+            "runtime.execute",
             "mcp.use",
             "mcp.audit.read",
             "security.audit.read",
@@ -33,7 +35,14 @@ ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
         }
     ),
     "operator": frozenset(
-        {"research.read", "research.write", "runtime.read", "mcp.use", "github.projects.manage"}
+        {
+            "research.read",
+            "research.write",
+            "runtime.read",
+            "runtime.execute",
+            "mcp.use",
+            "github.projects.manage",
+        }
     ),
     "viewer": frozenset({"research.read", "runtime.read"}),
 }

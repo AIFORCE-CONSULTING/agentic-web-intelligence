@@ -53,3 +53,11 @@ class TemporalRuntimeBoundary:
             task_queue=self._task_queue,
         )
         return envelope
+
+    async def cancel_scheduled_run(self, run_id: str) -> None:
+        """Request cancellation of one known workflow ID; never accept arbitrary names."""
+
+        if not self._address:
+            raise DurableExecutionUnavailable("Durable execution is not configured.")
+        client = await Client.connect(self._address, namespace=self._namespace)
+        await client.get_workflow_handle(f"runtime-{run_id}").cancel()

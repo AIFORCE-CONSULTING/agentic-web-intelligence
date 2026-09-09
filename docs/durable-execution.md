@@ -30,6 +30,8 @@ before calling the existing runtime service.
 
 There is intentionally no public workflow-start endpoint, MCP tool, agent
 credential, or generic Temporal client. Scheduling can only be invoked by
-future trusted server-side orchestration after a runtime plan has reached its
-existing approval gate. This first slice proves the deployment and execution
-boundary without treating Temporal as a general job runner.
+an authenticated human administrator or operator after a runtime plan has
+reached its existing approval gate. The control plane exposes two fixed
+workspace-scoped actions: schedule that run, and cancel a nonterminal run.
+Neither accepts a goal, role, tool, capability, workflow name, or scheduler
+credential from the caller. Service identities and viewers cannot invoke them.

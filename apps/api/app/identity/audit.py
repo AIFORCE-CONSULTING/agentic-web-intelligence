@@ -24,6 +24,8 @@ _ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
     "connector.github.draft_item.priority_updated": frozenset(
         {"project_number", "item_id", "priority"}
     ),
+    "runtime.durable_execution.scheduled": frozenset({"run_id"}),
+    "runtime.durable_execution.cancelled": frozenset({"run_id"}),
 }
 
 SCHEMA = """

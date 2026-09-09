@@ -13,9 +13,13 @@ from app.agent_runtime.contracts import (
     RuntimeRunList,
     RuntimeStoreUnavailable,
 )
-from app.agent_runtime.service import RuntimeService
+from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.durable_execution.service import TemporalRuntimeBoundary
+from app.durable_execution.service import (
+    DurableExecutionPolicyError,
+    DurableExecutionUnavailable,
+    TemporalRuntimeBoundary,
+)
 from app.github_projects.contracts import (
     CreateDraftItemRequest,
     GitHubDraftItem,
@@ -276,6 +280,14 @@ def create_app() -> FastAPI:
         """Restrict external Project changes to authenticated human administrators or operators."""
 
         identity = await require_workspace_permission(http_request, "github.projects.manage")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human operator is required.")
+        return identity
+
+    async def require_human_runtime_operator(http_request: Request) -> AuthenticatedUser:
+        """Allow durable controls only to a human administrator or operator."""
+
+        identity = await require_workspace_permission(http_request, "runtime.execute")
         if not isinstance(identity, AuthenticatedUser):
             raise HTTPException(status_code=403, detail="A human operator is required.")
         return identity
@@ -762,6 +774,83 @@ def create_app() -> FastAPI:
             return RuntimeRunList(runs=await store.list_runs(limit, user.workspace_id))
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.post(
+        "/v1/runtime/runs/{run_id}/durable-execution",
+        response_model=RuntimeRun,
+        status_code=202,
+        tags=["runtime"],
+    )
+    async def schedule_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Schedule one stored approval-gated run; no request body can add authority."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            await boundary.schedule_approved_run(run)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except DurableExecutionUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except DurableExecutionPolicyError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.durable_execution.scheduled",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return run
+
+    @app.post(
+        "/v1/runtime/runs/{run_id}/durable-execution/cancel",
+        response_model=RuntimeRun,
+        tags=["runtime"],
+    )
+    async def cancel_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Cancel only a nonterminal workspace-owned run and its fixed workflow ID."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_human_runtime_operator(http_request)
+        store: RuntimeStore = http_request.app.state.runtime_store
+        service: RuntimeService = http_request.app.state.runtime_service
+        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
+        try:
+            run = await store.get_run(parsed_run_id, user.workspace_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            cancelled = await service.cancel_run(parsed_run_id)
+            await boundary.cancel_scheduled_run(run_id)
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except DurableExecutionUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (DurableExecutionPolicyError, RuntimePlanError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        await record_security_event(
+            http_request,
+            "runtime.durable_execution.cancelled",
+            "succeeded",
+            actor=user,
+            details={"run_id": run_id},
+        )
+        return cancelled
 
     @app.get("/v1/mcp/audit", response_model=McpToolAuditList, tags=["mcp"])
     async def list_mcp_tool_audit(

@@ -12,6 +12,8 @@ from app.durable_execution.service import (
     DurableExecutionUnavailable,
     TemporalRuntimeBoundary,
 )
+from app.identity.authorization import AuthorizationError, require_permission
+from app.identity.contracts import AuthenticatedUser
 
 
 def _run(status: str = "awaiting_approval", workspace_id=None) -> RuntimeRun:
@@ -69,3 +71,41 @@ def test_temporal_boundary_starts_only_the_fixed_runtime_workflow(
     assert len(calls) == 1
     assert calls[0][2]["id"] == f"runtime-{run.id}"
     assert calls[0][2]["task_queue"] == "platform-runtime-v1"
+
+
+def test_temporal_boundary_cancels_only_the_server_derived_workflow_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled: list[str] = []
+
+    class FakeHandle:
+        async def cancel(self) -> None:
+            cancelled.append("cancelled")
+
+    class FakeClient:
+        def get_workflow_handle(self, workflow_id: str) -> FakeHandle:
+            assert workflow_id == "runtime-run-123"
+            return FakeHandle()
+
+    async def connect(_: str, namespace: str) -> FakeClient:
+        assert namespace == "default"
+        return FakeClient()
+
+    monkeypatch.setattr("app.durable_execution.service.Client.connect", connect)
+    boundary = TemporalRuntimeBoundary("temporal:7233", "default", "platform-runtime-v1")
+    asyncio.run(boundary.cancel_scheduled_run("run-123"))
+
+    assert cancelled == ["cancelled"]
+
+
+def test_runtime_execution_permission_excludes_viewers() -> None:
+    viewer = AuthenticatedUser(
+        id=uuid4(),
+        email="viewer@example.com",
+        workspace_id=uuid4(),
+        workspace_name="Viewer workspace",
+        role="viewer",
+        authenticated_at=datetime.now(UTC),
+    )
+    with pytest.raises(AuthorizationError, match="not permitted"):
+        require_permission(viewer, "runtime.execute")

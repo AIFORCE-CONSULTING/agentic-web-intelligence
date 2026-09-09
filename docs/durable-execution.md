@@ -47,3 +47,13 @@ administrators and operators. It lists only the current workspace's stored run
 state, approval decision, approved steps, bounded lifecycle events, and the
 fixed actions that are currently legal. It does not display raw Temporal
 histories, workflow IDs, credentials, or cross-workspace data.
+
+## Recovery behavior
+
+Every durable activity reloads the stored run and revalidates the workspace and
+policy version before it can act, so a replacement worker does not resume from
+untrusted in-memory state. A cancellation already recorded in the runtime store
+returns `cancelled` before a new researcher or reviewer call begins. Activity
+retries are limited to one attempt. If an activity result is uncertain, the
+workflow records only the typed reason `ambiguous_activity_outcome`, transitions
+the run to `needs_attention`, and does not retry it automatically.

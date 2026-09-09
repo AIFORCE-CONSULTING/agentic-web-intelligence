@@ -296,6 +296,51 @@ def test_runtime_service_cannot_begin_execution_without_recorded_human_approval(
         asyncio.run(RuntimeService(FakeStore()).begin_execution(run_id))
 
 
+def test_runtime_service_escalates_an_ambiguous_durable_outcome_without_retrying() -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+
+    class FakeStore:
+        def __init__(self) -> None:
+            self.events: list[tuple[object, ...]] = []
+            self.transitions: list[tuple[object, ...]] = []
+
+        async def get_run(self, _: object) -> RuntimeRun:
+            return RuntimeRun(
+                id=run_id,
+                goal="Research a topic",
+                status="executing",
+                created_at=now,
+                updated_at=now,
+            )
+
+        async def record_event(self, *args: object) -> None:
+            self.events.append(args)
+
+        async def transition_run(self, *args: object) -> RuntimeRun:
+            self.transitions.append(args)
+            return RuntimeRun(
+                id=run_id,
+                goal="Research a topic",
+                status="needs_attention",
+                created_at=now,
+                updated_at=now,
+            )
+
+    store = FakeStore()
+    result = asyncio.run(RuntimeService(store).escalate_durable_ambiguity(run_id))
+
+    assert result.status == "needs_attention"
+    assert store.events == [
+        (
+            run_id,
+            "runtime.durable_execution.needs_attention",
+            {"reason": "ambiguous_activity_outcome"},
+        )
+    ]
+    assert store.transitions == [(run_id, "needs_attention")]
+
+
 def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
     run_id = uuid4()
     now = datetime.now(UTC)

@@ -7,11 +7,13 @@ from uuid import uuid4
 import pytest
 
 from app.agent_runtime.contracts import RuntimeEvent, RuntimeRun
+from app.durable_execution.contracts import RuntimeExecutionEnvelope
 from app.durable_execution.service import (
     DurableExecutionPolicyError,
     DurableExecutionUnavailable,
     TemporalRuntimeBoundary,
 )
+from app.durable_execution.worker import _validated_run, execute_approved_runtime_run
 from app.identity.authorization import AuthorizationError, require_permission
 from app.identity.contracts import AuthenticatedUser
 
@@ -117,3 +119,68 @@ def test_runtime_execution_permission_excludes_viewers() -> None:
     )
     with pytest.raises(AuthorizationError, match="not permitted"):
         require_permission(viewer, "runtime.execute")
+
+
+def test_worker_revalidates_workspace_and_policy_on_each_recovery() -> None:
+    run = _run()
+
+    class FakeService:
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+    envelope = RuntimeExecutionEnvelope(
+        run_id=str(run.id), workspace_id=str(run.workspace_id), policy_version="phase-5-v1"
+    )
+    recovered_once = asyncio.run(_validated_run(FakeService(), envelope))
+    recovered_twice = asyncio.run(_validated_run(FakeService(), envelope))
+
+    assert recovered_once.id == run.id
+    assert recovered_twice.id == run.id
+
+    with pytest.raises(RuntimeError, match="workspace"):
+        asyncio.run(
+            _validated_run(
+                FakeService(),
+                envelope.__class__(
+                    run_id=envelope.run_id,
+                    workspace_id=str(uuid4()),
+                    policy_version=envelope.policy_version,
+                ),
+            )
+        )
+    with pytest.raises(RuntimeError, match="policy version"):
+        asyncio.run(
+            _validated_run(
+                FakeService(),
+                envelope.__class__(
+                    run_id=envelope.run_id,
+                    workspace_id=envelope.workspace_id,
+                    policy_version="retired-policy",
+                ),
+            )
+        )
+
+
+def test_cancelled_run_returns_without_calling_a_research_tool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    run = _run("cancelled")
+
+    class FakeService:
+        async def get_run(self, _: object) -> RuntimeRun:
+            return run
+
+    monkeypatch.setattr(
+        "app.durable_execution.worker._runtime_dependencies", lambda: (FakeService(), object())
+    )
+    outcome = asyncio.run(
+        execute_approved_runtime_run(
+            RuntimeExecutionEnvelope(
+                run_id=str(run.id),
+                workspace_id=str(run.workspace_id),
+                policy_version="phase-5-v1",
+            )
+        )
+    )
+
+    assert outcome == "cancelled"

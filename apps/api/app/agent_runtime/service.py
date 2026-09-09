@@ -88,6 +88,23 @@ class RuntimeService:
         await self._store.record_event(run_id, "runtime.durable_execution.scheduled", {})
         return await self._require_run(run_id)
 
+    async def escalate_durable_ambiguity(self, run_id: UUID) -> RuntimeRun:
+        """Stop uncertain durable work without retrying or preserving raw failure detail."""
+
+        run = await self._require_run(run_id)
+        if run.status == "cancelled":
+            return run
+        if run.status in {"completed", "rejected", "failed", "needs_attention"}:
+            return run
+        await self._store.record_event(
+            run_id,
+            "runtime.durable_execution.needs_attention",
+            {"reason": "ambiguous_activity_outcome"},
+        )
+        escalated = await self._store.transition_run(run_id, "needs_attention")
+        assert escalated is not None
+        return escalated
+
     async def record_human_approval(self, run_id: UUID) -> RuntimeRun:
         """Persist a human approval independently of any scheduler."""
 

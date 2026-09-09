@@ -3,10 +3,8 @@
 from temporalio.client import Client
 
 from app.agent_runtime.contracts import RuntimeRun
-from app.durable_execution.contracts import RuntimeExecutionEnvelope
+from app.durable_execution.contracts import DURABLE_POLICY_VERSION, RuntimeExecutionEnvelope
 from app.durable_execution.workflows import GovernedRuntimeWorkflow
-
-POLICY_VERSION = "phase-5-v1"
 
 
 class DurableExecutionUnavailable(RuntimeError):
@@ -47,7 +45,9 @@ class TemporalRuntimeBoundary:
                 "Only a runtime run with recorded human approval may be scheduled."
             )
         envelope = RuntimeExecutionEnvelope(
-            run_id=str(run.id), workspace_id=str(run.workspace_id), policy_version=POLICY_VERSION
+            run_id=str(run.id),
+            workspace_id=str(run.workspace_id),
+            policy_version=DURABLE_POLICY_VERSION,
         )
         client = await Client.connect(self._address, namespace=self._namespace)
         await client.start_workflow(

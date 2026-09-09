@@ -90,7 +90,9 @@ RUN_MEMORY_RETENTION = timedelta(hours=24)
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "requested": frozenset({"planning", "cancelled"}),
     "planning": frozenset({"awaiting_approval", "rejected", "failed", "cancelled"}),
-    "awaiting_approval": frozenset({"executing", "rejected", "cancelled"}),
+    "awaiting_approval": frozenset(
+        {"executing", "rejected", "cancelled", "needs_attention"}
+    ),
     "executing": frozenset({"reviewing", "failed", "cancelled", "needs_attention"}),
     "reviewing": frozenset({"executing", "completed", "needs_attention", "failed", "cancelled"}),
     "completed": frozenset(),

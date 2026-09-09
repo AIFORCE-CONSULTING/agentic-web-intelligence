@@ -3,6 +3,8 @@
 from dataclasses import dataclass
 from typing import Literal
 
+DURABLE_POLICY_VERSION = "phase-5-v1"
+
 
 @dataclass(frozen=True)
 class RuntimeExecutionEnvelope:

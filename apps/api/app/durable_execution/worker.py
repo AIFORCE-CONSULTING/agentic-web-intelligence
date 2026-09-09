@@ -10,7 +10,7 @@ from temporalio.worker import Worker
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
 from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_reviewer
-from app.durable_execution.contracts import RuntimeExecutionEnvelope
+from app.durable_execution.contracts import DURABLE_POLICY_VERSION, RuntimeExecutionEnvelope
 from app.durable_execution.workflows import GovernedRuntimeWorkflow
 from app.secrets import DeploymentSecrets
 from app.settings import get_settings
@@ -33,6 +33,8 @@ async def _validated_run(service: RuntimeService, envelope: RuntimeExecutionEnve
     run = await service.get_run(UUID(envelope.run_id))
     if str(run.workspace_id) != envelope.workspace_id:
         raise RuntimeError("Durable execution envelope workspace does not match the stored run.")
+    if envelope.policy_version != DURABLE_POLICY_VERSION:
+        raise RuntimeError("Durable execution envelope policy version is not supported.")
     return run
 
 
@@ -42,6 +44,8 @@ async def execute_approved_runtime_run(envelope: RuntimeExecutionEnvelope) -> st
 
     service, host = _runtime_dependencies()
     run = await _validated_run(service, envelope)
+    if run.status == "cancelled":
+        return "cancelled"
     if run.status not in {"awaiting_approval", "executing"}:
         raise RuntimeError("Stored run is not eligible for durable researcher execution.")
     return (await run_deterministic_executor(service, host, envelope.run_id)).status
@@ -53,9 +57,20 @@ async def review_approved_runtime_run(envelope: RuntimeExecutionEnvelope) -> str
 
     service, _ = _runtime_dependencies()
     run = await _validated_run(service, envelope)
+    if run.status == "cancelled":
+        return "cancelled"
     if run.status != "reviewing":
         raise RuntimeError("Stored run is not eligible for durable review.")
     return (await run_deterministic_reviewer(service, envelope.run_id)).status
+
+
+@activity.defn(name="escalate_durable_execution")
+async def escalate_durable_execution(envelope: RuntimeExecutionEnvelope) -> str:
+    """Persist a sanitized terminal escalation after an uncertain activity result."""
+
+    service, _ = _runtime_dependencies()
+    await _validated_run(service, envelope)
+    return (await service.escalate_durable_ambiguity(UUID(envelope.run_id))).status
 
 
 async def run_worker() -> None:
@@ -70,7 +85,11 @@ async def run_worker() -> None:
         client,
         task_queue=settings.temporal_task_queue,
         workflows=[GovernedRuntimeWorkflow],
-        activities=[execute_approved_runtime_run, review_approved_runtime_run],
+        activities=[
+            execute_approved_runtime_run,
+            review_approved_runtime_run,
+            escalate_durable_execution,
+        ],
     )
     await worker.run()
 

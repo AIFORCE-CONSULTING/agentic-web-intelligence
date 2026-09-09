@@ -62,6 +62,8 @@ class RuntimeService:
             raise RuntimePlanError(
                 "Execution can begin only after approval or a reviewer revision."
             )
+        if not any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("Execution can begin only after recorded human approval.")
         transitioned = await self._store.transition_run(run_id, "executing")
         if transitioned is None:
             raise RuntimePlanError("Runtime run was not found.")
@@ -77,21 +79,28 @@ class RuntimeService:
         assert transitioned is not None
         return transitioned
 
-    async def record_durable_approval(self, run_id: UUID) -> RuntimeRun:
-        """Persist a human approval before a durable workflow may execute work."""
+    async def record_durable_execution_scheduled(self, run_id: UUID) -> RuntimeRun:
+        """Persist a checkpoint after trusted code selects durable execution."""
 
-        run = await self._require_run(run_id)
-        if run.status != "awaiting_approval":
-            raise RuntimePlanError("Only an approval-gated runtime run may be approved.")
-        await self._store.record_event(run_id, "runtime.durable_execution.approved", {})
-        return run
+        run = await self._require_human_approved_run(run_id)
+        if any(event.event_type == "runtime.durable_execution.scheduled" for event in run.events):
+            raise RuntimePlanError("Durable execution is already scheduled for this run.")
+        await self._store.record_event(run_id, "runtime.durable_execution.scheduled", {})
+        return await self._require_run(run_id)
 
-    async def reject_durable_execution(self, run_id: UUID) -> RuntimeRun:
-        """Persist a terminal rejection before telling the workflow to stop waiting."""
+    async def record_human_approval(self, run_id: UUID) -> RuntimeRun:
+        """Persist a human approval independently of any scheduler."""
 
-        run = await self._require_run(run_id)
-        if run.status != "awaiting_approval":
-            raise RuntimePlanError("Only an approval-gated runtime run may be rejected.")
+        run = await self._require_approval_gated_run(run_id)
+        if any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("Human approval is already recorded for this runtime run.")
+        await self._store.record_event(run_id, "runtime.approval.approved", {})
+        return await self._require_run(run_id)
+
+    async def reject_human_approval(self, run_id: UUID) -> RuntimeRun:
+        """Persist a terminal rejection without coupling it to a scheduler."""
+
+        await self._require_approval_gated_run(run_id)
         rejected = await self._store.transition_run(run_id, "rejected")
         assert rejected is not None
         return rejected
@@ -265,6 +274,28 @@ class RuntimeService:
         run = await self._store.get_run(run_id)
         if run is None:
             raise RuntimePlanError("Runtime run was not found.")
+        return run
+
+    async def _require_approval_gated_run(self, run_id: UUID) -> RuntimeRun:
+        run = await self._require_run(run_id)
+        if run.status != "awaiting_approval":
+            raise RuntimePlanError("Only an approval-gated runtime run may be scheduled.")
+        return run
+
+    async def _require_human_approved_run(self, run_id: UUID) -> RuntimeRun:
+        run = await self._require_approval_gated_run(run_id)
+        if not any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("The runtime run has not received recorded human approval.")
+        return run
+
+    async def require_durable_execution_scheduled(self, run_id: UUID) -> RuntimeRun:
+        """Confirm an operator may address an existing durable workflow."""
+
+        run = await self._require_run(run_id)
+        if not any(
+            event.event_type == "runtime.durable_execution.scheduled" for event in run.events
+        ):
+            raise RuntimePlanError("Durable execution has not been scheduled for this run.")
         return run
 
     @staticmethod

@@ -230,7 +230,7 @@ def test_runtime_service_rejects_disallowed_role_handoff() -> None:
         )
 
 
-def test_runtime_service_records_human_durable_approval_before_execution() -> None:
+def test_runtime_service_records_human_approval_without_a_scheduler() -> None:
     run_id = uuid4()
     now = datetime.now(UTC)
 
@@ -251,10 +251,49 @@ def test_runtime_service_records_human_durable_approval_before_execution() -> No
             self.events.append(args)
 
     store = FakeStore()
-    approved = asyncio.run(RuntimeService(store).record_durable_approval(run_id))
+    approved = asyncio.run(RuntimeService(store).record_human_approval(run_id))
 
     assert approved.status == "awaiting_approval"
-    assert store.events == [(run_id, "runtime.durable_execution.approved", {})]
+    assert store.events == [(run_id, "runtime.approval.approved", {})]
+
+
+def test_runtime_service_rejects_human_approval_before_a_plan_reaches_its_gate() -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+
+    class FakeStore:
+        async def get_run(self, _: object) -> RuntimeRun:
+            return RuntimeRun(
+                id=run_id,
+                goal="Research a topic",
+                status="planning",
+                created_at=now,
+                updated_at=now,
+            )
+
+    with pytest.raises(RuntimePlanError, match="approval-gated"):
+        asyncio.run(RuntimeService(FakeStore()).record_human_approval(run_id))
+
+
+def test_runtime_service_cannot_begin_execution_without_recorded_human_approval() -> None:
+    run_id = uuid4()
+    now = datetime.now(UTC)
+
+    class FakeStore:
+        async def get_run(self, _: object) -> RuntimeRun:
+            return RuntimeRun(
+                id=run_id,
+                goal="Research a topic",
+                status="awaiting_approval",
+                created_at=now,
+                updated_at=now,
+            )
+
+        async def transition_run(self, *_: object) -> RuntimeRun:
+            raise AssertionError("Execution must not transition before human approval.")
+
+    with pytest.raises(RuntimePlanError, match="recorded human approval"):
+        asyncio.run(RuntimeService(FakeStore()).begin_execution(run_id))
 
 
 def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:

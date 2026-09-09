@@ -776,50 +776,12 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post(
-        "/v1/runtime/runs/{run_id}/durable-execution",
-        response_model=RuntimeRun,
-        status_code=202,
-        tags=["runtime"],
-    )
-    async def schedule_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Create one durable approval wait; no request body can add authority."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            await boundary.schedule_approved_run(run)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionPolicyError as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.durable_execution.scheduled",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return run
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/durable-execution/approve",
+        "/v1/runtime/runs/{run_id}/approval/approve",
         response_model=RuntimeRun,
         tags=["runtime"],
     )
-    async def approve_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Allow a human operator to release only the already-scheduled fixed workflow."""
+    async def approve_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Record a human approval; scheduler selection remains server-side."""
 
         from uuid import UUID
 
@@ -830,13 +792,11 @@ def create_app() -> FastAPI:
         user = await require_human_runtime_operator(http_request)
         store: RuntimeStore = http_request.app.state.runtime_store
         service: RuntimeService = http_request.app.state.runtime_service
-        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
         try:
             run = await store.get_run(parsed_run_id, user.workspace_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            approved = await service.record_durable_approval(parsed_run_id)
-            await boundary.approve_scheduled_run(run_id)
+            approved = await service.record_human_approval(parsed_run_id)
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except DurableExecutionUnavailable as error:
@@ -845,7 +805,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
         await record_security_event(
             http_request,
-            "runtime.durable_execution.approved",
+            "runtime.approval.approved",
             "succeeded",
             actor=user,
             details={"run_id": run_id},
@@ -853,12 +813,12 @@ def create_app() -> FastAPI:
         return approved
 
     @app.post(
-        "/v1/runtime/runs/{run_id}/durable-execution/reject",
+        "/v1/runtime/runs/{run_id}/approval/reject",
         response_model=RuntimeRun,
         tags=["runtime"],
     )
-    async def reject_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Allow a human operator to reject a waiting workflow before any activity runs."""
+    async def reject_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
+        """Record a human rejection; no scheduler signal is involved."""
 
         from uuid import UUID
 
@@ -869,13 +829,11 @@ def create_app() -> FastAPI:
         user = await require_human_runtime_operator(http_request)
         store: RuntimeStore = http_request.app.state.runtime_store
         service: RuntimeService = http_request.app.state.runtime_service
-        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
         try:
             run = await store.get_run(parsed_run_id, user.workspace_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            rejected = await service.reject_durable_execution(parsed_run_id)
-            await boundary.reject_scheduled_run(run_id)
+            rejected = await service.reject_human_approval(parsed_run_id)
         except RuntimeStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except DurableExecutionUnavailable as error:
@@ -884,7 +842,7 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
         await record_security_event(
             http_request,
-            "runtime.durable_execution.rejected",
+            "runtime.approval.rejected",
             "succeeded",
             actor=user,
             details={"run_id": run_id},
@@ -913,6 +871,7 @@ def create_app() -> FastAPI:
             run = await store.get_run(parsed_run_id, user.workspace_id)
             if run is None:
                 raise HTTPException(status_code=404, detail="Runtime run was not found.")
+            await service.require_durable_execution_scheduled(parsed_run_id)
             cancelled = await service.cancel_run(parsed_run_id)
             await boundary.cancel_scheduled_run(run_id)
         except RuntimeStoreUnavailable as error:

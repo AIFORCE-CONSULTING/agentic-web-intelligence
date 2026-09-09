@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.agent_runtime.contracts import RuntimeRun
+from app.agent_runtime.contracts import RuntimeEvent, RuntimeRun
 from app.durable_execution.service import (
     DurableExecutionPolicyError,
     DurableExecutionUnavailable,
@@ -25,6 +25,7 @@ def _run(status: str = "awaiting_approval", workspace_id=None) -> RuntimeRun:
         workspace_id=workspace_id or uuid4(),
         created_at=now,
         updated_at=now,
+        events=[RuntimeEvent(event_type="runtime.approval.approved", occurred_at=now)],
     )
 
 
@@ -98,33 +99,11 @@ def test_temporal_boundary_cancels_only_the_server_derived_workflow_id(
     assert cancelled == ["cancelled"]
 
 
-def test_temporal_boundary_signals_only_fixed_approval_actions(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    signals: list[tuple[str, str]] = []
-
-    class FakeHandle:
-        async def signal(self, signal_name: str) -> None:
-            signals.append(("runtime-run-123", signal_name))
-
-    class FakeClient:
-        def get_workflow_handle(self, workflow_id: str) -> FakeHandle:
-            assert workflow_id == "runtime-run-123"
-            return FakeHandle()
-
-    async def connect(_: str, namespace: str) -> FakeClient:
-        assert namespace == "default"
-        return FakeClient()
-
-    monkeypatch.setattr("app.durable_execution.service.Client.connect", connect)
+def test_temporal_boundary_requires_runtime_owned_human_approval() -> None:
     boundary = TemporalRuntimeBoundary("temporal:7233", "default", "platform-runtime-v1")
-    asyncio.run(boundary.approve_scheduled_run("run-123"))
-    asyncio.run(boundary.reject_scheduled_run("run-123"))
 
-    assert signals == [
-        ("runtime-run-123", "approve_execution"),
-        ("runtime-run-123", "reject_execution"),
-    ]
+    with pytest.raises(DurableExecutionPolicyError, match="recorded human approval"):
+        asyncio.run(boundary.schedule_approved_run(_run().model_copy(update={"events": []})))
 
 
 def test_runtime_execution_permission_excludes_viewers() -> None:

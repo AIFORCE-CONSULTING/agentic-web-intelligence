@@ -61,6 +61,16 @@ type GitHubProjectInfo = {
 };
 type GitHubDraftItem = { id: string; title: string; priority?: string | null };
 type GitHubDraftItemList = { items: GitHubDraftItem[] };
+type RuntimeEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
+type RuntimeStep = {
+  id: string; role: string; title: string; status: string; allowed_capabilities: string[];
+  attempt_count: number; timeout_seconds: number;
+};
+type RuntimeRunSummary = {
+  id: string; goal: string; status: string; created_at: string; updated_at: string; step_count: number;
+};
+type RuntimeRunList = { runs: RuntimeRunSummary[] };
+type RuntimeRun = RuntimeRunSummary & { steps: RuntimeStep[]; events: RuntimeEvent[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -136,7 +146,7 @@ function DeveloperHub({
           <a className="developer-card" href={`${apiBaseUrl}/openapi.json`} target="_blank" rel="noreferrer"><strong>OpenAPI schema</strong><span>Use the machine-readable API contract for integrations.</span><small>{apiBaseUrl}/openapi.json</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/tools`} target="_blank" rel="noreferrer"><strong>MCP tool catalog</strong><span>Inspect the only agent-visible, read-only web tools.</span><small>{apiBaseUrl}/v1/mcp/tools</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/audit`} target="_blank" rel="noreferrer"><strong>MCP execution audit</strong><span>Review bounded, durable outcomes from direct MCP calls.</span><small>{apiBaseUrl}/v1/mcp/audit</small></a>
-          <a className="developer-card" href={`${apiBaseUrl}/v1/runtime/runs`} target="_blank" rel="noreferrer"><strong>Agent runtime runs</strong><span>Inspect server-owned roles, capabilities, handoffs, and lifecycle events.</span><small>{apiBaseUrl}/v1/runtime/runs</small></a>
+          <a className="developer-card" href="/admin"><strong>Durable workflow controls</strong><span>Inspect workspace-owned runtime work and perform authorized approval actions.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="/admin"><strong>Platform administration</strong><span>Sign in locally and inspect your workspace identity and security audit trail.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · included with the web-research stack</small></a>
         </div>
@@ -160,6 +170,9 @@ function AdminConsole() {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftBody, setDraftBody] = useState("");
   const [draftPriority, setDraftPriority] = useState("");
+  const [runtimeRuns, setRuntimeRuns] = useState<RuntimeRunSummary[]>([]);
+  const [selectedRuntimeRun, setSelectedRuntimeRun] = useState<RuntimeRun | null>(null);
+  const [runtimeError, setRuntimeError] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [bootstrapSecret, setBootstrapSecret] = useState("");
@@ -172,6 +185,15 @@ function AdminConsole() {
     setUser(currentUser);
     setRoadmapError(null);
     if (currentUser.role === "administrator" || currentUser.role === "operator") {
+      try {
+        const runtime = await apiRequest<RuntimeRunList>("/v1/runtime/runs");
+        setRuntimeRuns(runtime.runs);
+        setRuntimeError(null);
+      } catch (reason) {
+        setRuntimeRuns([]);
+        setSelectedRuntimeRun(null);
+        setRuntimeError(reason instanceof Error ? reason.message : "Unable to load durable work.");
+      }
       const status = await apiRequest<GitHubProjectStatus>("/v1/github/projects/status");
       setGithubStatus(status);
       if (status.mode === "ready") {
@@ -197,6 +219,9 @@ function AdminConsole() {
       setGithubStatus(null);
       setGithubProject(null);
       setDraftItems([]);
+      setRuntimeRuns([]);
+      setSelectedRuntimeRun(null);
+      setRuntimeError(null);
     }
     if (currentUser.role !== "administrator") {
       setEvents([]);
@@ -253,11 +278,44 @@ function AdminConsole() {
     }
   }
 
+  async function inspectRuntimeRun(runId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      setSelectedRuntimeRun(await apiRequest<RuntimeRun>(`/v1/runtime/runs/${encodeURIComponent(runId)}`));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to inspect durable work.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function controlRuntimeRun(runId: string, action: "approve" | "reject" | "cancel") {
+    setBusy(true);
+    setError(null);
+    try {
+      const path = action === "cancel"
+        ? `/v1/runtime/runs/${encodeURIComponent(runId)}/durable-execution/cancel`
+        : `/v1/runtime/runs/${encodeURIComponent(runId)}/approval/${action}`;
+      await apiRequest<RuntimeRun>(path, {
+        method: "POST",
+      });
+      await loadAdminData();
+      await inspectRuntimeRun(runId);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to update durable work.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     void loadAdminData().catch((reason) => {
       setUser(null);
       setEvents([]);
       setPosture(null);
+      setRuntimeRuns([]);
+      setSelectedRuntimeRun(null);
       if (reason instanceof Error && reason.message !== "Authentication is required.") {
         setError(reason.message);
       }
@@ -371,6 +429,13 @@ function AdminConsole() {
             {draftItems.length ? <ol className="roadmap-items">{draftItems.map((item) => <li key={item.id}><div><strong>{item.title}</strong><small>Draft item</small></div><label>Priority<select value={item.priority ?? ""} onChange={(event) => { if (event.target.value) void updateDraftPriority(item.id, event.target.value); }} disabled={busy}><option value="" disabled>Not set</option>{githubProject.priority_options.map((priority) => <option key={priority} value={priority}>{priority}</option>)}</select></label></li>)}</ol> : <p>No draft tasks yet.</p>}
           </>}
         </section>}
+        {(user.role === "administrator" || user.role === "operator") && <section aria-labelledby="durable-work-heading">
+          <div className="section-heading"><div><p className="eyebrow">Human-operated workflow</p><h2 id="durable-work-heading">Durable work</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
+          <p className="hint">This is the platform record of workspace work. Human approval is runtime-owned; Temporal is used only when trusted platform code selects durable execution.</p>
+          {runtimeError && <p className="error" role="alert">{runtimeError}</p>}
+          {runtimeRuns.length ? <ol className="runtime-runs">{runtimeRuns.map((run) => <li key={run.id}><button type="button" className="runtime-run" onClick={() => void inspectRuntimeRun(run.id)} disabled={busy}><span><strong>{run.goal}</strong><small>Updated {new Date(run.updated_at).toLocaleString()} · {run.step_count} steps</small></span><span className={`runtime-status ${run.status}`}>{run.status.replaceAll("_", " ")}</span></button></li>)}</ol> : !runtimeError && <p>No durable runtime work has been recorded for this workspace.</p>}
+          {selectedRuntimeRun && <DurableRunDetail run={selectedRuntimeRun} busy={busy} onControl={controlRuntimeRun} />}
+        </section>}
         {user.role === "administrator" && posture && <section aria-labelledby="security-posture-heading">
           <div className="section-heading"><div><p className="eyebrow">Deployment controls</p><h2 id="security-posture-heading">Security posture</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
           <p className="hint">Safe configuration and dependency status for this deployment. Secret values are never displayed.</p>
@@ -392,6 +457,34 @@ function AdminConsole() {
       </>}
     </main>
   );
+}
+
+function DurableRunDetail({
+  run,
+  busy,
+  onControl,
+}: {
+  run: RuntimeRun;
+  busy: boolean;
+  onControl: (runId: string, action: "approve" | "reject" | "cancel") => Promise<void>;
+}) {
+  const scheduled = run.events.some((event) => event.event_type === "runtime.durable_execution.scheduled");
+  const approved = run.events.some((event) => event.event_type === "runtime.approval.approved");
+  const waitingForDecision = run.status === "awaiting_approval" && !approved;
+  const canCancel = scheduled && !["completed", "rejected", "failed", "cancelled", "needs_attention"].includes(run.status);
+
+  return <article className="runtime-detail" aria-label="Selected durable runtime work">
+    <div className="section-heading"><div><p className="eyebrow">Selected work</p><h3>{run.goal}</h3></div><span className={`runtime-status ${run.status}`}>{run.status.replaceAll("_", " ")}</span></div>
+    <p className="hint">{waitingForDecision ? "Waiting for an authorized human decision. No execution path can begin yet." : approved && run.status === "awaiting_approval" ? "Approval is recorded. Trusted platform code may now choose direct or durable execution based on the work." : "All actions remain bound to this stored run and workspace."}</p>
+    <div className="runtime-actions">
+      {waitingForDecision && <><button type="button" onClick={() => void onControl(run.id, "approve")} disabled={busy}>Approve plan</button><button type="button" className="secondary" onClick={() => void onControl(run.id, "reject")} disabled={busy}>Reject</button></>}
+      {canCancel && <button type="button" className="secondary" onClick={() => void onControl(run.id, "cancel")} disabled={busy}>Cancel</button>}
+    </div>
+    <div className="runtime-detail-grid">
+      <article><h4>Approved steps</h4><ul>{run.steps.map((step) => <li key={step.id}><strong>{step.role}</strong><span>{step.status} · attempt {step.attempt_count + 1}</span><small>{step.title}{step.allowed_capabilities.length ? ` · ${step.allowed_capabilities.join(", ")}` : " · no tools"}</small></li>)}</ul></article>
+      <article><h4>Lifecycle</h4><ul>{run.events.slice(-8).reverse().map((event, index) => <li key={`${event.event_type}-${event.occurred_at}-${index}`}><strong>{event.event_type}</strong><span>{new Date(event.occurred_at).toLocaleString()}</span></li>)}</ul></article>
+    </div>
+  </article>;
 }
 
 export function App() {

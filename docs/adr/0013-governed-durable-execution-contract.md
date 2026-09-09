@@ -8,9 +8,9 @@
 Phase 3 established a server-only runtime that owns plans, role assignments,
 capability grants, state transitions, and bounded researcher-reviewer
 handoffs. Its work currently runs within an API process. That is appropriate
-for short, deterministic work, but it cannot safely survive an API restart,
-wait for a human decision over a long period, or give operators reliable
-control over long-running execution.
+for short, deterministic work, but it cannot safely survive an API restart or
+give operators reliable control over long-running execution. Human decisions
+remain runtime-owned whether the resulting work is short or durable.
 
 Phase 5 will introduce a durable workflow engine, initially Temporal. A
 workflow engine can retry and resume work, but it must not become an alternate
@@ -27,18 +27,19 @@ agent tool, public API, identity provider, or policy engine.
 
 Only an existing runtime run with a server-materialized plan may outlive its
 initiating API request. The first durable workflow may execute an approved
-researcher step, persist a validated checkpoint, run the no-tool reviewer, and
-wait at an explicit human approval or revision gate. Planning, plan approval,
-role assignment, capability grants, and creation of a durable workflow remain
-trusted server-side actions.
+researcher step, persist a validated checkpoint, and run the no-tool reviewer.
+Human approval and revision gates are runtime-owned control-plane state, not
+Temporal behavior. Planning, plan approval, role assignment, capability grants,
+and creation of a durable workflow remain trusted server-side actions.
 
-The API records a durable-work request before scheduling it and returns a run
-identifier. Scheduling creates an explicit durable approval wait: no activity
-runs until an authenticated human operator releases the one fixed execution
-path. The operator may instead reject or cancel the run. The decision is first
-recorded in PostgreSQL and only then signaled to its server-derived Temporal
-workflow ID. It never relies on an open browser request, a model response, or a
-worker's in-memory state as the source of truth for a running job.
+The runtime records a human approval or rejection in PostgreSQL for an
+approval-gated plan. A short execution can consume that decision directly. If
+trusted platform code determines that the work needs durability, it can then
+schedule the one fixed Temporal workflow using the stored approval as a
+precondition. An approval decision does not start, signal, configure, or
+otherwise depend on Temporal. The platform never relies on an open browser
+request, a model response, or a worker's in-memory state as the source of truth
+for a running job.
 
 ### Authority and inputs
 
@@ -100,8 +101,9 @@ run. No durable workflow may silently restart a terminal run.
 
 ## Consequences
 
-Phase 5 can add resilient execution and human wait states without weakening
-the Phase 3 runtime contract or the Phase 4 workspace authorization boundary.
+Phase 5 can add resilient execution and runtime-owned human decision state
+without weakening the Phase 3 runtime contract or the Phase 4 workspace
+authorization boundary.
 It also requires more explicit state, idempotency, activity classification,
 and operator controls than a background-task implementation.
 

@@ -187,9 +187,10 @@ model-authored authority boundary.
 
 ## Durable execution contract
 
-Phase 5 will let an already approved run survive an API restart or wait for a
-human decision. [ADR 0013](adr/0013-governed-durable-execution-contract.md)
-sets the boundary before a workflow engine is introduced.
+Phase 5 will let an already approved run survive an API restart. Human approval
+remains runtime-owned state and does not require a workflow engine. [ADR
+0013](adr/0013-governed-durable-execution-contract.md) sets the boundary before
+a workflow engine is introduced.
 
 A durable workflow engine schedules and resumes approved work; it does not own
 authority. The runtime service continues to own goals, plans, roles,

@@ -42,6 +42,10 @@ class TemporalRuntimeBoundary:
             raise DurableExecutionPolicyError(
                 "Only a workspace-owned runtime run awaiting approved execution may be scheduled."
             )
+        if not any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise DurableExecutionPolicyError(
+                "Only a runtime run with recorded human approval may be scheduled."
+            )
         envelope = RuntimeExecutionEnvelope(
             run_id=str(run.id), workspace_id=str(run.workspace_id), policy_version=POLICY_VERSION
         )
@@ -61,19 +65,3 @@ class TemporalRuntimeBoundary:
             raise DurableExecutionUnavailable("Durable execution is not configured.")
         client = await Client.connect(self._address, namespace=self._namespace)
         await client.get_workflow_handle(f"runtime-{run_id}").cancel()
-
-    async def approve_scheduled_run(self, run_id: str) -> None:
-        """Signal approval to one server-derived workflow ID only."""
-
-        await self._signal_scheduled_run(run_id, "approve_execution")
-
-    async def reject_scheduled_run(self, run_id: str) -> None:
-        """Signal rejection to one server-derived workflow ID only."""
-
-        await self._signal_scheduled_run(run_id, "reject_execution")
-
-    async def _signal_scheduled_run(self, run_id: str, signal: str) -> None:
-        if not self._address:
-            raise DurableExecutionUnavailable("Durable execution is not configured.")
-        client = await Client.connect(self._address, namespace=self._namespace)
-        await client.get_workflow_handle(f"runtime-{run_id}").signal(signal)

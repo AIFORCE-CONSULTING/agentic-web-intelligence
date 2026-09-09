@@ -25,8 +25,8 @@ _ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
         {"project_number", "item_id", "priority"}
     ),
     "runtime.durable_execution.scheduled": frozenset({"run_id"}),
-    "runtime.durable_execution.approved": frozenset({"run_id"}),
-    "runtime.durable_execution.rejected": frozenset({"run_id"}),
+    "runtime.approval.approved": frozenset({"run_id"}),
+    "runtime.approval.rejected": frozenset({"run_id"}),
     "runtime.durable_execution.cancelled": frozenset({"run_id"}),
 }
 

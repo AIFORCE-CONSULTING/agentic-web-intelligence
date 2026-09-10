@@ -85,6 +85,7 @@ nav:
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Durable execution: durable-execution.md
+  - Durable execution validation: durable-validation.md
   - Identity: identity.md
   - Operations: operations.md
   - GitHub Projects: github-projects.md

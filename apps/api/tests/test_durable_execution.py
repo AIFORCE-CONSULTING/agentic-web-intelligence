@@ -14,6 +14,7 @@ from app.durable_execution.service import (
     TemporalRuntimeBoundary,
 )
 from app.durable_execution.worker import _validated_run, execute_approved_runtime_run
+from app.durable_execution.workflows import GovernedRuntimeWorkflow
 from app.identity.authorization import AuthorizationError, require_permission
 from app.identity.contracts import AuthenticatedUser
 
@@ -184,3 +185,34 @@ def test_cancelled_run_returns_without_calling_a_research_tool(
     )
 
     assert outcome == "cancelled"
+
+
+def test_durable_workflow_runs_only_the_three_policy_owned_routine_attempts(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A workflow cannot grow the normal reviewer/researcher loop by itself."""
+
+    envelope = RuntimeExecutionEnvelope(
+        run_id=str(uuid4()), workspace_id=str(uuid4()), policy_version="phase-5-v1"
+    )
+    calls: list[str] = []
+
+    async def execute_activity(name: str, *_: object, **__: object) -> str:
+        calls.append(name)
+        return "reviewing" if name == "execute_approved_runtime_run" else "executing"
+
+    monkeypatch.setattr(
+        "app.durable_execution.workflows.workflow.execute_activity", execute_activity
+    )
+
+    result = asyncio.run(GovernedRuntimeWorkflow().run(envelope))
+
+    assert result.status == "needs_attention"
+    assert calls == [
+        "execute_approved_runtime_run",
+        "review_approved_runtime_run",
+        "execute_approved_runtime_run",
+        "review_approved_runtime_run",
+        "execute_approved_runtime_run",
+        "review_approved_runtime_run",
+    ]

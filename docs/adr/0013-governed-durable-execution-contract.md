@@ -99,10 +99,10 @@ each checkpoint; cancellation does not erase existing audit history.
 The durable engine's execution history is operational data, not the canonical
 record of the run. PostgreSQL remains the durable system of record for runtime
 state, approvals, events, handoffs, and provenance references. Run-scoped
-memory continues to expire after 24 hours. The Phase 5 implementation will
-add a documented retention schedule for durable workflow metadata and cleanup
-jobs; it will not extend retention implicitly or retain secrets, raw provider
-responses, or browser credentials.
+memory continues to expire after 24 hours. Configurable retention and archival
+operations for durable workflow metadata are deferred to Phase 6, when actual
+deployment requirements justify them. They will not extend retention implicitly
+or retain secrets, raw provider responses, or browser credentials.
 
 Exhausted transient retries, expired deadlines, unavailable dependencies,
 ambiguous effects, and rejected approval gates transition to a typed terminal

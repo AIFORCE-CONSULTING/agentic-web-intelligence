@@ -62,6 +62,10 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 
 Add LangFuse, OpenTelemetry, metrics, and evaluation.
 
+- Add configurable data-retention and archival operations for durable workflow
+  metadata when real deployment requirements justify them. Security audit
+  history remains separately governed.
+
 ## Phase 7 - Production Deployment
 
 Add Kubernetes, Azure deployment patterns, scaling, security hardening, and release automation.

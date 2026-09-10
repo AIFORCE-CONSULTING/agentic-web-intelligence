@@ -12,6 +12,7 @@ from app.agent_runtime.contracts import (
 )
 from app.agent_runtime.policy import (
     ALLOWED_HANDOFFS,
+    MAX_OPERATOR_REVISION_APPROVALS,
     MAX_RESEARCH_ATTEMPTS,
     MAX_RESEARCH_STEPS,
     ROLE_CAPABILITIES,
@@ -62,10 +63,65 @@ class RuntimeService:
             raise RuntimePlanError(
                 "Execution can begin only after approval or a reviewer revision."
             )
+        if not any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("Execution can begin only after recorded human approval.")
         transitioned = await self._store.transition_run(run_id, "executing")
         if transitioned is None:
             raise RuntimePlanError("Runtime run was not found.")
         return transitioned
+
+    async def cancel_run(self, run_id: UUID) -> RuntimeRun:
+        """Record a terminal cancellation before durable workers can start more work."""
+
+        run = await self._require_run(run_id)
+        if run.status in {"completed", "rejected", "failed", "cancelled"}:
+            raise RuntimePlanError("Only a nonterminal runtime run may be cancelled.")
+        transitioned = await self._store.transition_run(run_id, "cancelled")
+        assert transitioned is not None
+        return transitioned
+
+    async def record_durable_execution_scheduled(self, run_id: UUID) -> RuntimeRun:
+        """Persist a checkpoint after trusted code selects durable execution."""
+
+        run = await self._require_human_approved_run(run_id)
+        if any(event.event_type == "runtime.durable_execution.scheduled" for event in run.events):
+            raise RuntimePlanError("Durable execution is already scheduled for this run.")
+        await self._store.record_event(run_id, "runtime.durable_execution.scheduled", {})
+        return await self._require_run(run_id)
+
+    async def escalate_durable_ambiguity(self, run_id: UUID) -> RuntimeRun:
+        """Stop uncertain durable work without retrying or preserving raw failure detail."""
+
+        run = await self._require_run(run_id)
+        if run.status == "cancelled":
+            return run
+        if run.status in {"completed", "rejected", "failed", "needs_attention"}:
+            return run
+        await self._store.record_event(
+            run_id,
+            "runtime.durable_execution.needs_attention",
+            {"reason": "ambiguous_activity_outcome"},
+        )
+        escalated = await self._store.transition_run(run_id, "needs_attention")
+        assert escalated is not None
+        return escalated
+
+    async def record_human_approval(self, run_id: UUID) -> RuntimeRun:
+        """Persist a human approval independently of any scheduler."""
+
+        run = await self._require_approval_gated_run(run_id)
+        if any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("Human approval is already recorded for this runtime run.")
+        await self._store.record_event(run_id, "runtime.approval.approved", {})
+        return await self._require_run(run_id)
+
+    async def reject_human_approval(self, run_id: UUID) -> RuntimeRun:
+        """Persist a terminal rejection without coupling it to a scheduler."""
+
+        await self._require_approval_gated_run(run_id)
+        rejected = await self._store.transition_run(run_id, "rejected")
+        assert rejected is not None
+        return rejected
 
     async def activate_researcher(self, run_id: UUID) -> RuntimeStep:
         """Activate the only step that may request Phase 2 web capabilities."""
@@ -165,6 +221,44 @@ class RuntimeService:
         assert transitioned is not None
         return transitioned
 
+    async def approve_exception_revision(self, run_id: UUID) -> RuntimeRun:
+        """Allow an operator-approved, bounded revision after review exhaustion only."""
+
+        run = await self._require_run(run_id)
+        if run.status != "needs_attention":
+            raise RuntimePlanError("Only a run awaiting operator attention may be revised.")
+        if not any(event.event_type == "runtime.review.needs_attention" for event in run.events):
+            raise RuntimePlanError("This attention state is not eligible for a review revision.")
+        if any(
+            event.event_type == "runtime.durable_execution.needs_attention" for event in run.events
+        ):
+            raise RuntimePlanError("An ambiguous durable outcome cannot be retried as a revision.")
+        approvals = sum(
+            event.event_type == "runtime.review.exception_revision.approved" for event in run.events
+        )
+        if approvals >= MAX_OPERATOR_REVISION_APPROVALS:
+            raise RuntimePlanError(
+                "The operator revision budget is exhausted; close the run instead."
+            )
+        researcher = next((step for step in run.steps if step.role == "researcher"), None)
+        reviewer = next((step for step in run.steps if step.role == "reviewer"), None)
+        if researcher is None or reviewer is None:
+            raise RuntimePlanError("Runtime run has no approved researcher/reviewer pair.")
+        revised = await self._store.authorize_exception_revision(run_id, researcher.id, reviewer.id)
+        assert revised is not None
+        return revised
+
+    async def close_attention_run(self, run_id: UUID) -> RuntimeRun:
+        """Close an unresolved operator-attention wait without restarting any work."""
+
+        run = await self._require_run(run_id)
+        if run.status != "needs_attention":
+            raise RuntimePlanError("Only a run awaiting operator attention may be closed.")
+        await self._store.record_event(run_id, "runtime.attention.closed", {})
+        closed = await self._store.transition_run(run_id, "cancelled")
+        assert closed is not None
+        return closed
+
     async def get_run(self, run_id: UUID) -> RuntimeRun:
         """Read one persisted run for an internal workflow node."""
 
@@ -236,6 +330,28 @@ class RuntimeService:
         run = await self._store.get_run(run_id)
         if run is None:
             raise RuntimePlanError("Runtime run was not found.")
+        return run
+
+    async def _require_approval_gated_run(self, run_id: UUID) -> RuntimeRun:
+        run = await self._require_run(run_id)
+        if run.status != "awaiting_approval":
+            raise RuntimePlanError("Only an approval-gated runtime run may be scheduled.")
+        return run
+
+    async def _require_human_approved_run(self, run_id: UUID) -> RuntimeRun:
+        run = await self._require_approval_gated_run(run_id)
+        if not any(event.event_type == "runtime.approval.approved" for event in run.events):
+            raise RuntimePlanError("The runtime run has not received recorded human approval.")
+        return run
+
+    async def require_durable_execution_scheduled(self, run_id: UUID) -> RuntimeRun:
+        """Confirm an operator may address an existing durable workflow."""
+
+        run = await self._require_run(run_id)
+        if not any(
+            event.event_type == "runtime.durable_execution.scheduled" for event in run.events
+        ):
+            raise RuntimePlanError("Durable execution has not been scheduled for this run.")
         return run
 
     @staticmethod

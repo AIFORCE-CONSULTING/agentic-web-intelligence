@@ -17,7 +17,7 @@ from app.agent_runtime.contracts import (
     RuntimeStep,
     RuntimeStoreUnavailable,
 )
-from app.agent_runtime.policy import MAX_RESEARCH_ATTEMPTS
+from app.agent_runtime.policy import MAX_OPERATOR_REVISION_APPROVALS, MAX_RESEARCH_ATTEMPTS
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runtime_runs (
@@ -90,14 +90,18 @@ RUN_MEMORY_RETENTION = timedelta(hours=24)
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "requested": frozenset({"planning", "cancelled"}),
     "planning": frozenset({"awaiting_approval", "rejected", "failed", "cancelled"}),
-    "awaiting_approval": frozenset({"executing", "rejected", "cancelled"}),
+    "awaiting_approval": frozenset(
+        {"executing", "rejected", "cancelled", "needs_attention"}
+    ),
     "executing": frozenset({"reviewing", "failed", "cancelled", "needs_attention"}),
     "reviewing": frozenset({"executing", "completed", "needs_attention", "failed", "cancelled"}),
     "completed": frozenset(),
     "rejected": frozenset(),
     "failed": frozenset(),
     "cancelled": frozenset(),
-    "needs_attention": frozenset(),
+    # Only RuntimeService's narrow operator-resolution methods may use these
+    # transitions; there is no caller-controlled transition endpoint.
+    "needs_attention": frozenset({"executing", "cancelled"}),
 }
 
 
@@ -420,6 +424,72 @@ class RuntimeStore:
             )
         return await self.get_run(run_id)
 
+    async def authorize_exception_revision(
+        self, run_id: UUID, researcher_step_id: UUID, reviewer_step_id: UUID
+    ) -> RuntimeRun | None:
+        """Reopen one existing research/review loop after a human-approved exception."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            status = await connection.fetchval(
+                "SELECT status FROM agent_runtime_runs WHERE id = $1 FOR UPDATE", run_id
+            )
+            if status is None:
+                return None
+            if status != "needs_attention":
+                raise RuntimeTransitionError("Runtime run is not awaiting operator attention.")
+            approvals = await connection.fetchval(
+                """SELECT COUNT(*) FROM agent_runtime_events
+                WHERE run_id = $1
+                AND event_type = 'runtime.review.exception_revision.approved'""",
+                run_id,
+            )
+            if approvals >= MAX_OPERATOR_REVISION_APPROVALS:
+                raise RuntimeTransitionError("The operator revision budget is exhausted.")
+            steps = await connection.fetch(
+                """SELECT id, role, status FROM agent_runtime_steps
+                WHERE run_id = $1 AND id = ANY($2::uuid[]) FOR UPDATE""",
+                run_id,
+                [researcher_step_id, reviewer_step_id],
+            )
+            by_id = {row["id"]: row for row in steps}
+            researcher = by_id.get(researcher_step_id)
+            reviewer = by_id.get(reviewer_step_id)
+            if (
+                researcher is None
+                or reviewer is None
+                or researcher["role"] != "researcher"
+                or researcher["status"] != "completed"
+                or reviewer["role"] != "reviewer"
+                or reviewer["status"] != "completed"
+            ):
+                raise RuntimeHandoffError(
+                    "Exception revision steps are not in the required reviewed state."
+                )
+            await connection.execute(
+                """UPDATE agent_runtime_steps SET status = 'pending', updated_at = now()
+                WHERE id = ANY($1::uuid[])""",
+                [researcher_step_id, reviewer_step_id],
+            )
+            await connection.execute(
+                """UPDATE agent_runtime_runs
+                SET status = 'executing', updated_at = now() WHERE id = $1""",
+                run_id,
+            )
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.review.exception_revision.approved",
+                {"approval_number": approvals + 1},
+            )
+            await self._append_event(
+                connection,
+                run_id,
+                "runtime.run.transitioned",
+                {"from_status": "needs_attention", "to_status": "executing"},
+            )
+        return await self.get_run(run_id)
+
     async def complete_step(self, run_id: UUID, step_id: UUID) -> None:
         """Complete one active step and retain its immutable authority record."""
 
@@ -540,6 +610,7 @@ class RuntimeStore:
             status=run["status"],
             created_at=run["created_at"],
             updated_at=run["updated_at"],
+            workspace_id=run["workspace_id"],
             steps=[self._step_from_row(row) for row in steps],
             handoffs=[self._handoff_from_row(row) for row in handoffs],
             memories=[self._memory_from_row(row) for row in memories],

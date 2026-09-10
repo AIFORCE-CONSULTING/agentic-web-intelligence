@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     github_project_owner: str | None = None
     # Kept as text so Docker Compose's empty-string default means "not configured".
     github_project_number: str | None = None
+    temporal_address: str | None = None
+    temporal_namespace: str = "default"
+    temporal_task_queue: str = "platform-runtime-v1"
 
     def validate_runtime_configuration(self) -> None:
         """Reject deployment combinations that would weaken browser or identity security."""

@@ -19,6 +19,9 @@ services:
       GITHUB_CONNECTOR_TOKEN: ${GITHUB_CONNECTOR_TOKEN:-}
       GITHUB_PROJECT_OWNER: ${GITHUB_PROJECT_OWNER:-}
       GITHUB_PROJECT_NUMBER: ${GITHUB_PROJECT_NUMBER:-}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-platform-runtime-v1}
       DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
     ports:
       - "8000:8000"
@@ -71,7 +74,7 @@ services:
       - platform
 
   postgres:
-    profiles: ["stateful-services", "web-research"]
+    profiles: ["stateful-services", "web-research", "durable-execution"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-enterprise_agent_platform}
@@ -86,6 +89,59 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - platform
+
+  temporal:
+    profiles: ["durable-execution"]
+    image: temporalio/auto-setup:1.28.1
+    environment:
+      DB: postgres12
+      DB_PORT: 5432
+      POSTGRES_SEEDS: postgres
+      POSTGRES_USER: ${POSTGRES_USER:-platform}
+      POSTGRES_PWD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      DYNAMIC_CONFIG_FILE_PATH: config/dynamicconfig/docker.yaml
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "7233:7233"
+    networks:
+      - platform
+
+  temporal-ui:
+    profiles: ["durable-execution"]
+    image: temporalio/ui:2.31.2
+    environment:
+      TEMPORAL_ADDRESS: temporal:7233
+      TEMPORAL_CORS_ORIGINS: http://localhost:8233
+    depends_on:
+      temporal:
+        condition: service_started
+    ports:
+      - "8233:8080"
+    networks:
+      - platform
+
+  durable-worker:
+    profiles: ["durable-execution"]
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    command: ["python", "-m", "app.durable_execution.worker"]
+    restart: on-failure
+    environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      SEARXNG_BASE_URL: ${SEARXNG_BASE_URL:-http://searxng:8080}
+      TEMPORAL_ADDRESS: ${TEMPORAL_ADDRESS:-temporal:7233}
+      TEMPORAL_NAMESPACE: ${TEMPORAL_NAMESPACE:-default}
+      TEMPORAL_TASK_QUEUE: ${TEMPORAL_TASK_QUEUE:-platform-runtime-v1}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
+    depends_on:
+      temporal:
+        condition: service_started
     networks:
       - platform
 

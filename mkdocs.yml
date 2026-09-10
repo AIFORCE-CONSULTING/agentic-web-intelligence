@@ -81,8 +81,11 @@ nav:
       - ADR 0010 — Tool-registry governance: adr/0010-code-owned-tool-registry-governance.md
       - ADR 0011 — Operational security posture: adr/0011-operational-security-posture.md
       - ADR 0012 — GitHub Projects connector: adr/0012-human-operated-github-projects-connector.md
+      - ADR 0013 — Durable execution: adr/0013-governed-durable-execution-contract.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
+  - Durable execution: durable-execution.md
+  - Durable execution validation: durable-validation.md
   - Identity: identity.md
   - Operations: operations.md
   - GitHub Projects: github-projects.md

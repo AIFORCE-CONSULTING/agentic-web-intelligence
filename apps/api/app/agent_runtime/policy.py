@@ -24,4 +24,10 @@ ALLOWED_HANDOFFS: dict[RuntimeRole, frozenset[RuntimeRole]] = {
 }
 
 MAX_RESEARCH_STEPS = 5
-MAX_RESEARCH_ATTEMPTS = 2
+# Includes the initial researcher pass. The reviewer can therefore request at
+# most two routine revisions without an operator decision.
+MAX_RESEARCH_ATTEMPTS = 3
+
+# Exception revisions require an authenticated human operator and reuse the
+# already materialized researcher/reviewer assignments.
+MAX_OPERATOR_REVISION_APPROVALS = 3

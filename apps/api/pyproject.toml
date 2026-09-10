@@ -17,7 +17,7 @@ dependencies = [
   "pwdlib[argon2]==0.3.0",
   "temporalio==1.32.0",
   "trafilatura==2.2.0",
-  "uvicorn==0.47.0",
+  "uvicorn==0.52.4",
 ]
 
 [project.optional-dependencies]

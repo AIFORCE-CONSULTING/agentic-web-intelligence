@@ -24,8 +24,26 @@ Phase 3 adds governed planning, typed execution state, bounded role handoffs,
 and safe recovery semantics. The [agent runtime contract](agent-runtime.md)
 defines these boundaries before additional agent behavior is implemented.
 
+## Phase 4: Enterprise services
+
+Phase 4 adds the platform controls needed for local-first and enterprise-ready
+operation: authentication and workspace authorization, service identities,
+secret handling, governed tool registration, security operations, and a
+human-operated GitHub Projects connector. Start with the [identity guide](identity.md),
+[operations runbook](operations.md), and [GitHub Projects guide](github-projects.md).
+
+## Phase 5: Durable execution
+
+Phase 5 adds restart-safe execution for approved, long-running runtime work.
+Temporal provides durability when it is justified; runtime-owned state remains
+the authority for approval, revision, cancellation, and escalation decisions.
+Read the [durable-execution guide](durable-execution.md) and the
+[validation guide](durable-validation.md).
+
 ## Start here
 
 - Read the [project vision](foundation/project.md) and [engineering principles](foundation/principles.md).
 - Review the [platform architecture](architecture.md), the [roadmap](foundation/roadmap.md), and the [MCP web-intelligence decision](adr/0003-web-intelligence-mcp.md).
+- For platform administration, review [identity](identity.md), [operations](operations.md), and [GitHub Projects](github-projects.md).
+- For resilient runtime work, review [durable execution](durable-execution.md) and its [validation guide](durable-validation.md).
 - Follow the [contribution guide](contributing.md) to run the project locally.

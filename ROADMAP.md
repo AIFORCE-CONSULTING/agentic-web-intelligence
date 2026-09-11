@@ -58,14 +58,47 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 - Validate restart, resume, workspace isolation, cancellation, and ambiguous
   effect behavior end to end.
 
-## Phase 6 - Observability
+## Phase 6 - Local Evidence Intelligence
 
-Add LangFuse, OpenTelemetry, metrics, and evaluation.
+Add a local-first, optional open-weight model capability for generated evidence
+summaries and page-level keywords.
 
-- Add configurable data-retention and archival operations for durable workflow
-  metadata when real deployment requirements justify them. Security audit
-  history remains separately governed.
+- Define an ADR and provider boundary: native local Ollama by default, no
+  automatic model download, no model tools, and no new agent authority.
+- Add local-model configuration, model-artifact verification, health, and
+  resource guidance for Qwen3 1.7B on modest local hardware.
+- Create evidence-only summarization and keyword contracts with strict input,
+  output, provenance, and schema validation rules.
+- Process complete pages through bounded overlapping chunks, then consolidate
+  page summaries and key phrases with coverage and source-chunk references.
+- Run short single-page summaries directly; use Temporal only for multi-page or
+  restart-sensitive chunk processing.
+- Add an operator UI to request, inspect, and distinguish generated summaries
+  from extracted source evidence.
+- Validate local quality, model-unavailable behavior, prompt-injection
+  resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7 - Production Deployment
+## Phase 7 - Grounded Research Chat
 
-Add Kubernetes, Azure deployment patterns, scaling, security hardening, and release automation.
+Build an authenticated, evidence-grounded chat experience on the same local
+model-provider boundary.
+
+- Answer only from the selected, workspace-owned research evidence with source
+  citations and explicit uncertainty when evidence is insufficient.
+- Keep chat sessions, permissions, retention, and model configuration
+  platform-owned; the model receives no MCP tools, browser, filesystem,
+  database, runtime, or credential access.
+- Support optional future hosted providers behind the same adapter without
+  making cloud credentials a requirement for local open-source deployments.
+
+## Future Parking Lot
+
+The following work remains planned but is intentionally deferred until the
+local evidence-intelligence and grounded-chat capabilities are established.
+
+- **Observability** — LangFuse, OpenTelemetry, metrics, and evaluation.
+- **Durable data lifecycle** — configurable retention and archival operations
+  for durable workflow metadata when real deployment requirements justify them;
+  security audit history remains separately governed.
+- **Production deployment** — Kubernetes, Azure deployment patterns, scaling,
+  security hardening, and release automation.

@@ -82,6 +82,7 @@ nav:
       - ADR 0011 — Operational security posture: adr/0011-operational-security-posture.md
       - ADR 0012 — GitHub Projects connector: adr/0012-human-operated-github-projects-connector.md
       - ADR 0013 — Durable execution: adr/0013-governed-durable-execution-contract.md
+      - ADR 0014 — Local-model provider: adr/0014-governed-local-model-provider.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Durable execution: durable-execution.md

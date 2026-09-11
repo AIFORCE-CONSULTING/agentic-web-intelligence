@@ -63,8 +63,9 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 Add a local-first, optional open-weight model capability for generated evidence
 summaries and page-level keywords.
 
-- Define an ADR and provider boundary: native local Ollama by default, no
-  automatic model download, no model tools, and no new agent authority.
+- Define the [local-model provider boundary](docs/adr/0014-governed-local-model-provider.md):
+  native local Ollama by default, no automatic model download, no model tools,
+  and no new agent authority.
 - Add local-model configuration, model-artifact verification, health, and
   resource guidance for Qwen3 1.7B on modest local hardware.
 - Create evidence-only summarization and keyword contracts with strict input,

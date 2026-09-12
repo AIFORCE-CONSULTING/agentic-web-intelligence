@@ -61,6 +61,13 @@ type GitHubProjectInfo = {
 };
 type GitHubDraftItem = { id: string; title: string; priority?: string | null };
 type GitHubDraftItemList = { items: GitHubDraftItem[] };
+type LocalModelProviderConfiguration = {
+  workspace_id: string; endpoint_url: string; model_name: string; updated_at: string;
+};
+type LocalModelProviderReadiness = {
+  mode: "unconfigured" | "ready" | "unavailable" | "invalid";
+  provider: "ollama"; endpoint_url?: string | null; model_name?: string | null; detail: string;
+};
 type RuntimeEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
 type RuntimeStep = {
   id: string; role: string; title: string; status: string; allowed_capabilities: string[];
@@ -164,6 +171,10 @@ function AdminConsole() {
   const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
   const [posture, setPosture] = useState<OperationalSecurityStatus | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubProjectStatus | null>(null);
+  const [localModel, setLocalModel] = useState<LocalModelProviderConfiguration | null>(null);
+  const [localModelReadiness, setLocalModelReadiness] = useState<LocalModelProviderReadiness | null>(null);
+  const [localModelEndpoint, setLocalModelEndpoint] = useState("http://host.docker.internal:11434");
+  const [localModelName, setLocalModelName] = useState("qwen3:1.7b");
   const [githubProject, setGithubProject] = useState<GitHubProjectInfo | null>(null);
   const [draftItems, setDraftItems] = useState<GitHubDraftItem[]>([]);
   const [roadmapError, setRoadmapError] = useState<string | null>(null);
@@ -232,8 +243,41 @@ function AdminConsole() {
       apiRequest<SecurityAuditEventList>("/v1/audit/security"),
       apiRequest<OperationalSecurityStatus>("/v1/operations/security-status"),
     ]);
+    const provider = await apiRequest<LocalModelProviderConfiguration | null>("/v1/local-model/provider");
+    setLocalModel(provider);
+    if (provider) {
+      setLocalModelEndpoint(provider.endpoint_url);
+      setLocalModelName(provider.model_name);
+    }
     setEvents(audit.events);
     setPosture(securityPosture);
+  }
+
+  async function saveLocalModel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await apiRequest<LocalModelProviderConfiguration>("/v1/local-model/provider", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint_url: localModelEndpoint, model_name: localModelName }),
+      });
+      setLocalModel(saved);
+      setLocalModelReadiness(null);
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save local model configuration.");
+    } finally { setBusy(false); }
+  }
+
+  async function checkLocalModelReadiness() {
+    setBusy(true);
+    setError(null);
+    try {
+      setLocalModelReadiness(await apiRequest<LocalModelProviderReadiness>("/v1/local-model/provider/readiness", { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to check local model readiness.");
+    } finally { setBusy(false); }
   }
 
   async function createDraftItem(event: FormEvent<HTMLFormElement>) {
@@ -456,6 +500,17 @@ function AdminConsole() {
             <article><h3>Deployment secrets</h3><ul>{posture.secrets.secrets.map((secret) => <li key={secret.name}><strong>{secret.name}</strong><span className={secret.configured && secret.valid ? "ready-text" : "warning-text"}>{secret.detail}</span><small>{secret.purpose}</small></li>)}</ul></article>
             <article><h3>Governed tools</h3><ul>{posture.tool_registry.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong><span>{tool.required_permission} · {tool.audit_required ? "audited" : "not audited"}</span><small>{tool.purpose}</small></li>)}</ul></article>
           </div>
+        </section>}
+        {user.role === "administrator" && <section aria-labelledby="local-model-heading">
+          <div className="section-heading"><div><p className="eyebrow">Phase 6 boundary</p><h2 id="local-model-heading">Local model provider</h2></div><button type="button" className="secondary" onClick={() => void checkLocalModelReadiness()} disabled={busy || !localModel}>Check readiness</button></div>
+          <p className="hint">Configure an already-running local Ollama service. Saving this does not install Ollama, download a model, or perform inference.</p>
+          <form className="roadmap-form" onSubmit={saveLocalModel}>
+            <label>Ollama endpoint<input value={localModelEndpoint} onChange={(event) => setLocalModelEndpoint(event.target.value)} required /></label>
+            <label>Installed model<input value={localModelName} onChange={(event) => setLocalModelName(event.target.value)} required /></label>
+            <button type="submit" disabled={busy}>Save provider</button>
+          </form>
+          {localModel && <p className="hint">Configured for this workspace: <code>{localModel.endpoint_url}</code> · <code>{localModel.model_name}</code></p>}
+          {localModelReadiness && <p className={localModelReadiness.mode === "ready" ? "ready-text" : "warning-text"}>{localModelReadiness.mode}: {localModelReadiness.detail}</p>}
         </section>}
         {user.role === "administrator" ? <section aria-labelledby="security-audit-heading">
           <div className="section-heading"><div><p className="eyebrow">Append-only record</p><h2 id="security-audit-heading">Security audit</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>

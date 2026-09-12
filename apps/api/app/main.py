@@ -59,6 +59,13 @@ from app.identity.contracts import (
 from app.identity.enterprise import EnterpriseIdentityBoundary
 from app.identity.service import SESSION_COOKIE_NAME, AuthenticationError, IdentityService
 from app.identity.store import IdentityStore, IdentityStoreUnavailable
+from app.local_models.contracts import (
+    LocalModelProviderConfiguration,
+    LocalModelProviderReadiness,
+    LocalModelProviderRequest,
+)
+from app.local_models.service import LocalModelProviderConfigurationError, LocalModelProviderService
+from app.local_models.store import LocalModelProviderStore, LocalModelProviderStoreUnavailable
 from app.prompt_templates import (
     GovernedResearchPromptRequest,
     PromptTemplateInfo,
@@ -162,6 +169,9 @@ def create_app() -> FastAPI:
         settings, app.state.deployment_secrets
     )
     app.state.github_projects = GitHubProjectsService(app.state.github_projects_boundary)
+    app.state.local_model_provider = LocalModelProviderService(
+        LocalModelProviderStore(settings.database_url)
+    )
     app.state.mcp_host = GovernedWebMcpHost(
         deployment_secrets=app.state.deployment_secrets
     )
@@ -169,7 +179,7 @@ def create_app() -> FastAPI:
         CORSMiddleware,
         allow_origins=[settings.web_origin],
         allow_credentials=True,
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Authorization", "Content-Type", "X-Request-ID"],
     )
 
@@ -191,6 +201,7 @@ def create_app() -> FastAPI:
                 "/v1/service-identities",
                 "/v1/operations",
                 "/v1/github",
+                "/v1/local-model",
             )
         ):
             response.headers.setdefault("Cache-Control", "no-store")
@@ -290,6 +301,14 @@ def create_app() -> FastAPI:
         identity = await require_workspace_permission(http_request, "runtime.execute")
         if not isinstance(identity, AuthenticatedUser):
             raise HTTPException(status_code=403, detail="A human operator is required.")
+        return identity
+
+    async def require_human_local_model_administrator(http_request: Request) -> AuthenticatedUser:
+        """Restrict local provider configuration and checks to a human administrator."""
+
+        identity = await require_workspace_permission(http_request, "local_model.manage")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human administrator is required.")
         return identity
 
     @app.post(
@@ -457,6 +476,58 @@ def create_app() -> FastAPI:
         await require_human_project_manager(http_request)
         boundary: GitHubProjectsBoundary = http_request.app.state.github_projects_boundary
         return boundary.status()
+
+    @app.get(
+        "/v1/local-model/provider",
+        response_model=LocalModelProviderConfiguration | None,
+        tags=["local-model"],
+    )
+    async def local_model_provider_configuration(
+        http_request: Request,
+    ) -> LocalModelProviderConfiguration | None:
+        administrator = await require_human_local_model_administrator(http_request)
+        service: LocalModelProviderService = http_request.app.state.local_model_provider
+        try:
+            return await service.configuration(administrator.workspace_id)
+        except LocalModelProviderStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.put(
+        "/v1/local-model/provider",
+        response_model=LocalModelProviderConfiguration,
+        tags=["local-model"],
+    )
+    async def save_local_model_provider_configuration(
+        request: LocalModelProviderRequest, http_request: Request
+    ) -> LocalModelProviderConfiguration:
+        administrator = await require_human_local_model_administrator(http_request)
+        service: LocalModelProviderService = http_request.app.state.local_model_provider
+        try:
+            configuration = await service.save(
+                administrator.workspace_id, request.endpoint_url, request.model_name
+            )
+        except LocalModelProviderConfigurationError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        except LocalModelProviderStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        await record_security_event(
+            http_request, "local_model.configured", "succeeded", actor=administrator,
+            details={"provider": "ollama", "model_name": configuration.model_name},
+        )
+        return configuration
+
+    @app.post(
+        "/v1/local-model/provider/readiness",
+        response_model=LocalModelProviderReadiness,
+        tags=["local-model"],
+    )
+    async def local_model_provider_readiness(http_request: Request) -> LocalModelProviderReadiness:
+        administrator = await require_human_local_model_administrator(http_request)
+        service: LocalModelProviderService = http_request.app.state.local_model_provider
+        try:
+            return await service.readiness(administrator.workspace_id)
+        except LocalModelProviderStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get(
         "/v1/github/projects/roadmap",

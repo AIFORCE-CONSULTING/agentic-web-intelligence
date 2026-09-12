@@ -25,6 +25,14 @@ initial recommended model is Qwen3 1.7B, subject to explicit operator
 installation and local validation. The adapter may support future hosted
 providers without changing the authority or evidence contracts below.
 
+The reusable chunking, output-schema, consolidation, coverage, and deterministic
+routing logic lives in an internal `evidence_intelligence` package. It exposes
+plain typed input and output only, and must not import platform API, identity,
+database, provider, MCP, Temporal, filesystem, or credential code. Platform
+adapters own every side effect around that package. This is intentionally shaped
+so it can be extracted and independently versioned later without untangling
+authority-bearing platform code.
+
 ### Operator configuration and availability
 
 The platform does not install Ollama, download a model, start a model service,

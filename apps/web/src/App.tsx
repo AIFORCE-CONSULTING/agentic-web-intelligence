@@ -25,6 +25,13 @@ type BatchExtractionOutcome = {
   url: string; status: "succeeded" | "failed" | "denied"; reason?: string | null;
 };
 type BatchExtractResponse = { run_id: string; outcomes: BatchExtractionOutcome[] };
+type EvidenceSummaryBatch = {
+  id: string; route: "undetermined" | "direct" | "durable"; status: string;
+  sources: {
+    content_hash?: string | null; url: string; chunk_count?: number | null; status: string;
+    summary?: string | null; keywords?: string[] | null; failure_reason?: string | null;
+  }[];
+};
 type AuthenticatedUser = {
   id: string; email: string; workspace_id: string; workspace_name: string;
   role: "administrator" | "operator" | "viewer"; authenticated_at: string;
@@ -563,6 +570,8 @@ export function App() {
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [selectedSourceUrls, setSelectedSourceUrls] = useState<string[]>([]);
+  const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
+  const [pendingRerunUrls, setPendingRerunUrls] = useState<string[] | null>(null);
   const [batchOutcomes, setBatchOutcomes] = useState<BatchExtractionOutcome[]>([]);
   const [lastExtractionAttempt, setLastExtractionAttempt] = useState<ExtractionAttempt | null>(null);
   const [busy, setBusy] = useState(false);
@@ -604,6 +613,16 @@ export function App() {
   useEffect(() => {
     if (health && !isDeveloperRoute && !isAdminRoute) void refreshRunLibrary();
   }, [health]);
+
+  useEffect(() => {
+    if (!summaryBatch || !["awaiting_execution", "summarizing"].includes(summaryBatch.status)) return;
+    const timer = window.setInterval(() => {
+      void apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
+        .then(setSummaryBatch)
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [summaryBatch]);
 
   async function reopenRun(runId: string) {
     setBusy(true);
@@ -652,22 +671,31 @@ export function App() {
     ));
   }
 
-  async function extractSelectedSources(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function startSelectedSourceExtraction(rerunExisting: boolean) {
     if (!run || !selectedSourceUrls.length) return;
+    setPendingRerunUrls(null);
     setBusy(true);
     setError(null);
     setBatchOutcomes([]);
     try {
-      const batch = await apiRequest<BatchExtractResponse>(`/v1/research/runs/${run.id}/extract-batch`, {
+      const execution = await apiRequest<EvidenceSummaryBatch>("/v1/evidence-summary-executions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: selectedSourceUrls }),
+        body: JSON.stringify({
+          run_id: run.id,
+          urls: selectedSourceUrls,
+          rerun_existing: rerunExisting,
+        }),
       });
       const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
       setRun(refreshedRun);
       setLastExtractionAttempt(latestExtractionAttemptFor(refreshedRun));
-      setBatchOutcomes(batch.outcomes);
+      setBatchOutcomes(execution.sources.map((source) => ({
+        url: source.url,
+        status: source.status === "failed" ? "failed" : "succeeded",
+        reason: source.failure_reason,
+      })));
+      setSummaryBatch(execution);
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to extract selected source data.");
@@ -683,6 +711,19 @@ export function App() {
       setBusy(false);
     }
   }
+
+  async function extractSelectedSources(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!run || !selectedSourceUrls.length) return;
+    const displayedUrls = new Set(run.evidence.map((evidence) => evidence.url));
+    const alreadyDisplayed = selectedSourceUrls.filter((url) => displayedUrls.has(url));
+    if (alreadyDisplayed.length) {
+      setPendingRerunUrls(alreadyDisplayed);
+      return;
+    }
+    await startSelectedSourceExtraction(false);
+  }
+
 
   if (isAdminRoute) return <AdminConsole />;
 
@@ -739,7 +780,12 @@ export function App() {
             <p className="selection-summary">{selectedSourceUrls.length} of {run.sources.length} candidates selected. Sources are extracted sequentially and each outcome is recorded.</p>
             <button type="submit" disabled={busy || !selectedSourceUrls.length}>{busy ? "Extracting selected sources…" : `Extract ${selectedSourceUrls.length} selected source${selectedSourceUrls.length === 1 ? "" : "s"}`}</button>
           </form>
-          <p className="hint">Only public HTML or plain-text pages are allowed. Downloads, private URLs, and browser interaction remain blocked.</p>
+          <p className="hint">Only public HTML or plain-text pages are allowed. Successful sources are summarized automatically; downloads, private URLs, and browser interaction remain blocked.</p>
+          {pendingRerunUrls && <aside className="extraction-status failure" role="alert">
+            <strong>Selected source data is already displayed</strong>
+            <p>{pendingRerunUrls.length} selected source{pendingRerunUrls.length === 1 ? " is" : "s are"} already loaded from this run’s durable evidence record.</p>
+            <div className="runtime-actions"><button type="button" onClick={() => void startSelectedSourceExtraction(true)} disabled={busy}>Re-extract selected sources</button><button type="button" className="secondary" onClick={() => setPendingRerunUrls(null)} disabled={busy}>Keep displayed evidence</button></div>
+          </aside>}
           {batchOutcomes.length > 0 && <ol className="batch-outcomes" aria-label="Batch extraction results">{batchOutcomes.map((outcome) => (
             <li className={outcome.status} key={outcome.url}><strong>{outcome.status}</strong><span>{outcome.url}</span>{outcome.reason && <small>{outcome.reason}</small>}</li>
           ))}</ol>}
@@ -757,9 +803,16 @@ export function App() {
             <strong>Latest extraction succeeded</strong>
             <p>{lastExtractionAttempt.url}</p>
           </aside>}
+          {summaryBatch && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
+            <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
+            <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
+          </aside>}
+          {summaryBatch?.sources.some((source) => source.summary) && <ol className="sources">{summaryBatch.sources.filter((source) => source.summary).map((source) => (
+            <li className="source-candidate" key={source.url}><a className="source-link" href={source.url} target="_blank" rel="noreferrer">{source.url}<span aria-hidden="true"> ↗</span></a><p>{source.summary}</p>{source.keywords && <p className="hint">Keywords: {source.keywords.join(", ")}</p>}</li>
+          ))}</ol>}
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
-              <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><p>{item.text}</p>
+              <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><details><summary>View source evidence</summary><p>{item.text}</p></details>
             </article>
           )) : <p>No source data has been extracted for this run yet.</p>}
         </section>

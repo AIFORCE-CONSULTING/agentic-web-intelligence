@@ -63,7 +63,7 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 Add a local-first, optional open-weight model capability for generated evidence
 summaries and page-level keywords.
 
-- Define the [local-model provider boundary](docs/adr/0014-governed-local-model-provider.md):
+- Define the [local-model provider boundary](../adr/0014-governed-local-model-provider.md):
   native local Ollama by default, no automatic model download, no model tools,
   and no new agent authority.
 - Add local-model configuration, model-artifact verification, health, and

@@ -15,4 +15,6 @@ def route_request(source_count: int, total_chunk_count: int) -> ExecutionRoute:
         raise ValueError("A summary request must select from one to five sources.")
     if total_chunk_count < source_count:
         raise ValueError("Every selected source must have at least one chunk.")
-    return ExecutionRoute.DIRECT if source_count == total_chunk_count == 1 else ExecutionRoute.DURABLE
+    return (
+        ExecutionRoute.DIRECT if source_count == total_chunk_count == 1 else ExecutionRoute.DURABLE
+    )

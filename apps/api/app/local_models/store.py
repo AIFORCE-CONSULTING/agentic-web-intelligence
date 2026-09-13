@@ -1,6 +1,5 @@
 """Workspace-scoped persistence for non-secret local model settings."""
 
-from datetime import datetime
 from uuid import UUID
 
 import asyncpg
@@ -28,7 +27,9 @@ class LocalModelProviderStore:
 
     async def _connection_pool(self) -> asyncpg.Pool:
         if not self._database_url:
-            raise LocalModelProviderStoreUnavailable("Local model configuration persistence is not configured.")
+            raise LocalModelProviderStoreUnavailable(
+                "Local model configuration persistence is not configured."
+            )
         if self._pool is None:
             try:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
@@ -64,6 +65,8 @@ class LocalModelProviderStore:
                 ON CONFLICT (workspace_id) DO UPDATE SET endpoint_url = EXCLUDED.endpoint_url,
                 model_name = EXCLUDED.model_name, updated_at = now()
                 RETURNING workspace_id, endpoint_url, model_name, updated_at""",
-                workspace_id, endpoint_url, model_name,
+                workspace_id,
+                endpoint_url,
+                model_name,
             )
         return LocalModelProviderConfiguration(**dict(row))

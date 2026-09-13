@@ -20,6 +20,17 @@ from app.durable_execution.service import (
     DurableExecutionUnavailable,
     TemporalRuntimeBoundary,
 )
+from app.evidence_summaries.contracts import (
+    CreateEvidenceSummaryExecutionRequest,
+    EvidenceSummaryExecution,
+)
+from app.evidence_summaries.service import (
+    EvidenceSummarySchedulingUnavailable,
+    EvidenceSummaryService,
+    EvidenceSummaryTemporalBoundary,
+    EvidenceSummaryUnavailable,
+)
+from app.evidence_summaries.store import EvidenceSummaryStore, EvidenceSummaryStoreUnavailable
 from app.github_projects.contracts import (
     CreateDraftItemRequest,
     GitHubDraftItem,
@@ -172,9 +183,18 @@ def create_app() -> FastAPI:
     app.state.local_model_provider = LocalModelProviderService(
         LocalModelProviderStore(settings.database_url)
     )
-    app.state.mcp_host = GovernedWebMcpHost(
-        deployment_secrets=app.state.deployment_secrets
+    app.state.evidence_summary_store = EvidenceSummaryStore(settings.database_url)
+    app.state.evidence_summary_service = EvidenceSummaryService(
+        app.state.evidence_summary_store,
+        app.state.research_store,
+        app.state.local_model_provider,
     )
+    app.state.evidence_summary_temporal = EvidenceSummaryTemporalBoundary(
+        settings.temporal_address,
+        settings.temporal_namespace,
+        settings.temporal_task_queue,
+    )
+    app.state.mcp_host = GovernedWebMcpHost(deployment_secrets=app.state.deployment_secrets)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -511,7 +531,10 @@ def create_app() -> FastAPI:
         except LocalModelProviderStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         await record_security_event(
-            http_request, "local_model.configured", "succeeded", actor=administrator,
+            http_request,
+            "local_model.configured",
+            "succeeded",
+            actor=administrator,
             details={"provider": "ollama", "model_name": configuration.model_name},
         )
         return configuration
@@ -1179,6 +1202,128 @@ def create_app() -> FastAPI:
             return ResearchRunList(runs=await store.list_runs(user.workspace_id, limit))
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.post(
+        "/v1/evidence-summary-executions",
+        response_model=EvidenceSummaryExecution,
+        status_code=201,
+        tags=["evidence-summaries"],
+    )
+    async def create_evidence_summary_request(
+        request: CreateEvidenceSummaryExecutionRequest, http_request: Request
+    ) -> EvidenceSummaryExecution:
+        """Extract selected evidence, then execute the fixed local-summary path."""
+
+        user = await require_workspace_permission(http_request, "research.write")
+        if len(set(request.urls)) != len(request.urls):
+            raise HTTPException(status_code=422, detail="Each selected source URL must be unique.")
+        research_store: ResearchStore = http_request.app.state.research_store
+        summary_store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            run = await research_store.get_run(user.workspace_id, request.run_id)
+            if run is None:
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            candidate_urls = {source.url for source in run.sources}
+            unknown = [value for value in request.urls if value not in candidate_urls]
+            if unknown:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Summary executions accept only sources from this research run.",
+                )
+            existing_urls = {evidence.url for evidence in run.evidence}
+            already_extracted = [url for url in request.urls if url in existing_urls]
+            if already_extracted and not request.rerun_existing:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "evidence_already_displayed",
+                        "urls": already_extracted,
+                        "message": "Selected source evidence is already displayed. "
+                        "Explicit operator confirmation is required to retrieve it again.",
+                    },
+                )
+            execution = await summary_store.create_execution(
+                user.workspace_id, request.run_id, request.urls
+            )
+            await research_store.record_batch_extraction_started(request.run_id, request.urls)
+            for url in request.urls:
+                await summary_store.mark_source_extracting(execution.id, url)
+                try:
+                    evidence = await run_extract_workflow(url)
+                except ToolPolicyError as error:
+                    await research_store.record_policy_denial(request.run_id, url, str(error))
+                    await summary_store.record_source_failure(execution.id, url, str(error))
+                except ToolRetrievalError as error:
+                    await research_store.record_extraction_failure(
+                        request.run_id,
+                        url,
+                        str(error),
+                        error.upstream_status,
+                    )
+                    await summary_store.record_source_failure(execution.id, url, str(error))
+                except ToolProviderError as error:
+                    await research_store.record_extraction_failure(
+                        request.run_id,
+                        url,
+                        str(error),
+                        None,
+                    )
+                    await summary_store.record_source_failure(execution.id, url, str(error))
+                else:
+                    await research_store.save_evidence(request.run_id, evidence)
+            execution = await summary_store.get_execution(user.workspace_id, execution.id)
+            if execution is None:
+                raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
+            try:
+                prepared = await http_request.app.state.evidence_summary_service.prepare(execution)
+            except EvidenceSummaryUnavailable:
+                await summary_store.fail_execution(execution.id)
+                failed = await summary_store.get_execution(user.workspace_id, execution.id)
+                if failed is None:
+                    raise
+                return failed
+            if prepared.route == "direct":
+                return await http_request.app.state.evidence_summary_service.execute(execution.id)
+            try:
+                await http_request.app.state.evidence_summary_temporal.schedule(prepared.execution)
+            except EvidenceSummarySchedulingUnavailable:
+                await summary_store.fail_execution(execution.id)
+            scheduled = await summary_store.get_execution(user.workspace_id, execution.id)
+            if scheduled is None:
+                raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
+            return scheduled
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except EvidenceSummaryUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+
+    @app.get(
+        "/v1/evidence-summary-executions/{batch_id}",
+        response_model=EvidenceSummaryExecution,
+        tags=["evidence-summaries"],
+    )
+    async def get_evidence_summary_request(
+        batch_id: str, http_request: Request
+    ) -> EvidenceSummaryExecution:
+        """Inspect only a summary request owned by the current workspace."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_batch_id = UUID(batch_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="batch_id must be a UUID.") from error
+        store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            batch = await store.get_execution(user.workspace_id, parsed_batch_id)
+        except EvidenceSummaryStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if batch is None:
+            raise HTTPException(status_code=404, detail="Summary request was not found.")
+        return batch
 
     @app.post("/v1/research/runs/{run_id}/extract", response_model=Evidence, tags=["research"])
     async def extract_run_evidence(

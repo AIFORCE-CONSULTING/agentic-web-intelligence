@@ -344,7 +344,15 @@ class ResearchStore:
             )
             evidence = await connection.fetch(
                 """SELECT url, retrieved_at, content_type, text, content_hash, extraction_method
-                   FROM research_evidence WHERE run_id = $1 ORDER BY retrieved_at""", run_id
+                   FROM (
+                       SELECT DISTINCT ON (url)
+                           url, retrieved_at, content_type, text, content_hash, extraction_method
+                       FROM research_evidence
+                       WHERE run_id = $1
+                       ORDER BY url, retrieved_at DESC
+                   ) AS latest_evidence
+                   ORDER BY retrieved_at""",
+                run_id,
             )
             events = await connection.fetch(
                 """SELECT event_type, occurred_at, details FROM research_audit_events

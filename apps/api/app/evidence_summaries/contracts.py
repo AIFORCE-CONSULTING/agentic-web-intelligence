@@ -5,24 +5,39 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 
-class CreateEvidenceSummaryRequest(BaseModel):
+class CreateEvidenceSummaryExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: UUID
-    content_hashes: list[str] = Field(min_length=1, max_length=5)
+    urls: list[str] = Field(min_length=1, max_length=5)
+    rerun_existing: bool = False
 
 
-class EvidenceSummarySource(BaseModel):
-    content_hash: str
+class EvidenceSummaryExecutionSource(BaseModel):
     url: str
-    chunk_count: int
-    status: Literal["pending"] = "pending"
+    status: Literal[
+        "pending", "extracting", "extracted", "summarizing", "completed", "failed", "cancelled"
+    ] = "pending"
+    content_hash: str | None = None
+    chunk_count: int | None = None
+    summary: str | None = None
+    keywords: list[str] | None = None
+    failure_reason: str | None = None
 
 
-class EvidenceSummaryBatch(BaseModel):
+class EvidenceSummaryExecution(BaseModel):
     id: UUID
     workspace_id: UUID
     run_id: UUID
-    route: Literal["direct", "durable"]
-    status: Literal["pending"] = "pending"
+    route: Literal["undetermined", "direct", "durable"] = "undetermined"
+    status: Literal[
+        "pending",
+        "extracting",
+        "awaiting_execution",
+        "summarizing",
+        "completed",
+        "failed",
+        "cancelled",
+    ] = "pending"
     created_at: datetime
-    sources: list[EvidenceSummarySource]
+    updated_at: datetime
+    sources: list[EvidenceSummaryExecutionSource]

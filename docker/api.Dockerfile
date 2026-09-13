@@ -10,6 +10,7 @@ RUN useradd --create-home --uid 10001 platform
 
 COPY apps/api/requirements.lock ./requirements.lock
 COPY apps/api/app ./app
+COPY apps/api/evidence_intelligence ./evidence_intelligence
 
 RUN pip install --no-cache-dir --require-hashes --only-binary=:all: -r requirements.lock
 

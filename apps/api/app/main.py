@@ -1212,7 +1212,7 @@ def create_app() -> FastAPI:
     async def create_evidence_summary_request(
         request: CreateEvidenceSummaryExecutionRequest, http_request: Request
     ) -> EvidenceSummaryExecution:
-        """Extract selected evidence, then execute the fixed local-summary path."""
+        """Reuse or extract selected evidence, then execute only missing summaries."""
 
         user = await require_workspace_permission(http_request, "research.write")
         if len(set(request.urls)) != len(request.urls):
@@ -1230,23 +1230,15 @@ def create_app() -> FastAPI:
                     status_code=422,
                     detail="Summary executions accept only sources from this research run.",
                 )
-            existing_urls = {evidence.url for evidence in run.evidence}
-            already_extracted = [url for url in request.urls if url in existing_urls]
-            if already_extracted and not request.rerun_existing:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "code": "evidence_already_displayed",
-                        "urls": already_extracted,
-                        "message": "Selected source evidence is already displayed. "
-                        "Explicit operator confirmation is required to retrieve it again.",
-                    },
-                )
+            existing_evidence = {evidence.url: evidence for evidence in run.evidence}
             execution = await summary_store.create_execution(
                 user.workspace_id, request.run_id, request.urls
             )
             await research_store.record_batch_extraction_started(request.run_id, request.urls)
             for url in request.urls:
+                if url in existing_evidence:
+                    await research_store.record_source_reused(request.run_id, url)
+                    continue
                 await summary_store.mark_source_extracting(execution.id, url)
                 try:
                     evidence = await run_extract_workflow(url)
@@ -1282,6 +1274,8 @@ def create_app() -> FastAPI:
                 if failed is None:
                     raise
                 return failed
+            if prepared.execution.status == "completed":
+                return prepared.execution
             if prepared.route == "direct":
                 return await http_request.app.state.evidence_summary_service.execute(execution.id)
             try:
@@ -1323,6 +1317,32 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=503, detail=str(error)) from error
         if batch is None:
             raise HTTPException(status_code=404, detail="Summary request was not found.")
+        return batch
+
+    @app.get(
+        "/v1/research/runs/{run_id}/evidence-summary-execution",
+        response_model=EvidenceSummaryExecution,
+        tags=["evidence-summaries"],
+    )
+    async def get_latest_run_evidence_summary(
+        run_id: str, http_request: Request
+    ) -> EvidenceSummaryExecution:
+        """Restore the latest persisted summary view for a research run."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            batch = await store.get_latest_execution_for_run(user.workspace_id, parsed_run_id)
+        except EvidenceSummaryStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if batch is None:
+            raise HTTPException(status_code=404, detail="No summary request exists for this run.")
         return batch
 
     @app.post("/v1/research/runs/{run_id}/extract", response_model=Evidence, tags=["research"])

@@ -35,13 +35,42 @@ CREATE TABLE IF NOT EXISTS evidence_summary_execution_sources (
     chunk_count INTEGER,
     summary TEXT,
     keywords JSONB,
+    evidence_sufficient BOOLEAN,
+    artifact_id UUID,
+    artifact_reused BOOLEAN NOT NULL DEFAULT FALSE,
     failure_reason TEXT,
     PRIMARY KEY (execution_id, url)
+);
+CREATE TABLE IF NOT EXISTS evidence_summary_artifacts (
+    id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    summary TEXT NOT NULL,
+    keywords JSONB NOT NULL,
+    evidence_sufficient BOOLEAN NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (workspace_id, run_id, source_url, content_hash)
+);
+CREATE TABLE IF NOT EXISTS evidence_summary_execution_chunks (
+    execution_id UUID NOT NULL REFERENCES evidence_summary_executions(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    chunk_index INTEGER NOT NULL CHECK (chunk_index >= 0),
+    start_offset INTEGER NOT NULL CHECK (start_offset >= 0),
+    end_offset INTEGER NOT NULL CHECK (end_offset > start_offset),
+    summary TEXT NOT NULL,
+    keywords JSONB NOT NULL,
+    PRIMARY KEY (execution_id, source_url, chunk_index)
 );
 ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
     NOT NULL DEFAULT now();
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS keywords JSONB;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS evidence_sufficient BOOLEAN;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS artifact_id UUID;
+ALTER TABLE evidence_summary_execution_sources
+    ADD COLUMN IF NOT EXISTS artifact_reused BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 ALTER TABLE evidence_summary_executions
     DROP CONSTRAINT IF EXISTS evidence_summary_executions_status_check;
@@ -174,15 +203,160 @@ class EvidenceSummaryStore:
         url: str,
         summary: str,
         keywords: list[str],
+        evidence_sufficient: bool,
+    ) -> None:
+        execution = await self.get_execution_for_worker(execution_id)
+        if execution is None:
+            raise EvidenceSummaryStoreUnavailable("Summary execution is unavailable.")
+        source = next((item for item in execution.sources if item.url == url), None)
+        if source is None or source.content_hash is None:
+            raise EvidenceSummaryStoreUnavailable("Summary source evidence is unavailable.")
+        pool = await self._connection_pool()
+        artifact_id = uuid4()
+        async with pool.acquire() as connection, connection.transaction():
+            artifact = await connection.fetchrow(
+                """INSERT INTO evidence_summary_artifacts
+                   (id, workspace_id, run_id, source_url, content_hash, summary, keywords,
+                    evidence_sufficient)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                   ON CONFLICT (workspace_id, run_id, source_url, content_hash) DO UPDATE
+                   SET summary = EXCLUDED.summary, keywords = EXCLUDED.keywords,
+                       evidence_sufficient = EXCLUDED.evidence_sufficient
+                   RETURNING id""",
+                artifact_id,
+                execution.workspace_id,
+                execution.run_id,
+                url,
+                source.content_hash,
+                summary,
+                json.dumps(keywords),
+                evidence_sufficient,
+            )
+            await connection.execute(
+                """UPDATE evidence_summary_execution_sources
+                   SET status = 'completed', summary = $3, keywords = $4::jsonb,
+                       evidence_sufficient = $5, artifact_id = $6, artifact_reused = FALSE
+                   WHERE execution_id = $1 AND url = $2""",
+                execution_id,
+                url,
+                summary,
+                json.dumps(keywords),
+                evidence_sufficient,
+                artifact["id"],
+            )
+
+    async def reuse_matching_artifact(
+        self, execution_id: UUID, url: str, content_hash: str
+    ) -> bool:
+        """Link a matching durable per-source result without a retrieval or model call."""
+
+        execution = await self.get_execution_for_worker(execution_id)
+        if execution is None:
+            raise EvidenceSummaryStoreUnavailable("Summary execution is unavailable.")
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            artifact = await connection.fetchrow(
+                """SELECT id, summary, keywords, evidence_sufficient
+                   FROM evidence_summary_artifacts
+                   WHERE workspace_id = $1 AND run_id = $2 AND source_url = $3
+                     AND content_hash = $4""",
+                execution.workspace_id,
+                execution.run_id,
+                url,
+                content_hash,
+            )
+            if artifact is None:
+                legacy = await connection.fetchrow(
+                    """SELECT sources.summary, sources.keywords, sources.evidence_sufficient
+                       FROM evidence_summary_execution_sources AS sources
+                       JOIN evidence_summary_executions AS prior
+                         ON prior.id = sources.execution_id
+                       WHERE prior.workspace_id = $1 AND prior.run_id = $2
+                         AND sources.url = $3 AND sources.content_hash = $4
+                         AND sources.status = 'completed' AND sources.summary IS NOT NULL
+                       ORDER BY prior.created_at DESC
+                       LIMIT 1""",
+                    execution.workspace_id,
+                    execution.run_id,
+                    url,
+                    content_hash,
+                )
+                if legacy is None:
+                    return False
+                legacy_keywords = legacy["keywords"]
+                if isinstance(legacy_keywords, str):
+                    legacy_keywords = json.loads(legacy_keywords)
+                await connection.execute(
+                    """INSERT INTO evidence_summary_artifacts
+                       (id, workspace_id, run_id, source_url, content_hash, summary, keywords,
+                        evidence_sufficient)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                       ON CONFLICT (workspace_id, run_id, source_url, content_hash) DO NOTHING""",
+                    uuid4(),
+                    execution.workspace_id,
+                    execution.run_id,
+                    url,
+                    content_hash,
+                    legacy["summary"],
+                    json.dumps(legacy_keywords),
+                    legacy["evidence_sufficient"]
+                    if legacy["evidence_sufficient"] is not None
+                    else True,
+                )
+                artifact = await connection.fetchrow(
+                    """SELECT id, summary, keywords, evidence_sufficient
+                       FROM evidence_summary_artifacts
+                       WHERE workspace_id = $1 AND run_id = $2 AND source_url = $3
+                         AND content_hash = $4""",
+                    execution.workspace_id,
+                    execution.run_id,
+                    url,
+                    content_hash,
+                )
+            artifact_keywords = artifact["keywords"]
+            if isinstance(artifact_keywords, str):
+                artifact_keywords = json.loads(artifact_keywords)
+            await connection.execute(
+                """UPDATE evidence_summary_execution_sources
+                   SET status = 'completed', content_hash = $3, summary = $4,
+                       keywords = $5::jsonb, evidence_sufficient = $6, artifact_id = $7,
+                       artifact_reused = TRUE, failure_reason = NULL
+                   WHERE execution_id = $1 AND url = $2""",
+                execution_id,
+                url,
+                content_hash,
+                artifact["summary"],
+                json.dumps(artifact_keywords),
+                artifact["evidence_sufficient"],
+                artifact["id"],
+            )
+        return True
+
+    async def record_chunk_summary(
+        self,
+        execution_id: UUID,
+        source_url: str,
+        chunk_index: int,
+        start_offset: int,
+        end_offset: int,
+        summary: str,
+        keywords: list[str],
     ) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
-                """UPDATE evidence_summary_execution_sources
-                   SET status = 'completed', summary = $3, keywords = $4::jsonb
-                   WHERE execution_id = $1 AND url = $2""",
+                """INSERT INTO evidence_summary_execution_chunks
+                   (execution_id, source_url, chunk_index, start_offset, end_offset,
+                    summary, keywords)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb)
+                   ON CONFLICT (execution_id, source_url, chunk_index) DO UPDATE
+                   SET start_offset = EXCLUDED.start_offset, end_offset = EXCLUDED.end_offset,
+                       summary = EXCLUDED.summary, keywords = EXCLUDED.keywords""",
                 execution_id,
-                url,
+                source_url,
+                chunk_index,
+                start_offset,
+                end_offset,
                 summary,
                 json.dumps(keywords),
             )
@@ -211,7 +385,7 @@ class EvidenceSummaryStore:
                 return None
             sources = await connection.fetch(
                 """SELECT url, status, content_hash, chunk_count, summary, keywords,
-                          failure_reason
+                          evidence_sufficient, artifact_reused, failure_reason
                    FROM evidence_summary_execution_sources
                    WHERE execution_id = $1 ORDER BY url""",
                 execution_id,
@@ -219,6 +393,29 @@ class EvidenceSummaryStore:
         return EvidenceSummaryExecution(
             **dict(row),
             sources=[self._source_contract(source) for source in sources],
+        )
+
+    async def get_latest_execution_for_run(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+    ) -> EvidenceSummaryExecution | None:
+        """Return the most recent operator-authorized summary for one research run."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            execution_id = await connection.fetchval(
+                """SELECT id FROM evidence_summary_executions
+                   WHERE workspace_id = $1 AND run_id = $2
+                   ORDER BY created_at DESC
+                   LIMIT 1""",
+                workspace_id,
+                run_id,
+            )
+        return (
+            await self.get_execution(workspace_id, execution_id)
+            if execution_id is not None
+            else None
         )
 
     async def get_execution_for_worker(self, execution_id: UUID) -> EvidenceSummaryExecution | None:

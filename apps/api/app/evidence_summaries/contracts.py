@@ -9,7 +9,6 @@ class CreateEvidenceSummaryExecutionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
     run_id: UUID
     urls: list[str] = Field(min_length=1, max_length=5)
-    rerun_existing: bool = False
 
 
 class EvidenceSummaryExecutionSource(BaseModel):
@@ -21,6 +20,8 @@ class EvidenceSummaryExecutionSource(BaseModel):
     chunk_count: int | None = None
     summary: str | None = None
     keywords: list[str] | None = None
+    evidence_sufficient: bool | None = None
+    artifact_reused: bool = False
     failure_reason: str | None = None
 
 

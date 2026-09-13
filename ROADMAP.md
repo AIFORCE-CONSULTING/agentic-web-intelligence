@@ -25,7 +25,7 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 - Run-scoped, expiring provenance memory
 - Bounded reviewer-to-researcher revision pattern with safe escalation
 
-## Phase 4 - Enterprise Services
+## Phase 4 - Enterprise Services (complete)
 
 Add authentication, authorization, tool registry, secrets, and governance.
 
@@ -43,7 +43,7 @@ roadmap phase.
    longer article descriptions so an operator has more context before choosing
    a source for extraction.
 
-## Phase 5 - Durable Execution
+## Phase 5 - Durable Execution (complete)
 
 Add Temporal, long-running workflows, and human-in-the-loop operations.
 

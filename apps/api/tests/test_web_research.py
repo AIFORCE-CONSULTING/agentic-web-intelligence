@@ -6,6 +6,10 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.evidence_summaries.contracts import (
+    EvidenceSummaryExecution,
+    EvidenceSummaryExecutionSource,
+)
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
 from app.settings import Settings
@@ -779,6 +783,52 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.status_code == 201
     assert response.json()["status"] == "ready"
     assert response.json()["sources"][0]["rank"] == 1
+
+
+def test_latest_summary_execution_restores_persisted_source_results() -> None:
+    run_id = uuid4()
+    execution_id = uuid4()
+    now = datetime.now(UTC)
+    app, user = authenticated_app(create_app())
+
+    class FakeSummaryStore:
+        async def get_latest_execution_for_run(
+            self, workspace_id: object, requested_run_id: object
+        ) -> EvidenceSummaryExecution:
+            assert workspace_id == user.workspace_id
+            assert requested_run_id == run_id
+            return EvidenceSummaryExecution(
+                id=execution_id,
+                workspace_id=user.workspace_id,
+                run_id=run_id,
+                route="direct",
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                sources=[
+                    EvidenceSummaryExecutionSource(
+                        url="https://example.com/source",
+                        status="completed",
+                        summary="Persisted summary.",
+                        keywords=["persisted", "summary"],
+                        evidence_sufficient=True,
+                    )
+                ],
+            )
+
+    app.state.evidence_summary_store = FakeSummaryStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get(f"/v1/research/runs/{run_id}/evidence-summary-execution")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    source = response.json()["sources"][0]
+    assert source["summary"] == "Persisted summary."
+    assert source["keywords"] == ["persisted", "summary"]
 
 
 def test_run_library_lists_bounded_summaries() -> None:

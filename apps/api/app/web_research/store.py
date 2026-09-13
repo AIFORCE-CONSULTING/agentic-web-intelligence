@@ -294,6 +294,18 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def record_source_reused(self, run_id: UUID, url: str) -> None:
+        """Record that an operator-selected source reused its latest governed evidence."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection, run_id, "research.evidence.reused", {"url": url}
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def record_batch_extraction_completed(
         self, run_id: UUID, succeeded: int, failed: int, denied: int
     ) -> None:

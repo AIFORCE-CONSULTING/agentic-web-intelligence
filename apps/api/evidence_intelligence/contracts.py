@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 
+from evidence_intelligence.chunking import EvidenceChunk
+
 
 @dataclass(frozen=True)
 class SourceInput:
@@ -16,7 +18,7 @@ class PreparedSource:
     source_id: str
     source_url: str
     content_hash: str
-    chunks: tuple[object, ...]
+    chunks: tuple[EvidenceChunk, ...]
 
 
 @dataclass(frozen=True)

@@ -94,6 +94,15 @@ The operator's request is recorded independently of the execution mechanism.
 The provider cannot choose whether work is direct or durable, schedule itself,
 or resume a cancelled or terminal request.
 
+## Implementation status
+
+The platform now records bounded chunk summaries and their character-offset
+coverage before creating a final source-level consolidation. Final summaries
+must state whether the available evidence is sufficient; otherwise the operator
+sees the limitation instead of a fabricated complete answer. The provider sees
+only one chunk at a time during extraction and only the derived chunk summaries
+during consolidation.
+
 ## Consequences
 
 Phase 6 can add useful local inference without treating the model as an agent
@@ -102,7 +111,6 @@ adapter boundary for local and future hosted providers, at the cost of explicit
 configuration, health checks, strict schema validation, provenance storage,
 and resource-aware processing.
 
-The next implementation slice may add non-secret provider configuration and
-readiness checks. It must not add automatic model installation, automatic model
-download, generic model tools, unauthenticated inference endpoints, or a
-model-controlled runtime path.
+Future work must not add automatic model installation, automatic model download,
+generic model tools, unauthenticated inference endpoints, or a model-controlled
+runtime path.

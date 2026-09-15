@@ -96,8 +96,12 @@ or resume a cancelled or terminal request.
 
 ## Implementation status
 
-The platform now records bounded chunk summaries and their character-offset
-coverage before creating a final source-level consolidation. Final summaries
+The platform now records per-source content length, chunk count, and chunking
+policy version alongside bounded chunk summaries and their character-offset
+coverage. When chunk summaries exceed the fixed consolidation input budget,
+the platform persists bounded intermediate reduction groups and repeats that
+reduction until the final source-level consolidation fits the same budget.
+Final summaries
 must state whether the available evidence is sufficient; otherwise the operator
 sees the limitation instead of a fabricated complete answer. The provider sees
 only one chunk at a time during extraction and only the derived chunk summaries

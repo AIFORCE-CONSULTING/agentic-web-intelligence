@@ -32,7 +32,9 @@ CREATE TABLE IF NOT EXISTS evidence_summary_execution_sources (
                    'failed', 'cancelled')
     ) DEFAULT 'pending',
     content_hash TEXT,
+    content_characters INTEGER,
     chunk_count INTEGER,
+    chunking_policy_version TEXT,
     summary TEXT,
     keywords JSONB,
     evidence_sufficient BOOLEAN,
@@ -47,11 +49,29 @@ CREATE TABLE IF NOT EXISTS evidence_summary_artifacts (
     run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
     source_url TEXT NOT NULL,
     content_hash TEXT NOT NULL,
+    content_characters INTEGER,
+    chunk_count INTEGER,
+    chunking_policy_version TEXT,
     summary TEXT NOT NULL,
     keywords JSONB NOT NULL,
     evidence_sufficient BOOLEAN NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, run_id, source_url, content_hash)
+);
+ALTER TABLE evidence_summary_artifacts ADD COLUMN IF NOT EXISTS content_characters INTEGER;
+ALTER TABLE evidence_summary_artifacts ADD COLUMN IF NOT EXISTS chunk_count INTEGER;
+ALTER TABLE evidence_summary_artifacts ADD COLUMN IF NOT EXISTS chunking_policy_version TEXT;
+CREATE TABLE IF NOT EXISTS evidence_summary_execution_groups (
+    execution_id UUID NOT NULL REFERENCES evidence_summary_executions(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    reduction_level INTEGER NOT NULL CHECK (reduction_level >= 1),
+    group_index INTEGER NOT NULL CHECK (group_index >= 0),
+    source_chunk_start INTEGER NOT NULL CHECK (source_chunk_start >= 0),
+    source_chunk_end INTEGER NOT NULL CHECK (source_chunk_end > source_chunk_start),
+    input_count INTEGER NOT NULL CHECK (input_count >= 1),
+    summary TEXT NOT NULL,
+    keywords JSONB NOT NULL,
+    PRIMARY KEY (execution_id, source_url, reduction_level, group_index)
 );
 CREATE TABLE IF NOT EXISTS evidence_summary_execution_chunks (
     execution_id UUID NOT NULL REFERENCES evidence_summary_executions(id) ON DELETE CASCADE,
@@ -67,6 +87,8 @@ ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS updated_at TIME
     NOT NULL DEFAULT now();
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS keywords JSONB;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS content_characters INTEGER;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS chunking_policy_version TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS evidence_sufficient BOOLEAN;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS artifact_id UUID;
 ALTER TABLE evidence_summary_execution_sources
@@ -164,19 +186,24 @@ class EvidenceSummaryStore:
         execution_id: UUID,
         url: str,
         content_hash: str,
+        content_characters: int,
         chunk_count: int,
+        chunking_policy_version: str,
     ) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
                 """UPDATE evidence_summary_execution_sources
-                   SET status = 'extracted', content_hash = $3, chunk_count = $4,
+                   SET status = 'extracted', content_hash = $3, content_characters = $4,
+                       chunk_count = $5, chunking_policy_version = $6,
                        failure_reason = NULL
                    WHERE execution_id = $1 AND url = $2""",
                 execution_id,
                 url,
                 content_hash,
+                content_characters,
                 chunk_count,
+                chunking_policy_version,
             )
 
     async def record_source_failure(self, execution_id: UUID, url: str, reason: str) -> None:
@@ -216,9 +243,9 @@ class EvidenceSummaryStore:
         async with pool.acquire() as connection, connection.transaction():
             artifact = await connection.fetchrow(
                 """INSERT INTO evidence_summary_artifacts
-                   (id, workspace_id, run_id, source_url, content_hash, summary, keywords,
-                    evidence_sufficient)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                   (id, workspace_id, run_id, source_url, content_hash, content_characters,
+                    chunk_count, chunking_policy_version, summary, keywords, evidence_sufficient)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
                    ON CONFLICT (workspace_id, run_id, source_url, content_hash) DO UPDATE
                    SET summary = EXCLUDED.summary, keywords = EXCLUDED.keywords,
                        evidence_sufficient = EXCLUDED.evidence_sufficient
@@ -228,6 +255,9 @@ class EvidenceSummaryStore:
                 execution.run_id,
                 url,
                 source.content_hash,
+                source.content_characters,
+                source.chunk_count,
+                source.chunking_policy_version,
                 summary,
                 json.dumps(keywords),
                 evidence_sufficient,
@@ -361,6 +391,33 @@ class EvidenceSummaryStore:
                 json.dumps(keywords),
             )
 
+    async def record_consolidation_group(
+        self,
+        execution_id: UUID,
+        source_url: str,
+        reduction_level: int,
+        group_index: int,
+        source_chunk_start: int,
+        source_chunk_end: int,
+        input_count: int,
+        summary: str,
+        keywords: list[str],
+    ) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO evidence_summary_execution_groups
+                   (execution_id, source_url, reduction_level, group_index,
+                    source_chunk_start, source_chunk_end, input_count, summary, keywords)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
+                   ON CONFLICT (execution_id, source_url, reduction_level, group_index)
+                   DO UPDATE SET source_chunk_start = EXCLUDED.source_chunk_start,
+                     source_chunk_end = EXCLUDED.source_chunk_end, input_count = EXCLUDED.input_count,
+                     summary = EXCLUDED.summary, keywords = EXCLUDED.keywords""",
+                execution_id, source_url, reduction_level, group_index, source_chunk_start,
+                source_chunk_end, input_count, summary, json.dumps(keywords),
+            )
+
     async def complete_execution(self, execution_id: UUID) -> None:
         await self._update_execution(execution_id, "completed")
 
@@ -384,7 +441,8 @@ class EvidenceSummaryStore:
             if row is None:
                 return None
             sources = await connection.fetch(
-                """SELECT url, status, content_hash, chunk_count, summary, keywords,
+                """SELECT url, status, content_hash, content_characters, chunk_count,
+                          chunking_policy_version, summary, keywords,
                           evidence_sufficient, artifact_reused, failure_reason
                    FROM evidence_summary_execution_sources
                    WHERE execution_id = $1 ORDER BY url""",

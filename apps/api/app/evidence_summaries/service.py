@@ -15,6 +15,11 @@ from app.local_models.service import LocalModelProviderService
 from app.web_research.contracts import Evidence
 from app.web_research.store import ResearchStore
 from evidence_intelligence.contracts import PreparedBatch, SourceInput
+from evidence_intelligence.consolidation import (
+    CONSOLIDATION_POLICY_VERSION,
+    group_within_budget,
+)
+from evidence_intelligence.chunking import CHUNK_CHARACTERS, OVERLAP_CHARACTERS
 from evidence_intelligence.preparation import prepare_batch
 from evidence_intelligence.routing import ExecutionRoute, route_request
 
@@ -51,6 +56,13 @@ class ChunkSummary(BaseModel):
 class FinalSummary(ChunkSummary):
     summary: str = Field(min_length=1, max_length=4_000)
     evidence_sufficient: bool
+
+
+@dataclass(frozen=True)
+class SummaryUnit:
+    summary: ChunkSummary
+    source_chunk_start: int
+    source_chunk_end: int
 
 
 @dataclass(frozen=True)
@@ -118,7 +130,9 @@ class EvidenceSummaryService:
                 execution.id,
                 source.source_url,
                 source.content_hash,
+                len(evidence_by_url[source.source_url].text),
                 len(source.chunks),
+                f"chunk-{CHUNK_CHARACTERS}-overlap-{OVERLAP_CHARACTERS}",
             )
         await self._execution_store.set_execution_route(execution.id, str(route))
         refreshed = await self._execution_store.get_execution(execution.workspace_id, execution.id)
@@ -143,10 +157,10 @@ class EvidenceSummaryService:
         await self._execution_store.mark_summarizing(execution.id)
         try:
             for source in prepared.batch.sources:
-                chunk_results: list[ChunkSummary] = []
+                chunk_results: list[SummaryUnit] = []
                 for chunk in source.chunks:
                     result = await self._summarize_chunk(execution.workspace_id, chunk.text)
-                    chunk_results.append(result)
+                    chunk_results.append(SummaryUnit(result, chunk.index, chunk.index + 1))
                     await self._execution_store.record_chunk_summary(
                         execution.id,
                         source.source_url,
@@ -156,7 +170,9 @@ class EvidenceSummaryService:
                         result.summary,
                         result.keywords,
                     )
-                final = await self._consolidate(execution.workspace_id, chunk_results)
+                final = await self._consolidate_bounded(
+                    execution.id, execution.workspace_id, source.source_url, chunk_results
+                )
                 await self._execution_store.record_source_summary(
                     execution.id,
                     source.source_url,
@@ -185,16 +201,44 @@ class EvidenceSummaryService:
     async def _summarize_chunk(self, workspace_id: UUID, text: str) -> ChunkSummary:
         return await self._call_model(workspace_id, _CHUNK_PROMPT, text, ChunkSummary)
 
-    async def _consolidate(
-        self,
-        workspace_id: UUID,
-        chunk_results: list[ChunkSummary],
-    ) -> FinalSummary:
-        chunk_text = "\n\n".join(
-            f"Chunk {index + 1}: {result.summary}\nKeywords: {', '.join(result.keywords)}"
-            for index, result in enumerate(chunk_results)
+    @staticmethod
+    def _render_units(units: tuple[SummaryUnit, ...] | list[SummaryUnit]) -> str:
+        return "\n\n".join(
+            f"Source chunks {unit.source_chunk_start + 1}-{unit.source_chunk_end}: "
+            f"{unit.summary.summary}\nKeywords: {', '.join(unit.summary.keywords)}"
+            for unit in units
         )
-        return await self._call_model(workspace_id, _FINAL_PROMPT, chunk_text, FinalSummary)
+
+    async def _consolidate_bounded(
+        self,
+        execution_id: UUID,
+        workspace_id: UUID,
+        source_url: str,
+        chunk_results: list[SummaryUnit],
+    ) -> FinalSummary:
+        units = tuple(chunk_results)
+        reduction_level = 0
+        while True:
+            groups = group_within_budget(units, lambda unit: self._render_units((unit,)))
+            if len(groups) == 1:
+                return await self._call_model(
+                    workspace_id, _FINAL_PROMPT, self._render_units(groups[0]), FinalSummary
+                )
+            reduction_level += 1
+            next_units: list[SummaryUnit] = []
+            for group_index, group in enumerate(groups):
+                reduced = await self._call_model(
+                    workspace_id, _CHUNK_PROMPT, self._render_units(group), ChunkSummary
+                )
+                await self._execution_store.record_consolidation_group(
+                    execution_id, source_url, reduction_level, group_index,
+                    group[0].source_chunk_start, group[-1].source_chunk_end,
+                    len(group), reduced.summary, reduced.keywords,
+                )
+                next_units.append(
+                    SummaryUnit(reduced, group[0].source_chunk_start, group[-1].source_chunk_end)
+                )
+            units = tuple(next_units)
 
     async def _call_model(
         self,

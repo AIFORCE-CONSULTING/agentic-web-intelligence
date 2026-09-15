@@ -17,7 +17,9 @@ class EvidenceSummaryExecutionSource(BaseModel):
         "pending", "extracting", "extracted", "summarizing", "completed", "failed", "cancelled"
     ] = "pending"
     content_hash: str | None = None
+    content_characters: int | None = None
     chunk_count: int | None = None
+    chunking_policy_version: str | None = None
     summary: str | None = None
     keywords: list[str] | None = None
     evidence_sufficient: bool | None = None

@@ -30,7 +30,7 @@ docs/                  Documentation-site source
 
 ## Status
 
-Phases 1 through 5 are complete. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the published [documentation site](https://aiforce-consulting.github.io/agentic-web-intelligence/) for the project contract and delivery plan.
+Phases 1 through 6 are complete. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the published [documentation site](https://aiforce-consulting.github.io/agentic-web-intelligence/) for the project contract and delivery plan.
 
 ## Technology direction
 

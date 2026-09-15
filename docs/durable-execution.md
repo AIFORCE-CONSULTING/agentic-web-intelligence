@@ -6,20 +6,25 @@ survive a process restart. It is governed by
 
 ## Local services
 
-Start the profile with:
+Start the standard local platform profile with:
 
 ```powershell
-docker compose --profile durable-execution up -d --build
+docker compose --profile web-research up -d --build
 ```
 
 The local Temporal API listens on port `7233`; the Temporal UI is available at
 <http://localhost:8233>. The API remains at port `8000` and the web console at
 port `3000`.
 
-The profile starts a dedicated `durable-worker` container. It receives only the
+The standard profile starts a dedicated `durable-worker` container. It receives only the
 database, Temporal, and governed research configuration it needs. It does not
 receive the bootstrap-admin secret, OIDC client secret, browser session data,
 or GitHub Projects connector token.
+
+The `durable-execution` Compose profile remains available for focused
+durable-runtime development and validation. It is not required to enable
+durable routing in the normal local platform: `web-research` already includes
+Temporal and the worker.
 
 ## Current boundary
 

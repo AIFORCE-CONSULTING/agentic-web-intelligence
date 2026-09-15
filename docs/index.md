@@ -40,10 +40,19 @@ the authority for approval, revision, cancellation, and escalation decisions.
 Read the [durable-execution guide](durable-execution.md) and the
 [validation guide](durable-validation.md).
 
+## Phase 6: Local evidence intelligence
+
+Phase 6 adds local-first generated summaries and keywords for evidence already
+extracted by the governed research workflow. A workspace-scoped Ollama provider
+boundary keeps inference local and gives the model no tools, browser, runtime,
+database, or credential access. Read the
+[local evidence intelligence guide](local-evidence-intelligence.md).
+
 ## Start here
 
 - Read the [project vision](foundation/project.md) and [engineering principles](foundation/principles.md).
 - Review the [platform architecture](architecture.md), the [roadmap](foundation/roadmap.md), and the [MCP web-intelligence decision](adr/0003-web-intelligence-mcp.md).
 - For platform administration, review [identity](identity.md), [operations](operations.md), and [GitHub Projects](github-projects.md).
 - For resilient runtime work, review [durable execution](durable-execution.md) and its [validation guide](durable-validation.md).
+- For local generated summaries, review [local evidence intelligence](local-evidence-intelligence.md).
 - Follow the [contribution guide](contributing.md) to run the project locally.

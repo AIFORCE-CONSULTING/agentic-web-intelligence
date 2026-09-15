@@ -98,7 +98,8 @@ Invoke-RestMethod -Method Post `
 ~~~
 
 Retrieve it later with `GET /v1/research/runs/{run_id}`. The default local
-`web-research` Compose profile starts Postgres with the API and SearXNG.
+`web-research` Compose profile starts Postgres, SearXNG, Temporal, the Temporal
+UI, and the durable worker with the API.
 
 `GET /v1/research/runs` returns the 25 most recently updated runs by default,
 including source and evidence counts but not full evidence text. The operator

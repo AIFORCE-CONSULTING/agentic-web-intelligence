@@ -58,7 +58,7 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 - Validate restart, resume, workspace isolation, cancellation, and ambiguous
   effect behavior end to end.
 
-## Phase 6 - Local Evidence Intelligence
+## Phase 6 - Local Evidence Intelligence (complete)
 
 Add a local-first, optional open-weight model capability for generated evidence
 summaries and page-level keywords.

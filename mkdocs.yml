@@ -86,6 +86,7 @@ nav:
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Durable execution: durable-execution.md
+  - Local evidence intelligence: local-evidence-intelligence.md
   - Durable execution validation: durable-validation.md
   - Identity: identity.md
   - Operations: operations.md

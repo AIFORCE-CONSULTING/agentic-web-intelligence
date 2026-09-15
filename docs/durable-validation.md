@@ -25,16 +25,16 @@ separate three-decision operator exception budget.
 
 ## Local operational checks
 
-Start the durable profile:
+Start the standard local platform profile:
 
 ```powershell
-docker compose --profile durable-execution up -d --build
+docker compose --profile web-research up -d --build
 ```
 
 Confirm the API is healthy, the worker is running, and Temporal is available:
 
 ```powershell
-docker compose --profile durable-execution ps
+docker compose --profile web-research ps
 ```
 
 Temporal's local operator UI is available at <http://localhost:8233>. It is

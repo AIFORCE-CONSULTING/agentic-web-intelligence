@@ -82,6 +82,23 @@ workspace ownership before it persists or returns an output. Invalid,
 incomplete, provider-authored instructions, or unavailable-model responses are
 treated as typed failures, never as authority-bearing commands.
 
+### Operator-requested regeneration
+
+An authenticated operator may explicitly regenerate summaries and keywords for
+the exact source selection of a completed summary execution. The UI requires a
+confirm-or-cancel decision, and the server independently validates workspace
+ownership, the completed selection, and the fixed source set before accepting
+the request. Regeneration uses only the already stored extracted evidence: it
+never retrieves a webpage, accepts new URLs, or permits the model to choose its
+scope.
+
+The matching derived summary and keyword artifact is overwritten in place for
+the same workspace, research run, URL, and content hash. Its obsolete chunk and
+consolidation intermediates are replaced as well. The operator decision is
+recorded in the research audit trail. No new user-visible summary artifact or
+execution record is created; a bounded internal attempt number exists solely to
+give a durable Temporal run a distinct operational identity when needed.
+
 ### Direct and durable execution
 
 A short summary for one page executes directly inside the API request path. A

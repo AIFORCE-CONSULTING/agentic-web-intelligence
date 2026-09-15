@@ -328,6 +328,21 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def record_summary_regeneration_requested(self, run_id: UUID, urls: list[str]) -> None:
+        """Record an explicit operator decision before derived evidence is overwritten."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.evidence_summary.regeneration_requested",
+                {"selected_count": len(urls), "urls": urls},
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def mark_failed(self, run_id: UUID, reason: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():

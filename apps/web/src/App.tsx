@@ -727,6 +727,35 @@ export function App() {
     await startSelectedSourceExtraction();
   }
 
+  async function regenerateSelectedSummaries() {
+    if (!run || !summaryBatch || !summaryMatchesSelection) return;
+    const confirmed = window.confirm(
+      `Regenerate summaries and keywords for ${selectedSourceUrls.length} selected source${selectedSourceUrls.length === 1 ? "" : "s"}? Extracted webpage content will be retained.`,
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    setBatchOutcomes([]);
+    try {
+      const execution = await apiRequest<EvidenceSummaryBatch>(
+        `/v1/evidence-summary-executions/${summaryBatch.id}/regenerate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: selectedSourceUrls }),
+        },
+      );
+      setSummaryBatch(execution);
+      const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
+      setRun(refreshedRun);
+      await refreshRunLibrary();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to regenerate summaries.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   const summaryMatchesSelection = summaryBatch !== null
     && summaryBatch.sources.length === selectedSourceUrls.length
     && summaryBatch.sources.every((source) => selectedSourceUrls.includes(source.url));
@@ -815,6 +844,7 @@ export function App() {
           {summaryBatch && summaryMatchesSelection && summaryBatch.sources.some((source) => source.summary) && <ol className="sources">{summaryBatch.sources.filter((source) => source.summary).map((source) => (
             <li className="source-candidate" key={source.url}><a className="source-link" href={source.url} target="_blank" rel="noreferrer">{source.url}<span aria-hidden="true"> ↗</span></a>{source.artifact_reused && <p className="hint">Reused stored evidence, summary, and keywords.</p>}{source.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}<p>{source.summary}</p>{source.keywords && <p className="hint">Keywords: {source.keywords.join(", ")}</p>}</li>
           ))}</ol>}
+          {summaryBatch?.status === "completed" && summaryMatchesSelection && summaryBatch.sources.every((source) => source.summary) && <div className="runtime-actions"><button type="button" className="secondary" onClick={() => void regenerateSelectedSummaries()} disabled={busy}>Regenerate summaries &amp; keywords</button><p className="hint">Uses stored extracted evidence only; it does not retrieve the webpages again.</p></div>}
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
               <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><details><summary>View source evidence</summary><p>{item.text}</p></details>

@@ -23,6 +23,7 @@ from app.durable_execution.service import (
 from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
+    RegenerateEvidenceSummaryRequest,
 )
 from app.evidence_summaries.service import (
     EvidenceSummarySchedulingUnavailable,
@@ -1318,6 +1319,72 @@ def create_app() -> FastAPI:
         if batch is None:
             raise HTTPException(status_code=404, detail="Summary request was not found.")
         return batch
+
+    @app.post(
+        "/v1/evidence-summary-executions/{batch_id}/regenerate",
+        response_model=EvidenceSummaryExecution,
+        tags=["evidence-summaries"],
+    )
+    async def regenerate_evidence_summary_request(
+        batch_id: str,
+        request: RegenerateEvidenceSummaryRequest,
+        http_request: Request,
+    ) -> EvidenceSummaryExecution:
+        """Refresh only existing derived artifacts after explicit operator confirmation."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.write")
+        if len(set(request.urls)) != len(request.urls):
+            raise HTTPException(status_code=422, detail="Each selected source URL must be unique.")
+        try:
+            execution_id = UUID(batch_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="batch_id must be a UUID.") from error
+        summary_store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        research_store: ResearchStore = http_request.app.state.research_store
+        try:
+            execution = await summary_store.get_execution(user.workspace_id, execution_id)
+            if execution is None:
+                raise HTTPException(status_code=404, detail="Summary request was not found.")
+            stored_urls = {source.url for source in execution.sources}
+            if set(request.urls) != stored_urls:
+                raise HTTPException(
+                    status_code=422,
+                    detail="Regeneration must match the existing summary selection exactly.",
+                )
+            if execution.status != "completed" or any(
+                source.status != "completed" or source.summary is None
+                for source in execution.sources
+            ):
+                raise HTTPException(
+                    status_code=409,
+                    detail="Only a completed summary selection can be regenerated.",
+                )
+            await research_store.record_summary_regeneration_requested(
+                execution.run_id, request.urls
+            )
+            await summary_store.begin_regeneration(execution.id, request.urls)
+            reset = await summary_store.get_execution(user.workspace_id, execution.id)
+            if reset is None:
+                raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
+            prepared = await http_request.app.state.evidence_summary_service.prepare(reset)
+            if prepared.route == "direct":
+                return await http_request.app.state.evidence_summary_service.execute(execution.id)
+            try:
+                await http_request.app.state.evidence_summary_temporal.schedule(prepared.execution)
+            except EvidenceSummarySchedulingUnavailable:
+                await summary_store.fail_execution(execution.id)
+            scheduled = await summary_store.get_execution(user.workspace_id, execution.id)
+            if scheduled is None:
+                raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
+            return scheduled
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except EvidenceSummaryUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
 
     @app.get(
         "/v1/research/runs/{run_id}/evidence-summary-execution",

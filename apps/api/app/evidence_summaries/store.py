@@ -21,6 +21,8 @@ CREATE TABLE IF NOT EXISTS evidence_summary_executions (
         status IN ('pending', 'extracting', 'awaiting_execution', 'summarizing',
                    'completed', 'failed', 'cancelled')
     ) DEFAULT 'pending',
+    regeneration_attempt INTEGER NOT NULL DEFAULT 0,
+    regeneration_requested BOOLEAN NOT NULL DEFAULT FALSE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -85,10 +87,15 @@ CREATE TABLE IF NOT EXISTS evidence_summary_execution_chunks (
 );
 ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ
     NOT NULL DEFAULT now();
+ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS regeneration_attempt INTEGER
+    NOT NULL DEFAULT 0;
+ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS regeneration_requested BOOLEAN
+    NOT NULL DEFAULT FALSE;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS keywords JSONB;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS content_characters INTEGER;
-ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS chunking_policy_version TEXT;
+ALTER TABLE evidence_summary_execution_sources
+    ADD COLUMN IF NOT EXISTS chunking_policy_version TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS evidence_sufficient BOOLEAN;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS artifact_id UUID;
 ALTER TABLE evidence_summary_execution_sources
@@ -161,7 +168,8 @@ class EvidenceSummaryStore:
                 """INSERT INTO evidence_summary_executions
                    (id, workspace_id, run_id, status)
                    VALUES ($1, $2, $3, 'extracting')
-                   RETURNING id, workspace_id, run_id, route, status, created_at, updated_at""",
+                   RETURNING id, workspace_id, run_id, route, status, regeneration_attempt,
+                             regeneration_requested, created_at, updated_at""",
                 execution_id,
                 workspace_id,
                 run_id,
@@ -223,6 +231,45 @@ class EvidenceSummaryStore:
 
     async def mark_summarizing(self, execution_id: UUID) -> None:
         await self._update_execution(execution_id, "summarizing")
+
+    async def begin_regeneration(
+        self,
+        execution_id: UUID,
+        urls: list[str],
+    ) -> None:
+        """Reset only derived records; extracted evidence is deliberately retained."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                """DELETE FROM evidence_summary_execution_chunks
+                   WHERE execution_id = $1 AND source_url = ANY($2::text[])""",
+                execution_id,
+                urls,
+            )
+            await connection.execute(
+                """DELETE FROM evidence_summary_execution_groups
+                   WHERE execution_id = $1 AND source_url = ANY($2::text[])""",
+                execution_id,
+                urls,
+            )
+            await connection.execute(
+                """UPDATE evidence_summary_execution_sources
+                   SET status = 'extracted', summary = NULL, keywords = NULL,
+                       evidence_sufficient = NULL, artifact_id = NULL, artifact_reused = FALSE,
+                       failure_reason = NULL
+                   WHERE execution_id = $1 AND url = ANY($2::text[])""",
+                execution_id,
+                urls,
+            )
+            await connection.execute(
+                """UPDATE evidence_summary_executions
+                   SET status = 'extracting', route = 'undetermined',
+                       regeneration_attempt = regeneration_attempt + 1,
+                       regeneration_requested = TRUE, updated_at = now()
+                   WHERE id = $1""",
+                execution_id,
+            )
 
     async def record_source_summary(
         self,
@@ -412,14 +459,22 @@ class EvidenceSummaryStore:
                    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
                    ON CONFLICT (execution_id, source_url, reduction_level, group_index)
                    DO UPDATE SET source_chunk_start = EXCLUDED.source_chunk_start,
-                     source_chunk_end = EXCLUDED.source_chunk_end, input_count = EXCLUDED.input_count,
+                     source_chunk_end = EXCLUDED.source_chunk_end,
+                     input_count = EXCLUDED.input_count,
                      summary = EXCLUDED.summary, keywords = EXCLUDED.keywords""",
                 execution_id, source_url, reduction_level, group_index, source_chunk_start,
                 source_chunk_end, input_count, summary, json.dumps(keywords),
             )
 
     async def complete_execution(self, execution_id: UUID) -> None:
-        await self._update_execution(execution_id, "completed")
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """UPDATE evidence_summary_executions
+                   SET status = 'completed', regeneration_requested = FALSE, updated_at = now()
+                   WHERE id = $1""",
+                execution_id,
+            )
 
     async def fail_execution(self, execution_id: UUID) -> None:
         await self._update_execution(execution_id, "failed")
@@ -432,7 +487,8 @@ class EvidenceSummaryStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             row = await connection.fetchrow(
-                """SELECT id, workspace_id, run_id, route, status, created_at, updated_at
+                """SELECT id, workspace_id, run_id, route, status, regeneration_attempt,
+                          regeneration_requested, created_at, updated_at
                    FROM evidence_summary_executions
                    WHERE id = $1 AND workspace_id = $2""",
                 execution_id,

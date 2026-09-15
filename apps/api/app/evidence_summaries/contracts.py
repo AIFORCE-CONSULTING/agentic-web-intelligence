@@ -11,6 +11,13 @@ class CreateEvidenceSummaryExecutionRequest(BaseModel):
     urls: list[str] = Field(min_length=1, max_length=5)
 
 
+class RegenerateEvidenceSummaryRequest(BaseModel):
+    """An explicit operator request to refresh the existing selected summary artifacts."""
+
+    model_config = ConfigDict(extra="forbid")
+    urls: list[str] = Field(min_length=1, max_length=5)
+
+
 class EvidenceSummaryExecutionSource(BaseModel):
     url: str
     status: Literal[
@@ -41,6 +48,8 @@ class EvidenceSummaryExecution(BaseModel):
         "failed",
         "cancelled",
     ] = "pending"
+    regeneration_attempt: int = 0
+    regeneration_requested: bool = False
     created_at: datetime
     updated_at: datetime
     sources: list[EvidenceSummaryExecutionSource]

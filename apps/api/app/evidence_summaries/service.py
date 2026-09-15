@@ -14,12 +14,9 @@ from app.evidence_summaries.workflow import EvidenceSummaryWorkflow
 from app.local_models.service import LocalModelProviderService
 from app.web_research.contracts import Evidence
 from app.web_research.store import ResearchStore
-from evidence_intelligence.contracts import PreparedBatch, SourceInput
-from evidence_intelligence.consolidation import (
-    CONSOLIDATION_POLICY_VERSION,
-    group_within_budget,
-)
 from evidence_intelligence.chunking import CHUNK_CHARACTERS, OVERLAP_CHARACTERS
+from evidence_intelligence.consolidation import group_within_budget
+from evidence_intelligence.contracts import PreparedBatch, SourceInput
 from evidence_intelligence.preparation import prepare_batch
 from evidence_intelligence.routing import ExecutionRoute, route_request
 
@@ -97,16 +94,19 @@ class EvidenceSummaryService:
             evidence = evidence_by_url.get(source.url)
             if evidence is None:
                 continue
-            if source.status == "completed" and source.summary is not None:
-                continue
-            reused = await self._execution_store.reuse_matching_artifact(
-                execution.id, source.url, evidence.content_hash
-            )
-            if reused:
-                continue
+            if not execution.regeneration_requested:
+                if source.status == "completed" and source.summary is not None:
+                    continue
+                reused = await self._execution_store.reuse_matching_artifact(
+                    execution.id, source.url, evidence.content_hash
+                )
+                if reused:
+                    continue
             source_inputs.append(self._source_input(evidence))
         if not source_inputs:
-            refreshed = await self._execution_store.get_execution(execution.workspace_id, execution.id)
+            refreshed = await self._execution_store.get_execution(
+                execution.workspace_id, execution.id
+            )
             if refreshed is None:
                 raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
             if any(source.status == "completed" for source in refreshed.sources):
@@ -122,7 +122,9 @@ class EvidenceSummaryService:
                     batch=PreparedBatch(sources=(), total_chunk_count=0),
                     route=ExecutionRoute.DIRECT,
                 )
-            raise EvidenceSummaryUnavailable("No successfully extracted source evidence is available.")
+            raise EvidenceSummaryUnavailable(
+                "No successfully extracted source evidence is available."
+            )
         prepared = prepare_batch(source_inputs)
         route = route_request(len(prepared.sources), prepared.total_chunk_count)
         for source in prepared.sources:
@@ -291,6 +293,6 @@ class EvidenceSummaryTemporalBoundary:
         await client.start_workflow(
             EvidenceSummaryWorkflow.run,
             str(execution.id),
-            id=f"evidence-summary-{execution.id}",
+            id=f"evidence-summary-{execution.id}-{execution.regeneration_attempt}",
             task_queue=self._task_queue,
         )

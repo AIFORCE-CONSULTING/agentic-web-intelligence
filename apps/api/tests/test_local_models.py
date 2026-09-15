@@ -10,6 +10,7 @@ from app.evidence_summaries.service import (
     EvidenceSummaryService,
     EvidenceSummaryUnavailable,
 )
+from app.evidence_summaries.store import EvidenceSummaryStore
 from app.local_models.service import (
     LocalModelProviderConfigurationError,
     LocalModelProviderService,
@@ -85,3 +86,54 @@ def test_summary_route_is_deterministic_and_not_model_selected() -> None:
     assert route_request(1, 1) is ExecutionRoute.DIRECT
     assert route_request(1, 2) is ExecutionRoute.DURABLE
     assert route_request(2, 2) is ExecutionRoute.DURABLE
+
+
+def test_summary_execution_is_inaccessible_from_another_workspace(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_a, workspace_b, execution_id = uuid4(), uuid4(), uuid4()
+
+    class Connection:
+        source_query_attempted = False
+
+        async def fetchrow(
+            self,
+            _: str,
+            received_execution_id: object,
+            received_workspace_id: object,
+        ):
+            if (received_execution_id, received_workspace_id) == (execution_id, workspace_a):
+                return {"id": execution_id, "workspace_id": workspace_a}
+            return None
+
+        async def fetch(self, *_: object):
+            self.source_query_attempted = True
+            return []
+
+    class Acquisition:
+        def __init__(self, connection: Connection) -> None:
+            self._connection = connection
+
+        async def __aenter__(self) -> Connection:
+            return self._connection
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+    class Pool:
+        def __init__(self, connection: Connection) -> None:
+            self._connection = connection
+
+        def acquire(self) -> Acquisition:
+            return Acquisition(self._connection)
+
+    connection = Connection()
+    store = EvidenceSummaryStore("postgresql://unused-for-unit-test")
+
+    async def connection_pool() -> Pool:
+        return Pool(connection)
+
+    monkeypatch.setattr(store, "_connection_pool", connection_pool)
+
+    assert asyncio.run(store.get_execution(workspace_b, execution_id)) is None
+    assert connection.source_query_attempted is False

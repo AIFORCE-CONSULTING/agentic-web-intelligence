@@ -759,6 +759,9 @@ export function App() {
   const summaryMatchesSelection = summaryBatch !== null
     && summaryBatch.sources.length === selectedSourceUrls.length
     && summaryBatch.sources.every((source) => selectedSourceUrls.includes(source.url));
+  const canRegenerateSummaries = summaryBatch?.status === "completed"
+    && summaryMatchesSelection
+    && summaryBatch.sources.every((source) => source.summary);
 
 
   if (isAdminRoute) return <AdminConsole />;
@@ -838,13 +841,13 @@ export function App() {
             <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
             <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
           </aside>}
+          {canRegenerateSummaries && <div className="runtime-actions"><button type="button" className="secondary" onClick={() => void regenerateSelectedSummaries()} disabled={busy}>Regenerate summaries &amp; keywords</button><p className="hint">Uses stored extracted evidence only; it does not retrieve the webpages again.</p></div>}
           {summaryBatch && !summaryMatchesSelection && <aside className="extraction-status">
             <strong>Selection changed</strong><p>Extract the current selection to load its matching stored evidence, summaries, and keywords.</p>
           </aside>}
           {summaryBatch && summaryMatchesSelection && summaryBatch.sources.some((source) => source.summary) && <ol className="sources">{summaryBatch.sources.filter((source) => source.summary).map((source) => (
             <li className="source-candidate" key={source.url}><a className="source-link" href={source.url} target="_blank" rel="noreferrer">{source.url}<span aria-hidden="true"> ↗</span></a>{source.artifact_reused && <p className="hint">Reused stored evidence, summary, and keywords.</p>}{source.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}<p>{source.summary}</p>{source.keywords && <p className="hint">Keywords: {source.keywords.join(", ")}</p>}</li>
           ))}</ol>}
-          {summaryBatch?.status === "completed" && summaryMatchesSelection && summaryBatch.sources.every((source) => source.summary) && <div className="runtime-actions"><button type="button" className="secondary" onClick={() => void regenerateSelectedSummaries()} disabled={busy}>Regenerate summaries &amp; keywords</button><p className="hint">Uses stored extracted evidence only; it does not retrieve the webpages again.</p></div>}
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
               <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><details><summary>View source evidence</summary><p>{item.text}</p></details>

@@ -6,6 +6,7 @@ from uuid import uuid4
 import pytest
 
 from app.evidence_summaries.service import (
+    _FINAL_PROMPT,
     ChunkSummary,
     EvidenceSummaryService,
     EvidenceSummaryUnavailable,
@@ -34,6 +35,17 @@ def test_consolidation_groups_are_deterministic_and_bounded() -> None:
         sum(len(item) + 2 for item in group) <= MAX_CONSOLIDATION_INPUT_CHARACTERS
         for group in groups
     )
+
+
+def test_final_prompt_requires_complete_multi_chunk_briefing() -> None:
+    prompt = " ".join(_FINAL_PROMPT.split())
+
+    assert "Every chunk may contain important details" in prompt
+    assert "Use as much relevant content from every supplied chunk as possible" in prompt
+    assert "Do not treat the first chunk as a representative summary" in prompt
+    assert "3 to 5 substantive paragraphs" in prompt
+    assert "approximately 350 to 500 words" in prompt
+    assert "originating from each supplied chunk" in prompt
 
 
 def test_local_model_endpoint_allows_only_supported_local_addresses() -> None:

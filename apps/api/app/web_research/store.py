@@ -294,6 +294,18 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def record_source_reused(self, run_id: UUID, url: str) -> None:
+        """Record that an operator-selected source reused its latest governed evidence."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection, run_id, "research.evidence.reused", {"url": url}
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def record_batch_extraction_completed(
         self, run_id: UUID, succeeded: int, failed: int, denied: int
     ) -> None:
@@ -311,6 +323,21 @@ class ResearchStore:
                     "failed_count": failed,
                     "denied_count": denied,
                 },
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
+    async def record_summary_regeneration_requested(self, run_id: UUID, urls: list[str]) -> None:
+        """Record an explicit operator decision before derived evidence is overwritten."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.evidence_summary.regeneration_requested",
+                {"selected_count": len(urls), "urls": urls},
             )
             await connection.execute(
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
@@ -344,7 +371,15 @@ class ResearchStore:
             )
             evidence = await connection.fetch(
                 """SELECT url, retrieved_at, content_type, text, content_hash, extraction_method
-                   FROM research_evidence WHERE run_id = $1 ORDER BY retrieved_at""", run_id
+                   FROM (
+                       SELECT DISTINCT ON (url)
+                           url, retrieved_at, content_type, text, content_hash, extraction_method
+                       FROM research_evidence
+                       WHERE run_id = $1
+                       ORDER BY url, retrieved_at DESC
+                   ) AS latest_evidence
+                   ORDER BY retrieved_at""",
+                run_id,
             )
             events = await connection.fetch(
                 """SELECT event_type, occurred_at, details FROM research_audit_events

@@ -12,6 +12,11 @@ from app.agent_runtime.store import RuntimeStore
 from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_reviewer
 from app.durable_execution.contracts import DURABLE_POLICY_VERSION, RuntimeExecutionEnvelope
 from app.durable_execution.workflows import GovernedRuntimeWorkflow
+from app.evidence_summaries.service import EvidenceSummaryService
+from app.evidence_summaries.store import EvidenceSummaryStore
+from app.evidence_summaries.workflow import EvidenceSummaryWorkflow
+from app.local_models.service import LocalModelProviderService
+from app.local_models.store import LocalModelProviderStore
 from app.secrets import DeploymentSecrets
 from app.settings import get_settings
 from app.web_research.mcp_host import GovernedWebMcpHost
@@ -73,6 +78,24 @@ async def escalate_durable_execution(envelope: RuntimeExecutionEnvelope) -> str:
     return (await service.escalate_durable_ambiguity(UUID(envelope.run_id))).status
 
 
+@activity.defn(name="execute_evidence_summary")
+async def execute_evidence_summary(execution_id: str) -> str:
+    """Execute one stored evidence-summary record, with no caller-provided text or tools."""
+
+    settings = get_settings()
+    if not settings.database_url:
+        raise RuntimeError("The durable worker requires DATABASE_URL.")
+    # The research store is deliberately used only to retrieve evidence selected by the record.
+    from app.web_research.store import ResearchStore
+
+    service = EvidenceSummaryService(
+        EvidenceSummaryStore(settings.database_url),
+        ResearchStore(settings.database_url, DeploymentSecrets(settings).redact),
+        LocalModelProviderService(LocalModelProviderStore(settings.database_url)),
+    )
+    return (await service.execute(UUID(execution_id))).status
+
+
 async def run_worker() -> None:
     """Connect the dedicated worker to its one configured task queue."""
 
@@ -84,11 +107,12 @@ async def run_worker() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[GovernedRuntimeWorkflow],
+        workflows=[GovernedRuntimeWorkflow, EvidenceSummaryWorkflow],
         activities=[
             execute_approved_runtime_run,
             review_approved_runtime_run,
             escalate_durable_execution,
+            execute_evidence_summary,
         ],
     )
     await worker.run()

@@ -25,8 +25,9 @@ It returns no secret values and uses no-store browser caching.
 
 ## Local end-to-end validation
 
-With Docker Desktop running, start the local stack using the web-research and
-stateful-services profiles. Then validate this sequence:
+With Docker Desktop running, start the local platform with the `web-research`
+profile. It includes the stateful services required for governed research and
+thresholded durable execution. Then validate this sequence:
 
 1. Open the administrator console and bootstrap or sign in as an administrator.
 2. Confirm the security status endpoint reports ready identity and audit persistence.

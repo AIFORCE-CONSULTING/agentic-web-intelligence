@@ -18,6 +18,7 @@ WorkspacePermission = Literal[
     "security.audit.read",
     "service.identity.manage",
     "github.projects.manage",
+    "local_model.manage",
 ]
 
 ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
@@ -32,6 +33,7 @@ ROLE_PERMISSIONS: dict[WorkspaceRole, frozenset[WorkspacePermission]] = {
             "security.audit.read",
             "service.identity.manage",
             "github.projects.manage",
+            "local_model.manage",
         }
     ),
     "operator": frozenset(

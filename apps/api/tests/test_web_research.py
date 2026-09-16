@@ -1,11 +1,16 @@
 import asyncio
 import ipaddress
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from uuid import uuid4
 
 import httpx
 import pytest
 
+from app.evidence_summaries.contracts import (
+    EvidenceSummaryExecution,
+    EvidenceSummaryExecutionSource,
+)
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
 from app.settings import Settings
@@ -779,6 +784,155 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.status_code == 201
     assert response.json()["status"] == "ready"
     assert response.json()["sources"][0]["rank"] == 1
+
+
+def test_latest_summary_execution_restores_persisted_source_results() -> None:
+    run_id = uuid4()
+    execution_id = uuid4()
+    now = datetime.now(UTC)
+    app, user = authenticated_app(create_app())
+
+    class FakeSummaryStore:
+        async def get_latest_execution_for_run(
+            self, workspace_id: object, requested_run_id: object
+        ) -> EvidenceSummaryExecution:
+            assert workspace_id == user.workspace_id
+            assert requested_run_id == run_id
+            return EvidenceSummaryExecution(
+                id=execution_id,
+                workspace_id=user.workspace_id,
+                run_id=run_id,
+                route="direct",
+                status="completed",
+                created_at=now,
+                updated_at=now,
+                sources=[
+                    EvidenceSummaryExecutionSource(
+                        url="https://example.com/source",
+                        status="completed",
+                        summary="Persisted summary.",
+                        keywords=["persisted", "summary"],
+                        evidence_sufficient=True,
+                    )
+                ],
+            )
+
+    app.state.evidence_summary_store = FakeSummaryStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get(f"/v1/research/runs/{run_id}/evidence-summary-execution")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    source = response.json()["sources"][0]
+    assert source["summary"] == "Persisted summary."
+    assert source["keywords"] == ["persisted", "summary"]
+
+
+def test_operator_regeneration_reuses_evidence_and_overwrites_derived_summary() -> None:
+    run_id, execution_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    source_url = "https://example.com/source"
+    app, user = authenticated_app(create_app())
+    original = EvidenceSummaryExecution(
+        id=execution_id,
+        workspace_id=user.workspace_id,
+        run_id=run_id,
+        route="direct",
+        status="completed",
+        created_at=now,
+        updated_at=now,
+        sources=[
+            EvidenceSummaryExecutionSource(
+                url=source_url,
+                status="completed",
+                content_hash="source-hash",
+                summary="Older summary.",
+                keywords=["older", "summary", "artifact"],
+                evidence_sufficient=True,
+            )
+        ],
+    )
+    refreshed = original.model_copy(
+        update={
+            "status": "extracting",
+            "regeneration_attempt": 1,
+            "regeneration_requested": True,
+            "sources": [
+                original.sources[0].model_copy(
+                    update={"status": "extracted", "summary": None, "keywords": None}
+                )
+            ],
+        }
+    )
+    completed = original.model_copy(
+        update={
+            "regeneration_attempt": 1,
+            "sources": [
+                original.sources[0].model_copy(
+                    update={
+                        "summary": "Refreshed summary.",
+                        "keywords": ["refreshed", "summary", "artifact"],
+                    }
+                )
+            ],
+        }
+    )
+
+    class FakeSummaryStore:
+        reset_requested = False
+
+        async def get_execution(self, workspace_id: object, requested_execution_id: object):
+            assert workspace_id == user.workspace_id
+            assert requested_execution_id == execution_id
+            return refreshed if self.reset_requested else original
+
+        async def begin_regeneration(self, requested_execution_id: object, urls: list[str]) -> None:
+            assert requested_execution_id == execution_id
+            assert urls == [source_url]
+            self.reset_requested = True
+
+    class FakeResearchStore:
+        audited_urls: list[str] | None = None
+
+        async def record_summary_regeneration_requested(
+            self, requested_run_id: object, urls: list[str]
+        ) -> None:
+            assert requested_run_id == run_id
+            self.audited_urls = urls
+
+    class FakeSummaryService:
+        async def prepare(self, execution: EvidenceSummaryExecution):
+            assert execution.regeneration_requested is True
+            assert execution.sources[0].summary is None
+            return SimpleNamespace(execution=execution, route="direct")
+
+        async def execute(self, requested_execution_id: object) -> EvidenceSummaryExecution:
+            assert requested_execution_id == execution_id
+            return completed
+
+    summary_store = FakeSummaryStore()
+    research_store = FakeResearchStore()
+    app.state.evidence_summary_store = summary_store
+    app.state.research_store = research_store
+    app.state.evidence_summary_service = FakeSummaryService()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/evidence-summary-executions/{execution_id}/regenerate",
+                json={"urls": [source_url]},
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert research_store.audited_urls == [source_url]
+    assert response.json()["sources"][0]["summary"] == "Refreshed summary."
 
 
 def test_run_library_lists_bounded_summaries() -> None:

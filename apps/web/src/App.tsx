@@ -25,6 +25,15 @@ type BatchExtractionOutcome = {
   url: string; status: "succeeded" | "failed" | "denied"; reason?: string | null;
 };
 type BatchExtractResponse = { run_id: string; outcomes: BatchExtractionOutcome[] };
+type EvidenceSummaryBatch = {
+  id: string; route: "undetermined" | "direct" | "durable"; status: string;
+  sources: {
+    content_hash?: string | null; url: string; chunk_count?: number | null; status: string;
+    summary?: string | null; keywords?: string[] | null; evidence_sufficient?: boolean | null;
+    artifact_reused?: boolean;
+    failure_reason?: string | null;
+  }[];
+};
 type AuthenticatedUser = {
   id: string; email: string; workspace_id: string; workspace_name: string;
   role: "administrator" | "operator" | "viewer"; authenticated_at: string;
@@ -61,6 +70,13 @@ type GitHubProjectInfo = {
 };
 type GitHubDraftItem = { id: string; title: string; priority?: string | null };
 type GitHubDraftItemList = { items: GitHubDraftItem[] };
+type LocalModelProviderConfiguration = {
+  workspace_id: string; endpoint_url: string; model_name: string; updated_at: string;
+};
+type LocalModelProviderReadiness = {
+  mode: "unconfigured" | "ready" | "unavailable" | "invalid";
+  provider: "ollama"; endpoint_url?: string | null; model_name?: string | null; detail: string;
+};
 type RuntimeEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
 type RuntimeStep = {
   id: string; role: string; title: string; status: string; allowed_capabilities: string[];
@@ -164,6 +180,10 @@ function AdminConsole() {
   const [events, setEvents] = useState<SecurityAuditEvent[]>([]);
   const [posture, setPosture] = useState<OperationalSecurityStatus | null>(null);
   const [githubStatus, setGithubStatus] = useState<GitHubProjectStatus | null>(null);
+  const [localModel, setLocalModel] = useState<LocalModelProviderConfiguration | null>(null);
+  const [localModelReadiness, setLocalModelReadiness] = useState<LocalModelProviderReadiness | null>(null);
+  const [localModelEndpoint, setLocalModelEndpoint] = useState("http://host.docker.internal:11434");
+  const [localModelName, setLocalModelName] = useState("qwen3:1.7b");
   const [githubProject, setGithubProject] = useState<GitHubProjectInfo | null>(null);
   const [draftItems, setDraftItems] = useState<GitHubDraftItem[]>([]);
   const [roadmapError, setRoadmapError] = useState<string | null>(null);
@@ -232,8 +252,41 @@ function AdminConsole() {
       apiRequest<SecurityAuditEventList>("/v1/audit/security"),
       apiRequest<OperationalSecurityStatus>("/v1/operations/security-status"),
     ]);
+    const provider = await apiRequest<LocalModelProviderConfiguration | null>("/v1/local-model/provider");
+    setLocalModel(provider);
+    if (provider) {
+      setLocalModelEndpoint(provider.endpoint_url);
+      setLocalModelName(provider.model_name);
+    }
     setEvents(audit.events);
     setPosture(securityPosture);
+  }
+
+  async function saveLocalModel(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const saved = await apiRequest<LocalModelProviderConfiguration>("/v1/local-model/provider", {
+        method: "PUT", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ endpoint_url: localModelEndpoint, model_name: localModelName }),
+      });
+      setLocalModel(saved);
+      setLocalModelReadiness(null);
+      await loadAdminData();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to save local model configuration.");
+    } finally { setBusy(false); }
+  }
+
+  async function checkLocalModelReadiness() {
+    setBusy(true);
+    setError(null);
+    try {
+      setLocalModelReadiness(await apiRequest<LocalModelProviderReadiness>("/v1/local-model/provider/readiness", { method: "POST" }));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to check local model readiness.");
+    } finally { setBusy(false); }
   }
 
   async function createDraftItem(event: FormEvent<HTMLFormElement>) {
@@ -457,6 +510,17 @@ function AdminConsole() {
             <article><h3>Governed tools</h3><ul>{posture.tool_registry.tools.map((tool) => <li key={tool.name}><strong>{tool.name}</strong><span>{tool.required_permission} · {tool.audit_required ? "audited" : "not audited"}</span><small>{tool.purpose}</small></li>)}</ul></article>
           </div>
         </section>}
+        {user.role === "administrator" && <section aria-labelledby="local-model-heading">
+          <div className="section-heading"><div><p className="eyebrow">Phase 6 boundary</p><h2 id="local-model-heading">Local model provider</h2></div><button type="button" className="secondary" onClick={() => void checkLocalModelReadiness()} disabled={busy || !localModel}>Check readiness</button></div>
+          <p className="hint">Configure an already-running local Ollama service. Saving this does not install Ollama, download a model, or perform inference.</p>
+          <form className="roadmap-form" onSubmit={saveLocalModel}>
+            <label>Ollama endpoint<input value={localModelEndpoint} onChange={(event) => setLocalModelEndpoint(event.target.value)} required /></label>
+            <label>Installed model<input value={localModelName} onChange={(event) => setLocalModelName(event.target.value)} required /></label>
+            <button type="submit" disabled={busy}>Save provider</button>
+          </form>
+          {localModel && <p className="hint">Configured for this workspace: <code>{localModel.endpoint_url}</code> · <code>{localModel.model_name}</code></p>}
+          {localModelReadiness && <p className={localModelReadiness.mode === "ready" ? "ready-text" : "warning-text"}>{localModelReadiness.mode}: {localModelReadiness.detail}</p>}
+        </section>}
         {user.role === "administrator" ? <section aria-labelledby="security-audit-heading">
           <div className="section-heading"><div><p className="eyebrow">Append-only record</p><h2 id="security-audit-heading">Security audit</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
           <p className="hint">Authentication and authorization decisions only. Secrets and raw session tokens are never shown or stored.</p>
@@ -508,6 +572,7 @@ export function App() {
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [selectedSourceUrls, setSelectedSourceUrls] = useState<string[]>([]);
+  const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [batchOutcomes, setBatchOutcomes] = useState<BatchExtractionOutcome[]>([]);
   const [lastExtractionAttempt, setLastExtractionAttempt] = useState<ExtractionAttempt | null>(null);
   const [busy, setBusy] = useState(false);
@@ -550,6 +615,16 @@ export function App() {
     if (health && !isDeveloperRoute && !isAdminRoute) void refreshRunLibrary();
   }, [health]);
 
+  useEffect(() => {
+    if (!summaryBatch || !["awaiting_execution", "summarizing"].includes(summaryBatch.status)) return;
+    const timer = window.setInterval(() => {
+      void apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
+        .then(setSummaryBatch)
+        .catch(() => undefined);
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [summaryBatch]);
+
   async function reopenRun(runId: string) {
     setBusy(true);
     setError(null);
@@ -559,8 +634,17 @@ export function App() {
       setSelectedAuditIndex(null);
       setLastExtractionAttempt(latestExtractionAttemptFor(reopened));
       setQuestion(reopened.question);
-      setSelectedSourceUrls(reopened.sources.map((source) => source.url));
       setBatchOutcomes([]);
+      try {
+        const restored = await apiRequest<EvidenceSummaryBatch>(
+          `/v1/research/runs/${reopened.id}/evidence-summary-execution`,
+        );
+        setSummaryBatch(restored);
+        setSelectedSourceUrls(restored.sources.map((source) => source.url));
+      } catch {
+        setSummaryBatch(null);
+        setSelectedSourceUrls(reopened.sources.map((source) => source.url));
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
     } finally {
@@ -583,6 +667,7 @@ export function App() {
       setLastExtractionAttempt(null);
       setSelectedSourceUrls(created.sources.map((source) => source.url));
       setBatchOutcomes([]);
+      setSummaryBatch(null);
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
@@ -597,22 +682,29 @@ export function App() {
     ));
   }
 
-  async function extractSelectedSources(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
+  async function startSelectedSourceExtraction() {
     if (!run || !selectedSourceUrls.length) return;
     setBusy(true);
     setError(null);
     setBatchOutcomes([]);
     try {
-      const batch = await apiRequest<BatchExtractResponse>(`/v1/research/runs/${run.id}/extract-batch`, {
+      const execution = await apiRequest<EvidenceSummaryBatch>("/v1/evidence-summary-executions", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ urls: selectedSourceUrls }),
+        body: JSON.stringify({
+          run_id: run.id,
+          urls: selectedSourceUrls,
+        }),
       });
       const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
       setRun(refreshedRun);
       setLastExtractionAttempt(latestExtractionAttemptFor(refreshedRun));
-      setBatchOutcomes(batch.outcomes);
+      setBatchOutcomes(execution.sources.map((source) => ({
+        url: source.url,
+        status: source.status === "failed" ? "failed" : "succeeded",
+        reason: source.failure_reason,
+      })));
+      setSummaryBatch(execution);
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to extract selected source data.");
@@ -628,6 +720,49 @@ export function App() {
       setBusy(false);
     }
   }
+
+  async function extractSelectedSources(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!run || !selectedSourceUrls.length) return;
+    await startSelectedSourceExtraction();
+  }
+
+  async function regenerateSelectedSummaries() {
+    if (!run || !summaryBatch || !summaryMatchesSelection) return;
+    const confirmed = window.confirm(
+      `Regenerate summaries and keywords for ${selectedSourceUrls.length} selected source${selectedSourceUrls.length === 1 ? "" : "s"}? Extracted webpage content will be retained.`,
+    );
+    if (!confirmed) return;
+    setBusy(true);
+    setError(null);
+    setBatchOutcomes([]);
+    try {
+      const execution = await apiRequest<EvidenceSummaryBatch>(
+        `/v1/evidence-summary-executions/${summaryBatch.id}/regenerate`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ urls: selectedSourceUrls }),
+        },
+      );
+      setSummaryBatch(execution);
+      const refreshedRun = await apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`);
+      setRun(refreshedRun);
+      await refreshRunLibrary();
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to regenerate summaries.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const summaryMatchesSelection = summaryBatch !== null
+    && summaryBatch.sources.length === selectedSourceUrls.length
+    && summaryBatch.sources.every((source) => selectedSourceUrls.includes(source.url));
+  const canRegenerateSummaries = summaryBatch?.status === "completed"
+    && summaryMatchesSelection
+    && summaryBatch.sources.every((source) => source.summary);
+
 
   if (isAdminRoute) return <AdminConsole />;
 
@@ -684,7 +819,7 @@ export function App() {
             <p className="selection-summary">{selectedSourceUrls.length} of {run.sources.length} candidates selected. Sources are extracted sequentially and each outcome is recorded.</p>
             <button type="submit" disabled={busy || !selectedSourceUrls.length}>{busy ? "Extracting selected sources…" : `Extract ${selectedSourceUrls.length} selected source${selectedSourceUrls.length === 1 ? "" : "s"}`}</button>
           </form>
-          <p className="hint">Only public HTML or plain-text pages are allowed. Downloads, private URLs, and browser interaction remain blocked.</p>
+          <p className="hint">Only public HTML or plain-text pages are allowed. Successful sources are summarized automatically; downloads, private URLs, and browser interaction remain blocked.</p>
           {batchOutcomes.length > 0 && <ol className="batch-outcomes" aria-label="Batch extraction results">{batchOutcomes.map((outcome) => (
             <li className={outcome.status} key={outcome.url}><strong>{outcome.status}</strong><span>{outcome.url}</span>{outcome.reason && <small>{outcome.reason}</small>}</li>
           ))}</ol>}
@@ -702,9 +837,20 @@ export function App() {
             <strong>Latest extraction succeeded</strong>
             <p>{lastExtractionAttempt.url}</p>
           </aside>}
+          {summaryBatch && summaryMatchesSelection && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
+            <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
+            <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
+          </aside>}
+          {canRegenerateSummaries && <div className="runtime-actions"><button type="button" className="secondary" onClick={() => void regenerateSelectedSummaries()} disabled={busy}>Regenerate summaries &amp; keywords</button><p className="hint">Uses stored extracted evidence only; it does not retrieve the webpages again.</p></div>}
+          {summaryBatch && !summaryMatchesSelection && <aside className="extraction-status">
+            <strong>Selection changed</strong><p>Extract the current selection to load its matching stored evidence, summaries, and keywords.</p>
+          </aside>}
+          {summaryBatch && summaryMatchesSelection && summaryBatch.sources.some((source) => source.summary) && <ol className="sources">{summaryBatch.sources.filter((source) => source.summary).map((source) => (
+            <li className="source-candidate" key={source.url}><a className="source-link" href={source.url} target="_blank" rel="noreferrer">{source.url}<span aria-hidden="true"> ↗</span></a>{source.artifact_reused && <p className="hint">Reused stored evidence, summary, and keywords.</p>}{source.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}<p>{source.summary}</p>{source.keywords && <p className="hint">Keywords: {source.keywords.join(", ")}</p>}</li>
+          ))}</ol>}
           {run.evidence.length ? run.evidence.map((item) => (
             <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
-              <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><p>{item.text}</p>
+              <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div><details><summary>View source evidence</summary><p>{item.text}</p></details>
             </article>
           )) : <p>No source data has been extracted for this run yet.</p>}
         </section>

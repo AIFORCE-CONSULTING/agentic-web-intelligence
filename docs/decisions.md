@@ -15,3 +15,4 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0011 — Operational security posture](adr/0011-operational-security-posture.md)
 - [ADR 0012 — GitHub Projects connector](adr/0012-human-operated-github-projects-connector.md)
 - [ADR 0013 — Governed durable-execution contract](adr/0013-governed-durable-execution-contract.md)
+- [ADR 0014 — Governed local-model provider](adr/0014-governed-local-model-provider.md)

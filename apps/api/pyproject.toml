@@ -27,7 +27,7 @@ dev = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["app"]
+packages = ["app", "evidence_intelligence"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -25,7 +25,7 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 - Run-scoped, expiring provenance memory
 - Bounded reviewer-to-researcher revision pattern with safe escalation
 
-## Phase 4 - Enterprise Services
+## Phase 4 - Enterprise Services (complete)
 
 Add authentication, authorization, tool registry, secrets, and governance.
 
@@ -43,7 +43,7 @@ roadmap phase.
    longer article descriptions so an operator has more context before choosing
    a source for extraction.
 
-## Phase 5 - Durable Execution
+## Phase 5 - Durable Execution (complete)
 
 Add Temporal, long-running workflows, and human-in-the-loop operations.
 
@@ -58,13 +58,14 @@ Add Temporal, long-running workflows, and human-in-the-loop operations.
 - Validate restart, resume, workspace isolation, cancellation, and ambiguous
   effect behavior end to end.
 
-## Phase 6 - Local Evidence Intelligence
+## Phase 6 - Local Evidence Intelligence (complete)
 
 Add a local-first, optional open-weight model capability for generated evidence
 summaries and page-level keywords.
 
-- Define an ADR and provider boundary: native local Ollama by default, no
-  automatic model download, no model tools, and no new agent authority.
+- Define the [local-model provider boundary](../adr/0014-governed-local-model-provider.md):
+  native local Ollama by default, no automatic model download, no model tools,
+  and no new agent authority.
 - Add local-model configuration, model-artifact verification, health, and
   resource guidance for Qwen3 1.7B on modest local hardware.
 - Create evidence-only summarization and keyword contracts with strict input,
@@ -78,24 +79,19 @@ summaries and page-level keywords.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7 - Grounded Research Chat
-
-Build an authenticated, evidence-grounded chat experience on the same local
-model-provider boundary.
-
-- Answer only from the selected, workspace-owned research evidence with source
-  citations and explicit uncertainty when evidence is insufficient.
-- Keep chat sessions, permissions, retention, and model configuration
-  platform-owned; the model receives no MCP tools, browser, filesystem,
-  database, runtime, or credential access.
-- Support optional future hosted providers behind the same adapter without
-  making cloud credentials a requirement for local open-source deployments.
-
 ## Future Parking Lot
 
-The following work remains planned but is intentionally deferred until the
-local evidence-intelligence and grounded-chat capabilities are established.
+The following work remains planned but is intentionally deferred until concrete
+product and deployment requirements justify it.
 
+- **Grounded Research Chat** — an authenticated, evidence-grounded chat
+  experience on the local model-provider boundary. It would answer only from
+  selected workspace-owned research evidence, cite sources, surface uncertainty
+  when evidence is insufficient, and keep sessions, permissions, retention, and
+  model configuration platform-owned. The model would receive no MCP tools,
+  browser, filesystem, database, runtime, or credential access. Future hosted
+  providers could use the same adapter without making cloud credentials a
+  requirement for local open-source deployments.
 - **Observability** — LangFuse, OpenTelemetry, metrics, and evaluation.
 - **Durable data lifecycle** — configurable retention and archival operations
   for durable workflow metadata when real deployment requirements justify them;

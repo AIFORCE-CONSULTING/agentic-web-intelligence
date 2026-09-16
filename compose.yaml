@@ -93,7 +93,7 @@ services:
       - platform
 
   temporal:
-    profiles: ["durable-execution"]
+    profiles: ["web-research", "durable-execution"]
     image: temporalio/auto-setup:1.28.1
     environment:
       DB: postgres12
@@ -111,7 +111,7 @@ services:
       - platform
 
   temporal-ui:
-    profiles: ["durable-execution"]
+    profiles: ["web-research", "durable-execution"]
     image: temporalio/ui:2.31.2
     environment:
       TEMPORAL_ADDRESS: temporal:7233
@@ -125,7 +125,7 @@ services:
       - platform
 
   durable-worker:
-    profiles: ["durable-execution"]
+    profiles: ["web-research", "durable-execution"]
     build:
       context: .
       dockerfile: docker/api.Dockerfile

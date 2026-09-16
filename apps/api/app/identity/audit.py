@@ -30,6 +30,7 @@ _ALLOWED_DETAIL_FIELDS: dict[str, frozenset[str]] = {
     "runtime.durable_execution.cancelled": frozenset({"run_id"}),
     "runtime.review.exception_revision.approved": frozenset({"run_id"}),
     "runtime.attention.closed": frozenset({"run_id"}),
+    "local_model.configured": frozenset({"provider", "model_name"}),
 }
 
 SCHEMA = """

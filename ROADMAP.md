@@ -79,24 +79,19 @@ summaries and page-level keywords.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7 - Grounded Research Chat
-
-Build an authenticated, evidence-grounded chat experience on the same local
-model-provider boundary.
-
-- Answer only from the selected, workspace-owned research evidence with source
-  citations and explicit uncertainty when evidence is insufficient.
-- Keep chat sessions, permissions, retention, and model configuration
-  platform-owned; the model receives no MCP tools, browser, filesystem,
-  database, runtime, or credential access.
-- Support optional future hosted providers behind the same adapter without
-  making cloud credentials a requirement for local open-source deployments.
-
 ## Future Parking Lot
 
-The following work remains planned but is intentionally deferred until the
-local evidence-intelligence and grounded-chat capabilities are established.
+The following work remains planned but is intentionally deferred until concrete
+product and deployment requirements justify it.
 
+- **Grounded Research Chat** — an authenticated, evidence-grounded chat
+  experience on the local model-provider boundary. It would answer only from
+  selected workspace-owned research evidence, cite sources, surface uncertainty
+  when evidence is insufficient, and keep sessions, permissions, retention, and
+  model configuration platform-owned. The model would receive no MCP tools,
+  browser, filesystem, database, runtime, or credential access. Future hosted
+  providers could use the same adapter without making cloud credentials a
+  requirement for local open-source deployments.
 - **Observability** — LangFuse, OpenTelemetry, metrics, and evaluation.
 - **Durable data lifecycle** — configurable retention and archival operations
   for durable workflow metadata when real deployment requirements justify them;

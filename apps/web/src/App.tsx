@@ -32,7 +32,6 @@ type ResearchRunSummary = {
   source_count: number; evidence_count: number;
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
-type ExtractionAttempt = { url: string; outcome: "failed" | "succeeded"; detail?: string };
 type EvidenceSummaryBatch = {
   id: string; route: "undetermined" | "direct" | "durable"; status: string;
   sources: {
@@ -107,24 +106,6 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
     throw new Error(payload?.detail ?? "The platform request could not be completed.");
   }
   return (await response.json()) as T;
-}
-
-function latestExtractionAttemptFor(run: ResearchRun): ExtractionAttempt | null {
-  const event = [...run.audit_events].reverse().find((candidate) => (
-    candidate.event_type === "research.extract.failed" ||
-    candidate.event_type === "research.evidence.extracted"
-  ));
-  if (!event) return null;
-  const url = event.details.requested_url ?? event.details.url;
-  if (typeof url !== "string") return null;
-  if (event.event_type === "research.extract.failed") {
-    return {
-      url,
-      outcome: "failed",
-      detail: typeof event.details.reason === "string" ? event.details.reason : "Source retrieval failed.",
-    };
-  }
-  return { url, outcome: "succeeded" };
 }
 
 function PrimaryNavigation() {
@@ -581,7 +562,7 @@ export function App() {
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
-  const [lastExtractionAttempt, setLastExtractionAttempt] = useState<ExtractionAttempt | null>(null);
+  const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -654,7 +635,7 @@ export function App() {
       setRun(reopened);
       await refreshTrustEvaluations(reopened.id);
       setSelectedAuditIndex(null);
-      setLastExtractionAttempt(latestExtractionAttemptFor(reopened));
+      setSelectedSummaryUrl(null);
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
     } catch (reason) {
@@ -680,7 +661,7 @@ export function App() {
       setRun(created);
       setTrustEvaluations([]);
       setSelectedAuditIndex(null);
-      setLastExtractionAttempt(null);
+      setSelectedSummaryUrl(null);
       setSummaryBatch(null);
       await loadSummaryBatch(created.id);
       await refreshRunLibrary();
@@ -746,6 +727,22 @@ export function App() {
     return <main><DeveloperHub health={health} serviceHealth={serviceHealth} onRefresh={() => void refreshServiceHealth()} /></main>;
   }
 
+  const summarizedSources = summaryBatch?.sources.filter((source) => source.status === "completed" && source.summary) ?? [];
+  const keywordGroups = new Map<string, { label: string; sources: typeof summarizedSources }>();
+  for (const source of summarizedSources) {
+    for (const keyword of source.keywords ?? []) {
+      const label = keyword.trim().replace(/\s+/g, " ");
+      if (!label) continue;
+      const key = label.toLocaleLowerCase();
+      const group = keywordGroups.get(key) ?? { label, sources: [] };
+      group.sources.push(source);
+      keywordGroups.set(key, group);
+    }
+  }
+  const keywordCards = [...keywordGroups.values()].sort((left, right) => left.label.localeCompare(right.label));
+  const selectedSummary = summarizedSources.find((source) => source.url === selectedSummaryUrl) ?? null;
+  const sourceTitle = (url: string) => run?.sources.find((source) => source.url === url)?.title ?? url;
+
   return (
     <main>
       <header>
@@ -784,42 +781,34 @@ export function App() {
           {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
             <li className="source-candidate" key={`${source.rank}-${source.url}`}><div className="source">
               <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small></span>
-            </div><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a></li>
+            </div><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a>{(() => {
+              const evidence = run.evidence.find((item) => item.url === source.url && item.content_hash === source.preflight_content_hash);
+              const evaluation = evidence && trustEvaluations.find((candidate) => candidate.source_url === evidence.url && candidate.content_hash === evidence.content_hash);
+              if (!evidence || evaluation?.disposition !== "review_required") return null;
+              return <div className="candidate-review"><button type="button" className="secondary" onClick={() => void acceptEvidenceForReview(evidence, evaluation)} disabled={busy}>Accept for automated use</button></div>;
+            })()}</li>
           ))}</ol> : <p>No public source candidates were returned for this question.</p>}
         </section>
 
-        <section aria-labelledby="evidence-heading">
-          <h2 id="evidence-heading">3. Evidence and summaries</h2>
-          {lastExtractionAttempt?.outcome === "failed" && <aside className="extraction-status failure" role="alert">
-            <strong>Latest extraction failed</strong>
-            <p>{lastExtractionAttempt.url}</p>
-            <span>{lastExtractionAttempt.detail}</span>
-            <small>Previously stored source data is retained below and does not represent this failed request.</small>
-          </aside>}
-          {lastExtractionAttempt?.outcome === "succeeded" && <aside className="extraction-status success">
-            <strong>Latest extraction succeeded</strong>
-            <p>{lastExtractionAttempt.url}</p>
-          </aside>}
+        <section aria-labelledby="keywords-heading">
+          <div className="section-heading"><div><p className="eyebrow">Stored source summaries</p><h2 id="keywords-heading">3. Keywords</h2></div><span className="badge">{keywordCards.length} keyword{keywordCards.length === 1 ? "" : "s"}</span></div>
           {summaryBatch && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
             <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
             <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
           </aside>}
-          {summaryBatch && summaryBatch.sources.some((source) => source.summary) && <ol className="sources">{summaryBatch.sources.filter((source) => source.summary).map((source) => (
-            <li className="source-candidate" key={source.url}><a className="source-link" href={source.url} target="_blank" rel="noreferrer">{source.url}<span aria-hidden="true"> ↗</span></a>{source.artifact_reused && <p className="hint">Reused stored evidence, summary, and keywords.</p>}{source.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}<p>{source.summary}</p>{source.keywords && <p className="hint">Keywords: {source.keywords.join(", ")}</p>}</li>
-          ))}</ol>}
-          {run.evidence.length ? run.evidence.map((item) => (
-            <article className="evidence" key={`${item.url}-${item.retrieved_at}`}>
-              <div className="metadata"><a href={item.url} target="_blank" rel="noreferrer">{item.url}</a><span>{item.extraction_method}</span></div>
-              {(() => {
-                const evaluation = trustEvaluations.find((candidate) => (
-                  candidate.source_url === item.url && candidate.content_hash === item.content_hash
-                ));
-                if (!evaluation) return <p className="hint">Trust evaluation pending.</p>;
-                return <div className="runtime-actions"><p className="hint">Trust: {evaluation.disposition.replaceAll("_", " ")} · policy {evaluation.policy_version}</p>{evaluation.override_reason && <p className="hint">Human acceptance recorded: {evaluation.override_reason}</p>}{evaluation.disposition === "review_required" && <button type="button" className="secondary" onClick={() => void acceptEvidenceForReview(item, evaluation)} disabled={busy}>Accept for automated use</button>}</div>;
-              })()}
-              <details><summary>View source evidence</summary><p>{item.text}</p></details>
-            </article>
-          )) : <p>No source data has been extracted for this run yet.</p>}
+          {keywordCards.length ? <div className="keyword-grid">{keywordCards.map((keyword) => <article className="keyword-card" key={keyword.label}>
+            <h3>{keyword.label}</h3>
+            <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{sourceTitle(source.url)}</a></li>)}</ol>
+          </article>)}</div> : <p className="hint">No stored source summaries with keywords are available for this run yet.</p>}
+          <div id="source-summary" className="source-summary-panel" tabIndex={-1}>
+            {selectedSummary && <article className="source-summary">
+              <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary.url)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
+              <p className="source-address">{selectedSummary.url}</p>
+              {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
+              {selectedSummary.summary?.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+              {selectedSummary.keywords?.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
+            </article>}
+          </div>
         </section>
 
         <section aria-labelledby="audit-heading">

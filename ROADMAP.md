@@ -116,19 +116,18 @@ truthfulness or replace browser safety protections.
    selects **Discover sources**, use the platform's existing source records and
    acquire/preflight only source URLs that are not already present in the
    database for that target.
-3. Raise the governed discovery result limit from 5 to 50 sources so the
-   platform can acquire and evaluate a broader initial evidence set.
-4. Add a keyword-centered operator view: render each keyword as a visual card
+3. Add a keyword-centered operator view: render each keyword as a visual card
    and list every related source beneath it. A source may appear under more
-   than one keyword.
+   than one keyword, and each source link opens its stored source summary
+   rather than the original external webpage.
+4. Raise the governed discovery result limit from 5 to 50 sources so the
+   platform can acquire and evaluate a broader initial evidence set.
 5. After eligible sources are summarized, group sources that share keywords
    and generate a cross-source synthesis describing what their summaries have
    in common and where they differ.
 6. Revisit both the chunk and final summarization prompts and their output
    contracts so every generated keyword is substantively represented in that
    source's summary.
-7. Make every source link shown under a keyword open that source's stored
-   summary, rather than its original external webpage.
 
 ### Remaining Phase 7 trust-layer work
 

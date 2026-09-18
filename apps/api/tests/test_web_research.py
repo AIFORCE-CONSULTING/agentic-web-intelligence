@@ -10,6 +10,7 @@ import pytest
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    WorkspaceEvidenceSummaryArtifact,
 )
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
@@ -722,6 +723,42 @@ def test_searxng_provider_normalizes_and_bounds_results() -> None:
     ]
 
 
+def test_searxng_provider_pages_and_deduplicates_results() -> None:
+    requested_pages: list[str] = []
+
+    async def search() -> SearchResponse:
+        def response_for(request: httpx.Request) -> httpx.Response:
+            page = request.url.params["pageno"]
+            requested_pages.append(page)
+            start = 0 if page == "1" else 9
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/source-{index}",
+                        }
+                        for index in range(start, start + 10)
+                    ]
+                },
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(response_for)) as client:
+            return await SearxngSearchProvider(client, "http://searxng:8080").search(
+                "evidence", 15
+            )
+
+    response = asyncio.run(search())
+
+    assert requested_pages == ["1", "2"]
+    assert len(response.results) == 15
+    assert [result.url for result in response.results] == [
+        f"https://example.com/source-{index}" for index in range(15)
+    ]
+
+
 def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
     async def unavailable(_: str, __: int) -> SearchResponse:
         raise ToolProviderError("The search provider is unavailable.")
@@ -902,6 +939,50 @@ def test_latest_summary_execution_restores_persisted_source_results() -> None:
     source = response.json()["sources"][0]
     assert source["summary"] == "Persisted summary."
     assert source["keywords"] == ["persisted", "summary"]
+
+
+def test_workspace_summary_artifacts_return_one_summary_per_stored_url() -> None:
+    run_id = uuid4()
+    app, user = authenticated_app(create_app())
+
+    class FakeSummaryStore:
+        async def list_workspace_artifacts(
+            self, workspace_id: object
+        ) -> list[WorkspaceEvidenceSummaryArtifact]:
+            assert workspace_id == user.workspace_id
+            return [
+                WorkspaceEvidenceSummaryArtifact(
+                    run_id=run_id,
+                    url="https://example.com/source",
+                    title="Stored source",
+                    chunk_count=2,
+                    summary="Stored summary.",
+                    keywords=["stored", "summary"],
+                    evidence_sufficient=True,
+                )
+            ]
+
+    app.state.evidence_summary_store = FakeSummaryStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/v1/evidence-summary-artifacts")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["artifacts"] == [
+        {
+            "run_id": str(run_id),
+            "url": "https://example.com/source",
+            "title": "Stored source",
+            "chunk_count": 2,
+            "summary": "Stored summary.",
+            "keywords": ["stored", "summary"],
+            "evidence_sufficient": True,
+        }
+    ]
 
 
 def test_operator_regeneration_reuses_evidence_and_overwrites_derived_summary() -> None:

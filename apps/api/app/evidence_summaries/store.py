@@ -8,6 +8,7 @@ import asyncpg
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    WorkspaceEvidenceSummaryArtifact,
 )
 
 SCHEMA = """
@@ -539,6 +540,34 @@ class EvidenceSummaryStore:
             )
         return await self.get_execution(workspace_id, execution_id) if workspace_id else None
 
+    async def list_workspace_artifacts(
+        self, workspace_id: UUID, limit: int = 500
+    ) -> list[WorkspaceEvidenceSummaryArtifact]:
+        """Return the newest usable summary once for each workspace URL."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT DISTINCT ON (artifacts.source_url)
+                          artifacts.run_id, artifacts.source_url AS url,
+                          COALESCE(source.title, artifacts.source_url) AS title,
+                          artifacts.chunk_count, artifacts.summary, artifacts.keywords,
+                          artifacts.evidence_sufficient
+                   FROM evidence_summary_artifacts AS artifacts
+                   LEFT JOIN LATERAL (
+                       SELECT title FROM research_sources
+                       WHERE run_id = artifacts.run_id AND url = artifacts.source_url
+                       ORDER BY rank
+                       LIMIT 1
+                   ) AS source ON TRUE
+                   WHERE artifacts.workspace_id = $1
+                   ORDER BY artifacts.source_url, artifacts.created_at DESC
+                   LIMIT $2""",
+                workspace_id,
+                limit,
+            )
+        return [self._artifact_contract(row) for row in rows]
+
     async def _update_source(self, execution_id: UUID, url: str, status: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
@@ -573,3 +602,10 @@ class EvidenceSummaryStore:
         if isinstance(values.get("keywords"), str):
             values["keywords"] = json.loads(values["keywords"])
         return EvidenceSummaryExecutionSource(**values)
+
+    @staticmethod
+    def _artifact_contract(artifact: asyncpg.Record) -> WorkspaceEvidenceSummaryArtifact:
+        values = dict(artifact)
+        if isinstance(values.get("keywords"), str):
+            values["keywords"] = json.loads(values["keywords"])
+        return WorkspaceEvidenceSummaryArtifact(**values)

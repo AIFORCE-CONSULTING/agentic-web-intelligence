@@ -33,6 +33,13 @@ CREATE TABLE IF NOT EXISTS research_target_keys (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     PRIMARY KEY (workspace_id, normalized_question)
 );
+CREATE TABLE IF NOT EXISTS research_cleanup_audits (
+    id UUID PRIMARY KEY,
+    cleanup_name TEXT NOT NULL UNIQUE,
+    retention_rule TEXT NOT NULL,
+    deleted_run_count INTEGER NOT NULL CHECK (deleted_run_count >= 0),
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS research_sources (
     id UUID PRIMARY KEY,
     run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
@@ -134,12 +141,46 @@ class ResearchStore:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
                 async with self._pool.acquire() as connection:
                     await connection.execute(SCHEMA)
+                    await self._prune_obsolete_target_runs(connection)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()
                     self._pool = None
                 raise ResearchStoreUnavailable("Research persistence is unavailable.") from error
         return self._pool
+
+    async def _prune_obsolete_target_runs(self, connection: asyncpg.Connection) -> None:
+        """Remove legacy repeated targets as complete, auditable provenance units."""
+
+        cleanup_name = "deduplicate_obsolete_target_runs_v1"
+        async with connection.transaction():
+            already_completed = await connection.fetchval(
+                "SELECT 1 FROM research_cleanup_audits WHERE cleanup_name = $1",
+                cleanup_name,
+            )
+            if already_completed:
+                return
+            deleted_runs = await connection.fetch(
+                """DELETE FROM research_runs AS obsolete
+                   USING research_target_keys AS target
+                   WHERE obsolete.workspace_id = target.workspace_id
+                     AND lower(regexp_replace(btrim(obsolete.question), '\\s+', ' ', 'g'))
+                         = target.normalized_question
+                     AND obsolete.id <> target.run_id
+                   RETURNING obsolete.id"""
+            )
+            await connection.execute(
+                """INSERT INTO research_cleanup_audits
+                   (id, cleanup_name, retention_rule, deleted_run_count)
+                   VALUES ($1, $2, $3, $4)""",
+                uuid4(),
+                cleanup_name,
+                (
+                    "retain the target-keyed run; delete older repeated target runs "
+                    "with dependent provenance"
+                ),
+                len(deleted_runs),
+            )
 
     async def get_or_create_run(
         self, workspace_id: UUID, question: str

@@ -23,7 +23,7 @@ class SearchRequest(BaseModel):
     """A bounded query for approved public-web discovery."""
 
     query: str = Field(min_length=1, max_length=512)
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int = Field(default=50, ge=1, le=50)
 
 
 class SearchResult(BaseModel):
@@ -74,7 +74,7 @@ class ResearchRunRequest(BaseModel):
     """Create a durable, discovery-first research run."""
 
     question: str = Field(min_length=1, max_length=512)
-    max_results: int = Field(default=5, ge=1, le=10)
+    max_results: int = Field(default=50, ge=1, le=50)
 
 
 class SourceCandidate(SearchResult):

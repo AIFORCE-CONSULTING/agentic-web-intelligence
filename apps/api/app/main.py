@@ -24,6 +24,7 @@ from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
     RegenerateEvidenceSummaryRequest,
+    WorkspaceEvidenceSummaryArtifactList,
 )
 from app.evidence_summaries.service import (
     EvidenceSummaryAutomation,
@@ -1449,6 +1450,25 @@ def create_app() -> FastAPI:
         if batch is None:
             raise HTTPException(status_code=404, detail="Summary request was not found.")
         return batch
+
+    @app.get(
+        "/v1/evidence-summary-artifacts",
+        response_model=WorkspaceEvidenceSummaryArtifactList,
+        tags=["evidence-summaries"],
+    )
+    async def list_workspace_evidence_summary_artifacts(
+        http_request: Request,
+    ) -> WorkspaceEvidenceSummaryArtifactList:
+        """List one newest stored source summary per URL in the current workspace."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            return WorkspaceEvidenceSummaryArtifactList(
+                artifacts=await store.list_workspace_artifacts(user.workspace_id)
+            )
+        except EvidenceSummaryStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post(
         "/v1/evidence-summary-executions/{batch_id}/regenerate",

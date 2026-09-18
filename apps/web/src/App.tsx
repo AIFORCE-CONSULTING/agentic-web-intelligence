@@ -41,6 +41,11 @@ type EvidenceSummaryBatch = {
     failure_reason?: string | null;
   }[];
 };
+type WorkspaceSummaryArtifact = {
+  run_id: string; url: string; title: string; chunk_count?: number | null;
+  summary: string; keywords: string[]; evidence_sufficient: boolean;
+};
+type WorkspaceSummaryArtifactList = { artifacts: WorkspaceSummaryArtifact[] };
 type AuthenticatedUser = {
   id: string; email: string; workspace_id: string; workspace_name: string;
   role: "administrator" | "operator" | "viewer"; authenticated_at: string;
@@ -561,6 +566,7 @@ export function App() {
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
+  const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
   const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -600,14 +606,20 @@ export function App() {
   }
 
   useEffect(() => {
-    if (health && !isDeveloperRoute && !isAdminRoute) void refreshRunLibrary();
+    if (health && !isDeveloperRoute && !isAdminRoute) {
+      void refreshRunLibrary();
+      void loadWorkspaceSummaries();
+    }
   }, [health]);
 
   useEffect(() => {
     if (!summaryBatch || !["awaiting_execution", "summarizing"].includes(summaryBatch.status)) return;
     const timer = window.setInterval(() => {
       void apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
-        .then(setSummaryBatch)
+        .then((updated) => {
+          setSummaryBatch(updated);
+          if (updated.status === "completed") void loadWorkspaceSummaries();
+        })
         .catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(timer);
@@ -638,6 +650,7 @@ export function App() {
       setSelectedSummaryUrl(null);
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
+      await loadWorkspaceSummaries();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
     } finally {
@@ -655,7 +668,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          max_results: 5,
+          max_results: 50,
         }),
       });
       setRun(created);
@@ -664,6 +677,7 @@ export function App() {
       setSelectedSummaryUrl(null);
       setSummaryBatch(null);
       await loadSummaryBatch(created.id);
+      await loadWorkspaceSummaries();
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
@@ -680,6 +694,17 @@ export function App() {
       setSummaryBatch(restored);
     } catch {
       setSummaryBatch(null);
+    }
+  }
+
+  async function loadWorkspaceSummaries() {
+    try {
+      const response = await apiRequest<WorkspaceSummaryArtifactList>(
+        "/v1/evidence-summary-artifacts",
+      );
+      setWorkspaceSummaries(response.artifacts);
+    } catch {
+      setWorkspaceSummaries([]);
     }
   }
 
@@ -727,21 +752,20 @@ export function App() {
     return <main><DeveloperHub health={health} serviceHealth={serviceHealth} onRefresh={() => void refreshServiceHealth()} /></main>;
   }
 
-  const summarizedSources = summaryBatch?.sources.filter((source) => source.status === "completed" && source.summary) ?? [];
-  const keywordGroups = new Map<string, { label: string; sources: typeof summarizedSources }>();
-  for (const source of summarizedSources) {
-    for (const keyword of source.keywords ?? []) {
+  const keywordGroups = new Map<string, { label: string; sources: WorkspaceSummaryArtifact[] }>();
+  for (const source of workspaceSummaries) {
+    for (const keyword of source.keywords) {
       const label = keyword.trim().replace(/\s+/g, " ");
       if (!label) continue;
       const key = label.toLocaleLowerCase();
-      const group = keywordGroups.get(key) ?? { label, sources: [] };
+      const group = keywordGroups.get(key) ?? { label, sources: [] as WorkspaceSummaryArtifact[] };
       group.sources.push(source);
       keywordGroups.set(key, group);
     }
   }
   const keywordCards = [...keywordGroups.values()].sort((left, right) => left.label.localeCompare(right.label));
-  const selectedSummary = summarizedSources.find((source) => source.url === selectedSummaryUrl) ?? null;
-  const sourceTitle = (url: string) => run?.sources.find((source) => source.url === url)?.title ?? url;
+  const selectedSummary = workspaceSummaries.find((source) => source.url === selectedSummaryUrl) ?? null;
+  const sourceTitle = (source: WorkspaceSummaryArtifact) => source.title || source.url;
 
   return (
     <main>
@@ -791,22 +815,22 @@ export function App() {
         </section>
 
         <section aria-labelledby="keywords-heading">
-          <div className="section-heading"><div><p className="eyebrow">Stored source summaries</p><h2 id="keywords-heading">3. Keywords</h2></div><span className="badge">{keywordCards.length} keyword{keywordCards.length === 1 ? "" : "s"}</span></div>
+          <div className="section-heading"><div><p className="eyebrow">Workspace source summaries</p><h2 id="keywords-heading">3. Keywords</h2></div><span className="badge">{keywordCards.length} keyword{keywordCards.length === 1 ? "" : "s"}</span></div>
           {summaryBatch && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
             <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
             <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
           </aside>}
           {keywordCards.length ? <div className="keyword-grid">{keywordCards.map((keyword) => <article className="keyword-card" key={keyword.label}>
             <h3>{keyword.label}</h3>
-            <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{sourceTitle(source.url)}</a></li>)}</ol>
-          </article>)}</div> : <p className="hint">No stored source summaries with keywords are available for this run yet.</p>}
+            <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{sourceTitle(source)}</a></li>)}</ol>
+          </article>)}</div> : <p className="hint">No stored source summaries with keywords are available in this workspace yet.</p>}
           <div id="source-summary" className="source-summary-panel" tabIndex={-1}>
             {selectedSummary && <article className="source-summary">
-              <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary.url)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
+              <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
               <p className="source-address">{selectedSummary.url}</p>
               {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
-              {selectedSummary.summary?.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-              {selectedSummary.keywords?.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
+              {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+              {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
             </article>}
           </div>
         </section>

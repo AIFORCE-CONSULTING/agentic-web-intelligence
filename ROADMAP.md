@@ -116,10 +116,10 @@ truthfulness or replace browser safety protections.
    selects **Discover sources**, use the platform's existing source records and
    acquire/preflight only source URLs that are not already present in the
    database for that target.
-3. Add a keyword-centered operator view: render each keyword as a visual card
-   and list every related source beneath it. A source may appear under more
-   than one keyword, and each source link opens its stored source summary
-   rather than the original external webpage.
+3. Add a workspace-wide keyword-centered operator view: render each keyword
+   as a visual card and list every related stored source summary beneath it.
+   A source may appear under more than one keyword, and each source link opens
+   its stored source summary rather than the original external webpage.
 4. Raise the governed discovery result limit from 5 to 50 sources so the
    platform can acquire and evaluate a broader initial evidence set.
 5. After eligible sources are summarized, group sources that share keywords

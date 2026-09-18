@@ -747,17 +747,14 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
         def __init__(self) -> None:
             self.sources: list[SearchResult] = []
 
-        async def create_run(self, _: object, question: str) -> ResearchRun:
+        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
             return ResearchRun(
                 id=run_id,
                 question=question,
                 status="searching",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-            )
-
-        async def latest_ready_run_for_question(self, *_: object) -> None:
-            return None
+            ), True
 
         async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
             self.sources = sources
@@ -806,24 +803,47 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.json()["sources"][0]["rank"] == 1
 
 
-def test_run_endpoint_requires_explicit_rediscovery_confirmation() -> None:
+def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.MonkeyPatch) -> None:
     prior_run_id = uuid4()
+    search_called = False
 
     class FakeStore:
-        async def latest_ready_run_for_question(self, _: object, question: str) -> ResearchRun:
+        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
             return ResearchRun(
                 id=prior_run_id,
                 question=question,
                 status="ready",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-            )
+            ), False
 
-        async def create_run(self, *_: object) -> ResearchRun:
-            raise AssertionError("Confirmation must be required before creating a duplicate run.")
+        async def get_run(self, _: object, requested_run_id: object) -> ResearchRun:
+            assert requested_run_id == prior_run_id
+            return ResearchRun(
+                id=prior_run_id,
+                question="evidence",
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                sources=[
+                    SourceCandidate(
+                        rank=1,
+                        title="Existing source",
+                        url="https://example.com/existing",
+                        snippet="Persisted source.",
+                    )
+                ],
+            )
 
     app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
+
+    async def search(_: str, __: int) -> SearchResponse:
+        nonlocal search_called
+        search_called = True
+        raise AssertionError("An existing target must not invoke the search provider.")
+
+    monkeypatch.setattr("app.main.run_search_workflow", search)
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -832,11 +852,10 @@ def test_run_endpoint_requires_explicit_rediscovery_confirmation() -> None:
 
     response = asyncio.run(request())
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "Sources were already discovered for this question. "
-        "Confirm rediscovery before starting a new run."
-    )
+    assert response.status_code == 200
+    assert response.json()["id"] == str(prior_run_id)
+    assert response.json()["sources"][0]["title"] == "Existing source"
+    assert search_called is False
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:

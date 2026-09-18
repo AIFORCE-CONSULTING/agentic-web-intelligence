@@ -335,10 +335,9 @@ class EvidenceSummaryStore:
             artifact = await connection.fetchrow(
                 """SELECT id, summary, keywords, evidence_sufficient
                    FROM evidence_summary_artifacts
-                   WHERE workspace_id = $1 AND run_id = $2 AND source_url = $3
-                     AND content_hash = $4""",
+                   WHERE workspace_id = $1 AND source_url = $2 AND content_hash = $3
+                   ORDER BY created_at DESC LIMIT 1""",
                 execution.workspace_id,
-                execution.run_id,
                 url,
                 content_hash,
             )
@@ -348,13 +347,12 @@ class EvidenceSummaryStore:
                        FROM evidence_summary_execution_sources AS sources
                        JOIN evidence_summary_executions AS prior
                          ON prior.id = sources.execution_id
-                       WHERE prior.workspace_id = $1 AND prior.run_id = $2
-                         AND sources.url = $3 AND sources.content_hash = $4
+                       WHERE prior.workspace_id = $1 AND sources.url = $2
+                         AND sources.content_hash = $3
                          AND sources.status = 'completed' AND sources.summary IS NOT NULL
                        ORDER BY prior.created_at DESC
                        LIMIT 1""",
                     execution.workspace_id,
-                    execution.run_id,
                     url,
                     content_hash,
                 )

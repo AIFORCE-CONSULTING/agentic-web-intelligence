@@ -666,12 +666,6 @@ export function App() {
 
   async function createRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const prior = runLibrary.find((item) => (
-      item.question === question && item.status === "ready"
-    ));
-    if (prior && !window.confirm("Sources were already discovered for this question. Rediscover them?")) {
-      return;
-    }
     setBusy(true);
     setError(null);
     try {
@@ -681,7 +675,6 @@ export function App() {
         body: JSON.stringify({
           question,
           max_results: 5,
-          ...(prior ? { rediscover_from_run_id: prior.id } : {}),
         }),
       });
       setRun(created);

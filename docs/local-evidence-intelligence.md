@@ -120,9 +120,9 @@ Evidence summaries start from a persisted research run:
    candidates remain visible with their reasons but do not enter model context.
 4. An authorized operator may accept a specific `review_required` evidence
    version with a reason; the platform then automatically summarizes it.
-5. Inspect generated summaries next to the original source evidence. To repeat
-   a completed question, confirm rediscovery; the new run preserves a link to
-   the earlier run rather than overwriting it.
+5. Inspect generated summaries next to the original source evidence. Repeating
+   a completed normalized question reopens its existing target and does not
+   create another discovery run or fetch its sources again.
 
 The summary API is intentionally narrow:
 

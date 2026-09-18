@@ -109,8 +109,8 @@ class WebTrustStore:
                          AND (expires_at IS NULL OR expires_at > now())
                        ORDER BY created_at DESC LIMIT 1
                    ) AS override ON TRUE
-                   WHERE evaluation.workspace_id = $1 AND evaluation.run_id = $2
-                     AND evaluation.source_url = $3 AND evaluation.content_hash = $4
+                   WHERE evaluation.workspace_id = $1 AND evaluation.source_url = $3
+                     AND evaluation.content_hash = $4
                    ORDER BY evaluation.created_at DESC LIMIT 1""",
                 workspace_id, run_id, source_url, content_hash,
             )
@@ -145,11 +145,17 @@ class WebTrustStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT DISTINCT ON (evaluation.source_url, evaluation.content_hash)
+                """SELECT DISTINCT ON (candidate.url, candidate.preflight_content_hash)
                           evaluation.*, override.id AS override_id,
                           override.reason AS override_reason,
                           override.expires_at AS override_expires_at
-                   FROM web_evidence_trust_evaluations AS evaluation
+                   FROM research_sources AS candidate
+                   JOIN LATERAL (
+                       SELECT * FROM web_evidence_trust_evaluations
+                       WHERE workspace_id = $1 AND source_url = candidate.url
+                         AND content_hash = candidate.preflight_content_hash
+                       ORDER BY created_at DESC LIMIT 1
+                   ) AS evaluation ON TRUE
                    LEFT JOIN LATERAL (
                        SELECT id, reason, expires_at
                        FROM web_evidence_trust_overrides
@@ -157,8 +163,8 @@ class WebTrustStore:
                          AND (expires_at IS NULL OR expires_at > now())
                        ORDER BY created_at DESC LIMIT 1
                    ) AS override ON TRUE
-                   WHERE evaluation.workspace_id = $1 AND evaluation.run_id = $2
-                   ORDER BY evaluation.source_url, evaluation.content_hash,
+                   WHERE candidate.run_id = $2
+                   ORDER BY candidate.url, candidate.preflight_content_hash,
                             evaluation.created_at DESC""",
                 workspace_id, run_id,
             )

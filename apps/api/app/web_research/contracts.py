@@ -75,7 +75,6 @@ class ResearchRunRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=512)
     max_results: int = Field(default=5, ge=1, le=10)
-    rediscover_from_run_id: UUID | None = None
 
 
 class SourceCandidate(SearchResult):

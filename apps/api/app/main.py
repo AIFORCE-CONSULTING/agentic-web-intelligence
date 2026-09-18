@@ -1182,35 +1182,23 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/research/runs", response_model=ResearchRun, status_code=201, tags=["research"])
     async def create_research_run(
-        request: ResearchRunRequest, http_request: Request
+        request: ResearchRunRequest, http_request: Request, response: Response
     ) -> ResearchRun:
         """Persist a discovery run and its source provenance as one durable record."""
 
         user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            prior_run = await store.latest_ready_run_for_question(
-                user.workspace_id, request.question
-            )
-            if prior_run is not None:
-                if request.rediscover_from_run_id is None:
+            run, created = await store.get_or_create_run(user.workspace_id, request.question)
+            if not created:
+                existing = await store.get_run(user.workspace_id, run.id)
+                if existing is None:
                     raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Sources were already discovered for this question. "
-                            "Confirm rediscovery before starting a new run."
-                        ),
+                        status_code=404,
+                        detail="The existing research target is unavailable.",
                     )
-                if request.rediscover_from_run_id != prior_run.id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "The rediscovery confirmation does not match the latest discovery run."
-                        ),
-                    )
-            run = await store.create_run(user.workspace_id, request.question)
-            if prior_run is not None:
-                await store.record_rediscovery_requested(run.id, prior_run.id)
+                response.status_code = 200
+                return existing
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:

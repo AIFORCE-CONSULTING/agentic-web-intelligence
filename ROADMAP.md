@@ -79,6 +79,47 @@ summaries and page-level keywords.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
+## Phase 7 - Local Policy-Controlled Web Trust
+
+Add a browser-agnostic control point that determines whether a captured web
+evidence version may enter the platform's evidence and AI workflows. This phase
+governs local eligibility; it does not make a universal claim about a source's
+truthfulness or replace browser safety protections.
+
+- Define the source-trust boundary, authority, and enforcement rules in an ADR.
+- Add a versioned, local trust policy with deterministic rules for approved
+  sources, HTTPS, redirects, content types, extraction integrity, freshness,
+  and size limits.
+- Discover and automatically preflight every returned candidate before the
+  operator selects it. Persist useful evidence, trust results, and failed or
+  blocked candidate metadata so future agents can reuse the findings without
+  treating a past URL result as a permanent verdict.
+- Automatically summarize eligible preflight evidence and accepted reviewed
+  evidence through platform-selected direct or Temporal execution. Preserve
+  prior runs when rediscovering a completed question rather than exposing
+  manual extraction or regeneration controls.
+- Evaluate an evidence version after acquisition and before it is eligible for
+  summaries, keywords, or future evidence-grounded capabilities.
+- Persist an immutable evaluation record with retrieval facts, policy version,
+  rule outcomes, observed provenance and identity signals, disposition,
+  timestamps, and component versions.
+- Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
+  dispositions. Preserve raw capture for audit regardless of disposition, but
+  prevent evidence requiring review or blocked evidence from automated model
+  context.
+- Add a review experience for evidence requiring review. A human acceptance or
+  override records its identity, reason, scope, and expiry independently of the
+  UI and execution mechanism.
+- Re-evaluate evidence after refresh or an applicable policy change. The
+  platform uses direct execution for one ordinary evaluation and automatically
+  uses its mandatory Temporal infrastructure when workload, retry, or review
+  thresholds require durable execution.
+- Validate C2PA provenance for supported file assets while recording ordinary
+  HTML as a distinct case, not as invalid solely because it has no asset-level
+  provenance manifest.
+- Validate policy enforcement, policy changes, refresh, overrides, workspace
+  isolation, prompt-injection resistance, and direct-versus-durable routing.
+
 ## Future Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete

@@ -75,12 +75,23 @@ class ResearchRunRequest(BaseModel):
 
     question: str = Field(min_length=1, max_length=512)
     max_results: int = Field(default=5, ge=1, le=10)
+    rediscover_from_run_id: UUID | None = None
 
 
 class SourceCandidate(SearchResult):
     """A discovered source associated with one research run."""
 
     rank: int = Field(ge=1)
+    preflight_status: Literal[
+        "pending", "checking", "ready_to_extract", "review_required", "blocked", "unreachable"
+    ] = "pending"
+    preflight_reason: str | None = None
+    preflight_checked_at: datetime | None = None
+    preflight_content_type: str | None = None
+    preflight_content_hash: str | None = None
+    preflight_trust_disposition: Literal[
+        "eligible", "eligible_with_notice", "review_required", "blocked"
+    ] | None = None
 
 
 class AuditEvent(BaseModel):

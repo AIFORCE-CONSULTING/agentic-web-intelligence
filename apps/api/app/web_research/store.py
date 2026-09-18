@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS research_sources (
     url TEXT NOT NULL,
     snippet TEXT NOT NULL DEFAULT '',
     engine TEXT,
+    preflight_status TEXT NOT NULL DEFAULT 'pending',
+    preflight_reason TEXT,
+    preflight_checked_at TIMESTAMPTZ,
+    preflight_content_type TEXT,
+    preflight_content_hash TEXT,
+    preflight_trust_disposition TEXT,
     UNIQUE (run_id, rank)
 );
 CREATE TABLE IF NOT EXISTS research_evidence (
@@ -69,6 +75,17 @@ CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_occurred_at_idx
     ON mcp_tool_audit_events(occurred_at DESC);
 ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS workspace_id UUID;
 ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS workspace_id UUID;
+ALTER TABLE research_sources
+    ADD COLUMN IF NOT EXISTS preflight_status TEXT NOT NULL DEFAULT 'pending';
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_reason TEXT;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_checked_at TIMESTAMPTZ;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_content_type TEXT;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_content_hash TEXT;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_trust_disposition TEXT;
+ALTER TABLE research_runs DROP CONSTRAINT IF EXISTS research_runs_status_check;
+ALTER TABLE research_runs ADD CONSTRAINT research_runs_status_check CHECK (
+    status IN ('searching', 'preflighting', 'ready', 'failed')
+);
 CREATE INDEX IF NOT EXISTS research_runs_workspace_updated_at_idx
     ON research_runs(workspace_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_workspace_occurred_at_idx
@@ -124,6 +141,34 @@ class ResearchStore:
                 connection, run_id, "research.run.created", {"question": question}
             )
         return ResearchRun(**dict(row))
+
+    async def latest_ready_run_for_question(
+        self, workspace_id: UUID, question: str
+    ) -> ResearchRun | None:
+        """Locate the latest completed discovery for an exact normalized question."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """SELECT id, question, status, created_at, updated_at FROM research_runs
+                   WHERE workspace_id = $1 AND question = $2 AND status = 'ready'
+                   ORDER BY updated_at DESC LIMIT 1""",
+                workspace_id,
+                question,
+            )
+        return ResearchRun(**dict(row)) if row is not None else None
+
+    async def record_rediscovery_requested(
+        self, run_id: UUID, prior_run_id: UUID
+    ) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.rediscovery.confirmed",
+                {"prior_run_id": str(prior_run_id)},
+            )
 
     async def healthcheck(self) -> None:
         """Confirm that the configured persistence store accepts a trivial query."""
@@ -196,8 +241,98 @@ class ResearchStore:
                 connection, run_id, "research.search.completed", {"source_count": len(sources)}
             )
             await connection.execute(
+                """UPDATE research_runs SET status = 'preflighting', updated_at = now()
+                   WHERE id = $1""",
+                run_id,
+            )
+
+    async def mark_candidate_checking(self, run_id: UUID, url: str) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """UPDATE research_sources
+                   SET preflight_status = 'checking', preflight_reason = NULL
+                   WHERE run_id = $1 AND url = $2 AND preflight_status = 'pending'""",
+                run_id,
+                url,
+            )
+
+    async def record_candidate_preflight(
+        self,
+        run_id: UUID,
+        url: str,
+        status: str,
+        reason: str | None = None,
+        content_type: str | None = None,
+        content_hash: str | None = None,
+        trust_disposition: str | None = None,
+    ) -> None:
+        """Persist one candidate result even when no evidence can be retained."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                """UPDATE research_sources
+                   SET preflight_status = $3, preflight_reason = $4, preflight_checked_at = now(),
+                       preflight_content_type = $5, preflight_content_hash = $6,
+                       preflight_trust_disposition = $7
+                   WHERE run_id = $1 AND url = $2""",
+                run_id, url, status, reason, content_type, content_hash, trust_disposition,
+            )
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.candidate.preflight.completed",
+                {
+                    "url": url,
+                    "status": status,
+                    "reason": reason,
+                    "content_hash": content_hash,
+                    "trust_disposition": trust_disposition,
+                },
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
+    async def complete_candidate_preflight(self, run_id: UUID) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            counts = await connection.fetchrow(
+                """SELECT COUNT(*) FILTER (WHERE preflight_status = 'ready_to_extract')::integer
+                              AS ready,
+                          COUNT(*) FILTER (WHERE preflight_status = 'review_required')::integer
+                              AS review,
+                          COUNT(*) FILTER (WHERE preflight_status = 'blocked')::integer AS blocked,
+                          COUNT(*) FILTER (WHERE preflight_status = 'unreachable')::integer
+                              AS unreachable
+                   FROM research_sources WHERE run_id = $1""",
+                run_id,
+            )
+            await self._append_audit(
+                connection, run_id, "research.candidate.preflight.finished", dict(counts)
+            )
+            await connection.execute(
                 "UPDATE research_runs SET status = 'ready', updated_at = now() WHERE id = $1",
                 run_id,
+            )
+
+    async def fail_candidate_preflight(self, run_id: UUID, reason: str) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection, run_id, "research.candidate.preflight.failed", {"reason": reason}
+            )
+            await connection.execute(
+                "UPDATE research_runs SET status = 'failed', updated_at = now() WHERE id = $1",
+                run_id,
+            )
+
+    async def workspace_id_for_run(self, run_id: UUID) -> UUID | None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return await connection.fetchval(
+                "SELECT workspace_id FROM research_runs WHERE id = $1", run_id
             )
 
     async def save_evidence(self, run_id: UUID, evidence: Evidence) -> None:
@@ -306,6 +441,21 @@ class ResearchStore:
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
             )
 
+    async def record_automatic_summary_requested(self, run_id: UUID, urls: list[str]) -> None:
+        """Record platform-selected derived work without implying an operator extraction action."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.evidence_summary.automatic_requested",
+                {"source_count": len(urls), "urls": urls},
+            )
+            await connection.execute(
+                "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
     async def record_batch_extraction_completed(
         self, run_id: UUID, succeeded: int, failed: int, denied: int
     ) -> None:
@@ -365,7 +515,9 @@ class ResearchStore:
             if run is None:
                 return None
             sources = await connection.fetch(
-                """SELECT rank, title, url, snippet, engine FROM research_sources
+                """SELECT rank, title, url, snippet, engine, preflight_status, preflight_reason,
+                          preflight_checked_at, preflight_content_type, preflight_content_hash,
+                          preflight_trust_disposition FROM research_sources
                    WHERE run_id = $1 ORDER BY rank""",
                 run_id,
             )

@@ -51,7 +51,12 @@ def authenticated_app(app, role: str = "operator"):
         async def current_user(self, _: object) -> AuthenticatedUser:
             return user
 
+    class FakeTrustService:
+        async def evaluate(self, *_: object):
+            return SimpleNamespace(disposition="eligible")
+
     app.state.identity_service = FakeIdentityService()
+    app.state.web_trust_service = FakeTrustService()
     return app, user
 
 
@@ -415,7 +420,7 @@ def test_extractor_limits_normalized_text_size(monkeypatch: pytest.MonkeyPatch) 
                 "https://example.com/evidence"
             )
 
-    monkeypatch.setattr("app.web_research.extractor.MAX_EXTRACTED_TEXT_CHARS", 10)
+    monkeypatch.setattr("app.web_research.extractor.MAX_STORED_EXTRACTED_TEXT_CHARS", 10)
     with pytest.raises(ToolPolicyError, match="extracted text exceeds"):
         asyncio.run(extract())
 
@@ -751,6 +756,9 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
                 updated_at=datetime.now(UTC),
             )
 
+        async def latest_ready_run_for_question(self, *_: object) -> None:
+            return None
+
         async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
             self.sources = sources
 
@@ -774,6 +782,18 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
 
+    class FakePreflightService:
+        async def preflight_run(self, *_: object) -> None:
+            return None
+
+    app.state.candidate_preflight_service = FakePreflightService()
+
+    class FakeSummaryAutomation:
+        async def start_for_discovered_candidates(self, *_: object) -> None:
+            return None
+
+    app.state.evidence_summary_automation = FakeSummaryAutomation()
+
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -784,6 +804,39 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.status_code == 201
     assert response.json()["status"] == "ready"
     assert response.json()["sources"][0]["rank"] == 1
+
+
+def test_run_endpoint_requires_explicit_rediscovery_confirmation() -> None:
+    prior_run_id = uuid4()
+
+    class FakeStore:
+        async def latest_ready_run_for_question(self, _: object, question: str) -> ResearchRun:
+            return ResearchRun(
+                id=prior_run_id,
+                question=question,
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            )
+
+        async def create_run(self, *_: object) -> ResearchRun:
+            raise AssertionError("Confirmation must be required before creating a duplicate run.")
+
+    app, _ = authenticated_app(create_app())
+    app.state.research_store = FakeStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post("/v1/research/runs", json={"question": "evidence"})
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == (
+        "Sources were already discovered for this question. "
+        "Confirm rediscovery before starting a new run."
+    )
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:

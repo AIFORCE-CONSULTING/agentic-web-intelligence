@@ -9,6 +9,44 @@ platform, returns structured summary data, and has no tools, browser,
 filesystem, database, runtime, credential, or network authority beyond the
 configured local Ollama endpoint.
 
+## Local web-trust eligibility
+
+Before the platform sends captured evidence to the local model, it evaluates
+that exact evidence version under the local default policy described in
+[ADR 0015](adr/0015-local-policy-controlled-web-trust.md). This is a
+browser-agnostic platform decision about evidence eligibility, not a claim that
+a source is true or that a browser should block it.
+
+The initial policy checks HTTPS, supported extracted content types, extraction
+integrity, and extracted-size limits. It records redirect history as unavailable
+because the current evidence contract does not yet retain the redirect chain.
+That limitation creates an `eligible_with_notice` result for otherwise valid
+HTML or plain-text evidence; it does not prevent local summarization.
+
+Extracted text over 200,000 characters is retained as `review_required`, not
+sent to the model, and available for an authorized human to inspect and accept.
+The retrieval service still rejects a raw response over 2 MB and rejects
+extracted text over 2,000,000 characters. Those hard acquisition limits are not
+overrideable.
+
+Each evaluation is persisted with its policy and component versions, rule
+outcomes, and effective disposition:
+
+- `eligible` and `eligible_with_notice` evidence may enter the local-model
+  context.
+- `review_required` evidence remains visible in the operator interface but is
+  excluded from summaries and keywords until a human operator accepts that exact
+  content hash with a recorded reason.
+- `blocked` evidence remains retained for audit but cannot enter automated
+  model context. A human acceptance cannot override a blocked result.
+
+Operators can inspect a run's latest evaluations at
+`GET /v1/research/runs/{run_id}/evidence-trust`. A human operator can accept a
+`review_required` result through
+`POST /v1/research/runs/{run_id}/evidence-trust/accept`; the acceptance records
+the operator, reason, exact evidence version, and optional expiry separately
+from the summary execution mechanism.
+
 ## Boundary
 
 Generated summaries are derived artifacts. The original extracted source
@@ -74,10 +112,17 @@ metadata only.
 Evidence summaries start from a persisted research run:
 
 1. Create or reopen a governed research run.
-2. Select one to five source candidates.
-3. Extract the selected sources through the governed extraction path.
-4. Request summaries and keywords for the selected evidence.
-5. Inspect generated summaries next to the original source evidence.
+2. The platform discovers and automatically preflights each returned candidate
+   through the bounded retrieval path. Small batches run directly; larger
+   batches use Temporal automatically.
+3. The platform automatically summarizes and generates keywords for eligible
+   retained evidence. `review_required`, `blocked`, and `unreachable`
+   candidates remain visible with their reasons but do not enter model context.
+4. An authorized operator may accept a specific `review_required` evidence
+   version with a reason; the platform then automatically summarizes it.
+5. Inspect generated summaries next to the original source evidence. To repeat
+   a completed question, confirm rediscovery; the new run preserves a link to
+   the earlier run rather than overwriting it.
 
 The summary API is intentionally narrow:
 

@@ -12,7 +12,11 @@ from app.agent_runtime.store import RuntimeStore
 from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_reviewer
 from app.durable_execution.contracts import DURABLE_POLICY_VERSION, RuntimeExecutionEnvelope
 from app.durable_execution.workflows import GovernedRuntimeWorkflow
-from app.evidence_summaries.service import EvidenceSummaryService
+from app.evidence_summaries.service import (
+    EvidenceSummaryAutomation,
+    EvidenceSummaryService,
+    EvidenceSummaryTemporalBoundary,
+)
 from app.evidence_summaries.store import EvidenceSummaryStore
 from app.evidence_summaries.workflow import EvidenceSummaryWorkflow
 from app.local_models.service import LocalModelProviderService
@@ -20,6 +24,11 @@ from app.local_models.store import LocalModelProviderStore
 from app.secrets import DeploymentSecrets
 from app.settings import get_settings
 from app.web_research.mcp_host import GovernedWebMcpHost
+from app.web_research.store import ResearchStore
+from app.web_trust.preflight import CandidatePreflightService
+from app.web_trust.service import EvidenceTrustService
+from app.web_trust.store import WebTrustStore
+from app.web_trust.workflow import CandidatePreflightWorkflow
 
 
 def _runtime_dependencies() -> tuple[RuntimeService, GovernedWebMcpHost]:
@@ -86,14 +95,49 @@ async def execute_evidence_summary(execution_id: str) -> str:
     if not settings.database_url:
         raise RuntimeError("The durable worker requires DATABASE_URL.")
     # The research store is deliberately used only to retrieve evidence selected by the record.
-    from app.web_research.store import ResearchStore
-
+    secrets = DeploymentSecrets(settings)
     service = EvidenceSummaryService(
         EvidenceSummaryStore(settings.database_url),
-        ResearchStore(settings.database_url, DeploymentSecrets(settings).redact),
+        ResearchStore(settings.database_url, secrets.redact),
         LocalModelProviderService(LocalModelProviderStore(settings.database_url)),
+        EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
     )
     return (await service.execute(UUID(execution_id))).status
+
+
+@activity.defn(name="preflight_source_candidates")
+async def preflight_source_candidates(run_id: str) -> str:
+    """Preflight only sources already persisted under the run's workspace."""
+
+    settings = get_settings()
+    if not settings.database_url:
+        raise RuntimeError("The durable worker requires DATABASE_URL.")
+    secrets = DeploymentSecrets(settings)
+    research_store = ResearchStore(settings.database_url, secrets.redact)
+    workspace_id = await research_store.workspace_id_for_run(UUID(run_id))
+    if workspace_id is None:
+        raise RuntimeError("Candidate preflight run is unavailable.")
+    service = CandidatePreflightService(
+        research_store,
+        EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
+    )
+    await service.preflight_run(workspace_id, UUID(run_id))
+    summary_store = EvidenceSummaryStore(settings.database_url)
+    summary_service = EvidenceSummaryService(
+        summary_store,
+        research_store,
+        LocalModelProviderService(LocalModelProviderStore(settings.database_url)),
+        EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
+    )
+    await EvidenceSummaryAutomation(
+        summary_service,
+        summary_store,
+        research_store,
+        EvidenceSummaryTemporalBoundary(
+            settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
+        ),
+    ).start_for_discovered_candidates(workspace_id, UUID(run_id))
+    return "ready"
 
 
 async def run_worker() -> None:
@@ -107,12 +151,13 @@ async def run_worker() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[GovernedRuntimeWorkflow, EvidenceSummaryWorkflow],
+        workflows=[GovernedRuntimeWorkflow, EvidenceSummaryWorkflow, CandidatePreflightWorkflow],
         activities=[
             execute_approved_runtime_run,
             review_approved_runtime_run,
             escalate_durable_execution,
             execute_evidence_summary,
+            preflight_source_candidates,
         ],
     )
     await worker.run()

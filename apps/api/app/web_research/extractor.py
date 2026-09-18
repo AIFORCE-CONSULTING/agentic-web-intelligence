@@ -9,9 +9,9 @@ import trafilatura
 
 from app.web_research.contracts import Evidence, ToolPolicyError, ToolRetrievalError
 from app.web_research.policy import (
-    MAX_EXTRACTED_TEXT_CHARS,
     MAX_REDIRECTS,
     MAX_RESPONSE_BYTES,
+    MAX_STORED_EXTRACTED_TEXT_CHARS,
     validate_public_destination,
     validate_response_headers,
 )
@@ -98,7 +98,7 @@ class WebExtractor:
 
         if not text:
             raise ToolPolicyError("No extractable text was found in the response.")
-        if len(text) > MAX_EXTRACTED_TEXT_CHARS:
+        if len(text) > MAX_STORED_EXTRACTED_TEXT_CHARS:
             raise ToolPolicyError("The extracted text exceeds the maximum permitted size.")
         return Evidence(
             url=str(response.url),

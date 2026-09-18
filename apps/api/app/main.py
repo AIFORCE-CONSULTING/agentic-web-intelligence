@@ -26,6 +26,7 @@ from app.evidence_summaries.contracts import (
     RegenerateEvidenceSummaryRequest,
 )
 from app.evidence_summaries.service import (
+    EvidenceSummaryAutomation,
     EvidenceSummarySchedulingUnavailable,
     EvidenceSummaryService,
     EvidenceSummaryTemporalBoundary,
@@ -109,6 +110,19 @@ from app.web_research.contracts import (
 from app.web_research.mcp_host import GovernedWebMcpHost, ToolRegistryList
 from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
+from app.web_trust.contracts import (
+    CreateEvidenceTrustOverrideRequest,
+    EvidenceTrustEvaluation,
+    EvidenceTrustEvaluationList,
+)
+from app.web_trust.preflight import (
+    DIRECT_PREFLIGHT_SOURCE_LIMIT,
+    CandidatePreflightService,
+    CandidatePreflightTemporalBoundary,
+    CandidatePreflightUnavailable,
+)
+from app.web_trust.service import EvidenceTrustService
+from app.web_trust.store import WebTrustStore, WebTrustStoreUnavailable
 
 
 class HealthResponse(BaseModel):
@@ -185,15 +199,34 @@ def create_app() -> FastAPI:
         LocalModelProviderStore(settings.database_url)
     )
     app.state.evidence_summary_store = EvidenceSummaryStore(settings.database_url)
+    app.state.web_trust_store = WebTrustStore(
+        settings.database_url, app.state.deployment_secrets.redact
+    )
+    app.state.web_trust_service = EvidenceTrustService(app.state.web_trust_store)
+    app.state.candidate_preflight_service = CandidatePreflightService(
+        app.state.research_store, app.state.web_trust_service
+    )
+    app.state.candidate_preflight_temporal = CandidatePreflightTemporalBoundary(
+        settings.temporal_address,
+        settings.temporal_namespace,
+        settings.temporal_task_queue,
+    )
     app.state.evidence_summary_service = EvidenceSummaryService(
         app.state.evidence_summary_store,
         app.state.research_store,
         app.state.local_model_provider,
+        app.state.web_trust_service,
     )
     app.state.evidence_summary_temporal = EvidenceSummaryTemporalBoundary(
         settings.temporal_address,
         settings.temporal_namespace,
         settings.temporal_task_queue,
+    )
+    app.state.evidence_summary_automation = EvidenceSummaryAutomation(
+        app.state.evidence_summary_service,
+        app.state.evidence_summary_store,
+        app.state.research_store,
+        app.state.evidence_summary_temporal,
     )
     app.state.mcp_host = GovernedWebMcpHost(deployment_secrets=app.state.deployment_secrets)
     app.add_middleware(
@@ -1156,7 +1189,28 @@ def create_app() -> FastAPI:
         user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
+            prior_run = await store.latest_ready_run_for_question(
+                user.workspace_id, request.question
+            )
+            if prior_run is not None:
+                if request.rediscover_from_run_id is None:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "Sources were already discovered for this question. "
+                            "Confirm rediscovery before starting a new run."
+                        ),
+                    )
+                if request.rediscover_from_run_id != prior_run.id:
+                    raise HTTPException(
+                        status_code=409,
+                        detail=(
+                            "The rediscovery confirmation does not match the latest discovery run."
+                        ),
+                    )
             run = await store.create_run(user.workspace_id, request.question)
+            if prior_run is not None:
+                await store.record_rediscovery_requested(run.id, prior_run.id)
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:
@@ -1167,10 +1221,23 @@ def create_app() -> FastAPI:
                 for index, result in enumerate(search.results, start=1)
             ]
             await store.save_sources(run.id, sources)
+            if len(sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
+                await http_request.app.state.candidate_preflight_service.preflight_run(
+                    user.workspace_id, run.id
+                )
+                automation: EvidenceSummaryAutomation = (
+                    http_request.app.state.evidence_summary_automation
+                )
+                await automation.start_for_discovered_candidates(user.workspace_id, run.id)
+            else:
+                try:
+                    await http_request.app.state.candidate_preflight_temporal.schedule(run.id)
+                except CandidatePreflightUnavailable as error:
+                    await store.fail_candidate_preflight(run.id, str(error))
             persisted_run = await store.get_run(user.workspace_id, run.id)
             assert persisted_run is not None
             return persisted_run
-        except ResearchStoreUnavailable as error:
+        except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.get("/v1/research/runs/{run_id}", response_model=ResearchRun, tags=["research"])
@@ -1190,6 +1257,82 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Research run was not found.")
         return run
+
+    @app.get(
+        "/v1/research/runs/{run_id}/evidence-trust",
+        response_model=EvidenceTrustEvaluationList,
+        tags=["research"],
+    )
+    async def list_evidence_trust_evaluations(
+        run_id: str, http_request: Request
+    ) -> EvidenceTrustEvaluationList:
+        """Show the latest local eligibility decision for captured evidence in one run."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        service: EvidenceTrustService = http_request.app.state.web_trust_service
+        try:
+            return EvidenceTrustEvaluationList(
+                evaluations=await service.list_for_run(user.workspace_id, parsed_run_id)
+            )
+        except WebTrustStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.post(
+        "/v1/research/runs/{run_id}/evidence-trust/accept",
+        response_model=EvidenceTrustEvaluation,
+        tags=["research"],
+    )
+    async def accept_evidence_trust_evaluation(
+        run_id: str,
+        request: CreateEvidenceTrustOverrideRequest,
+        http_request: Request,
+    ) -> EvidenceTrustEvaluation:
+        """Record a human acceptance for one exact evidence version."""
+
+        from uuid import UUID
+
+        identity = await require_workspace_permission(http_request, "research.write")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human operator is required.")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        service: EvidenceTrustService = http_request.app.state.web_trust_service
+        try:
+            evaluation = await service.accept(
+                identity.workspace_id,
+                parsed_run_id,
+                request.source_url,
+                request.content_hash,
+                identity.id,
+                request.reason,
+                request.expires_at,
+            )
+        except WebTrustStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+        if evaluation is None:
+            raise HTTPException(status_code=404, detail="Evidence trust evaluation was not found.")
+        try:
+            await http_request.app.state.evidence_summary_automation.start_for_urls(
+                identity.workspace_id, parsed_run_id, [request.source_url]
+            )
+        except (
+            ResearchStoreUnavailable,
+            EvidenceSummaryStoreUnavailable,
+            WebTrustStoreUnavailable,
+            EvidenceSummaryUnavailable,
+        ) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return evaluation
 
     @app.get("/v1/research/runs", response_model=ResearchRunList, tags=["research"])
     async def list_research_runs(
@@ -1231,39 +1374,34 @@ def create_app() -> FastAPI:
                     status_code=422,
                     detail="Summary executions accept only sources from this research run.",
                 )
-            existing_evidence = {evidence.url: evidence for evidence in run.evidence}
+            candidate_by_url = {source.url: source for source in run.sources}
+            evidence_by_hash = {evidence.content_hash: evidence for evidence in run.evidence}
+            pending = [
+                url for url in request.urls
+                if candidate_by_url[url].preflight_status in {"pending", "checking"}
+            ]
+            if pending:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        "Candidate preflight is still in progress for one or more selected sources."
+                    ),
+                )
+            unavailable = [
+                url for url in request.urls
+                if candidate_by_url[url].preflight_content_hash not in evidence_by_hash
+            ]
+            if unavailable:
+                raise HTTPException(
+                    status_code=409,
+                    detail="Selected source evidence is unavailable after candidate preflight.",
+                )
             execution = await summary_store.create_execution(
                 user.workspace_id, request.run_id, request.urls
             )
             await research_store.record_batch_extraction_started(request.run_id, request.urls)
             for url in request.urls:
-                if url in existing_evidence:
-                    await research_store.record_source_reused(request.run_id, url)
-                    continue
-                await summary_store.mark_source_extracting(execution.id, url)
-                try:
-                    evidence = await run_extract_workflow(url)
-                except ToolPolicyError as error:
-                    await research_store.record_policy_denial(request.run_id, url, str(error))
-                    await summary_store.record_source_failure(execution.id, url, str(error))
-                except ToolRetrievalError as error:
-                    await research_store.record_extraction_failure(
-                        request.run_id,
-                        url,
-                        str(error),
-                        error.upstream_status,
-                    )
-                    await summary_store.record_source_failure(execution.id, url, str(error))
-                except ToolProviderError as error:
-                    await research_store.record_extraction_failure(
-                        request.run_id,
-                        url,
-                        str(error),
-                        None,
-                    )
-                    await summary_store.record_source_failure(execution.id, url, str(error))
-                else:
-                    await research_store.save_evidence(request.run_id, evidence)
+                await research_store.record_source_reused(request.run_id, url)
             execution = await summary_store.get_execution(user.workspace_id, execution.id)
             if execution is None:
                 raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
@@ -1287,7 +1425,11 @@ def create_app() -> FastAPI:
             if scheduled is None:
                 raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
             return scheduled
-        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+        except (
+            ResearchStoreUnavailable,
+            EvidenceSummaryStoreUnavailable,
+            WebTrustStoreUnavailable,
+        ) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except EvidenceSummaryUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -1379,7 +1521,11 @@ def create_app() -> FastAPI:
             if scheduled is None:
                 raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
             return scheduled
-        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+        except (
+            ResearchStoreUnavailable,
+            EvidenceSummaryStoreUnavailable,
+            WebTrustStoreUnavailable,
+        ) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except EvidenceSummaryUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -1440,8 +1586,11 @@ def create_app() -> FastAPI:
                 )
                 raise HTTPException(status_code=502, detail=str(error)) from error
             await store.save_evidence(parsed_run_id, evidence)
+            await http_request.app.state.web_trust_service.evaluate(
+                user.workspace_id, parsed_run_id, evidence
+            )
             return evidence
-        except ResearchStoreUnavailable as error:
+        except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post(
@@ -1509,6 +1658,9 @@ def create_app() -> FastAPI:
                     )
                 else:
                     await store.save_evidence(parsed_run_id, evidence)
+                    await http_request.app.state.web_trust_service.evaluate(
+                        user.workspace_id, parsed_run_id, evidence
+                    )
                     outcomes.append(
                         BatchExtractionOutcome(url=url, status="succeeded", evidence=evidence)
                     )
@@ -1518,7 +1670,7 @@ def create_app() -> FastAPI:
             denied = sum(outcome.status == "denied" for outcome in outcomes)
             await store.record_batch_extraction_completed(parsed_run_id, succeeded, failed, denied)
             return BatchExtractResponse(run_id=parsed_run_id, outcomes=outcomes)
-        except ResearchStoreUnavailable as error:
+        except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
     return app

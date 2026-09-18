@@ -11,7 +11,12 @@ from app.web_research.contracts import ToolPolicyError
 ALLOWED_SCHEMES = frozenset({"http", "https"})
 ALLOWED_CONTENT_TYPES = frozenset({"text/html", "text/plain"})
 MAX_RESPONSE_BYTES = 2_000_000
+# Text above this threshold is retained but requires explicit human review before
+# it may enter automated model context.
 MAX_EXTRACTED_TEXT_CHARS = 200_000
+# This hard ceiling protects storage and processing even for future ingestion
+# paths that do not inherit the HTTP response-byte limit.
+MAX_STORED_EXTRACTED_TEXT_CHARS = 2_000_000
 MAX_REDIRECTS = 3
 MAX_DNS_RESOLUTION_SECONDS = 2.0
 Address = ipaddress.IPv4Address | ipaddress.IPv6Address

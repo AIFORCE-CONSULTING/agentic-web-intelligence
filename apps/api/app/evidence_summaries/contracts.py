@@ -53,3 +53,19 @@ class EvidenceSummaryExecution(BaseModel):
     created_at: datetime
     updated_at: datetime
     sources: list[EvidenceSummaryExecutionSource]
+
+
+class WorkspaceEvidenceSummaryArtifact(BaseModel):
+    """One newest stored source summary for a canonical URL in a workspace."""
+
+    run_id: UUID
+    url: str
+    title: str
+    chunk_count: int | None = None
+    summary: str
+    keywords: list[str]
+    evidence_sufficient: bool
+
+
+class WorkspaceEvidenceSummaryArtifactList(BaseModel):
+    artifacts: list[WorkspaceEvidenceSummaryArtifact]

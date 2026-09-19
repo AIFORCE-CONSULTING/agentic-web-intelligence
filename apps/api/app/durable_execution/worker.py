@@ -25,6 +25,7 @@ from app.secrets import DeploymentSecrets
 from app.settings import get_settings
 from app.web_research.mcp_host import GovernedWebMcpHost
 from app.web_research.store import ResearchStore
+from app.web_trust.contracts import CandidatePreflightRequest
 from app.web_trust.preflight import CandidatePreflightService
 from app.web_trust.service import EvidenceTrustService
 from app.web_trust.store import WebTrustStore
@@ -106,22 +107,23 @@ async def execute_evidence_summary(execution_id: str) -> str:
 
 
 @activity.defn(name="preflight_source_candidates")
-async def preflight_source_candidates(run_id: str) -> str:
-    """Preflight only sources already persisted under the run's workspace."""
+async def preflight_source_candidates(request_json: str) -> str:
+    """Preflight only the server-selected, stored sources in one discovery batch."""
 
     settings = get_settings()
     if not settings.database_url:
         raise RuntimeError("The durable worker requires DATABASE_URL.")
+    request = CandidatePreflightRequest.model_validate_json(request_json)
     secrets = DeploymentSecrets(settings)
     research_store = ResearchStore(settings.database_url, secrets.redact)
-    workspace_id = await research_store.workspace_id_for_run(UUID(run_id))
+    workspace_id = await research_store.workspace_id_for_run(request.run_id)
     if workspace_id is None:
         raise RuntimeError("Candidate preflight run is unavailable.")
     service = CandidatePreflightService(
         research_store,
         EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
     )
-    await service.preflight_run(workspace_id, UUID(run_id))
+    await service.preflight_run(workspace_id, request.run_id, request.source_urls)
     summary_store = EvidenceSummaryStore(settings.database_url)
     summary_service = EvidenceSummaryService(
         summary_store,
@@ -136,7 +138,7 @@ async def preflight_source_candidates(run_id: str) -> str:
         EvidenceSummaryTemporalBoundary(
             settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
         ),
-    ).start_for_discovered_candidates(workspace_id, UUID(run_id))
+    ).start_for_discovered_candidates(workspace_id, request.run_id, request.source_urls)
     return "ready"
 
 

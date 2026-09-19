@@ -1,6 +1,7 @@
 """Postgres-backed, append-only records for governed research runs."""
 
 import json
+import re
 from collections.abc import Callable
 from uuid import UUID, uuid4
 
@@ -24,6 +25,20 @@ CREATE TABLE IF NOT EXISTS research_runs (
     status TEXT NOT NULL CHECK (status IN ('searching', 'ready', 'failed')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS research_target_keys (
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    normalized_question TEXT NOT NULL,
+    run_id UUID NOT NULL UNIQUE REFERENCES research_runs(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (workspace_id, normalized_question)
+);
+CREATE TABLE IF NOT EXISTS research_cleanup_audits (
+    id UUID PRIMARY KEY,
+    cleanup_name TEXT NOT NULL UNIQUE,
+    retention_rule TEXT NOT NULL,
+    deleted_run_count INTEGER NOT NULL CHECK (deleted_run_count >= 0),
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS research_sources (
     id UUID PRIMARY KEY,
@@ -88,6 +103,14 @@ ALTER TABLE research_runs ADD CONSTRAINT research_runs_status_check CHECK (
 );
 CREATE INDEX IF NOT EXISTS research_runs_workspace_updated_at_idx
     ON research_runs(workspace_id, updated_at DESC);
+INSERT INTO research_target_keys (workspace_id, normalized_question, run_id)
+SELECT DISTINCT ON (workspace_id, lower(regexp_replace(btrim(question), '\\s+', ' ', 'g')))
+       workspace_id, lower(regexp_replace(btrim(question), '\\s+', ' ', 'g')), id
+FROM research_runs
+WHERE workspace_id IS NOT NULL
+ORDER BY workspace_id, lower(regexp_replace(btrim(question), '\\s+', ' ', 'g')),
+         updated_at DESC
+ON CONFLICT (workspace_id, normalized_question) DO NOTHING;
 CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_workspace_occurred_at_idx
     ON mcp_tool_audit_events(workspace_id, occurred_at DESC);
 """
@@ -118,6 +141,7 @@ class ResearchStore:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
                 async with self._pool.acquire() as connection:
                     await connection.execute(SCHEMA)
+                    await self._prune_obsolete_target_runs(connection)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()
@@ -125,10 +149,62 @@ class ResearchStore:
                 raise ResearchStoreUnavailable("Research persistence is unavailable.") from error
         return self._pool
 
-    async def create_run(self, workspace_id: UUID, question: str) -> ResearchRun:
+    async def _prune_obsolete_target_runs(self, connection: asyncpg.Connection) -> None:
+        """Remove legacy repeated targets as complete, auditable provenance units."""
+
+        cleanup_name = "deduplicate_obsolete_target_runs_v1"
+        async with connection.transaction():
+            already_completed = await connection.fetchval(
+                "SELECT 1 FROM research_cleanup_audits WHERE cleanup_name = $1",
+                cleanup_name,
+            )
+            if already_completed:
+                return
+            deleted_runs = await connection.fetch(
+                """DELETE FROM research_runs AS obsolete
+                   USING research_target_keys AS target
+                   WHERE obsolete.workspace_id = target.workspace_id
+                     AND lower(regexp_replace(btrim(obsolete.question), '\\s+', ' ', 'g'))
+                         = target.normalized_question
+                     AND obsolete.id <> target.run_id
+                   RETURNING obsolete.id"""
+            )
+            await connection.execute(
+                """INSERT INTO research_cleanup_audits
+                   (id, cleanup_name, retention_rule, deleted_run_count)
+                   VALUES ($1, $2, $3, $4)""",
+                uuid4(),
+                cleanup_name,
+                (
+                    "retain the target-keyed run; delete older repeated target runs "
+                    "with dependent provenance"
+                ),
+                len(deleted_runs),
+            )
+
+    async def get_or_create_run(
+        self, workspace_id: UUID, question: str
+    ) -> tuple[ResearchRun, bool]:
+        """Return the one canonical workspace target for a normalized question."""
+
         run_id = uuid4()
+        normalized_question = self._normalize_question(question)
         pool = await self._connection_pool()
-        async with pool.acquire() as connection:
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"{workspace_id}:{normalized_question}",
+            )
+            existing = await connection.fetchrow(
+                """SELECT runs.id, runs.question, runs.status, runs.created_at, runs.updated_at
+                   FROM research_target_keys AS target
+                   JOIN research_runs AS runs ON runs.id = target.run_id
+                   WHERE target.workspace_id = $1 AND target.normalized_question = $2""",
+                workspace_id,
+                normalized_question,
+            )
+            if existing is not None:
+                return ResearchRun(**dict(existing)), False
             row = await connection.fetchrow(
                 """INSERT INTO research_runs (id, workspace_id, question, status)
                    VALUES ($1, $2, $3, 'searching')
@@ -137,38 +213,17 @@ class ResearchStore:
                 workspace_id,
                 question,
             )
+            await connection.execute(
+                """INSERT INTO research_target_keys (workspace_id, normalized_question, run_id)
+                   VALUES ($1, $2, $3)""",
+                workspace_id,
+                normalized_question,
+                run_id,
+            )
             await self._append_audit(
                 connection, run_id, "research.run.created", {"question": question}
             )
-        return ResearchRun(**dict(row))
-
-    async def latest_ready_run_for_question(
-        self, workspace_id: UUID, question: str
-    ) -> ResearchRun | None:
-        """Locate the latest completed discovery for an exact normalized question."""
-
-        pool = await self._connection_pool()
-        async with pool.acquire() as connection:
-            row = await connection.fetchrow(
-                """SELECT id, question, status, created_at, updated_at FROM research_runs
-                   WHERE workspace_id = $1 AND question = $2 AND status = 'ready'
-                   ORDER BY updated_at DESC LIMIT 1""",
-                workspace_id,
-                question,
-            )
-        return ResearchRun(**dict(row)) if row is not None else None
-
-    async def record_rediscovery_requested(
-        self, run_id: UUID, prior_run_id: UUID
-    ) -> None:
-        pool = await self._connection_pool()
-        async with pool.acquire() as connection, connection.transaction():
-            await self._append_audit(
-                connection,
-                run_id,
-                "research.rediscovery.confirmed",
-                {"prior_run_id": str(prior_run_id)},
-            )
+        return ResearchRun(**dict(row)), True
 
     async def healthcheck(self) -> None:
         """Confirm that the configured persistence store accepts a trivial query."""
@@ -222,29 +277,86 @@ class ResearchStore:
             events.append(McpToolAuditEvent(**event))
         return events
 
-    async def save_sources(self, run_id: UUID, sources: list[SourceCandidate]) -> None:
+    async def save_new_sources(
+        self, run_id: UUID, sources: list[SourceCandidate], requested_max_results: int
+    ) -> list[SourceCandidate]:
+        """Append only workspace-new source URLs to the canonical target."""
+
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
-            for source in sources:
-                await connection.execute(
-                    """INSERT INTO research_sources (id, run_id, rank, title, url, snippet, engine)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                    uuid4(),
-                    run_id,
-                    source.rank,
-                    source.title,
-                    source.url,
-                    source.snippet,
-                    source.engine,
-                )
-            await self._append_audit(
-                connection, run_id, "research.search.completed", {"source_count": len(sources)}
+            workspace_id = await connection.fetchval(
+                "SELECT workspace_id FROM research_runs WHERE id = $1", run_id
             )
+            if workspace_id is None:
+                raise KeyError(run_id)
             await connection.execute(
-                """UPDATE research_runs SET status = 'preflighting', updated_at = now()
-                   WHERE id = $1""",
+                "SELECT 1 FROM research_runs WHERE id = $1 FOR UPDATE", run_id
+            )
+            known_urls = set(
+                await connection.fetchval(
+                    """SELECT COALESCE(array_agg(DISTINCT sources.url), ARRAY[]::text[])
+                       FROM research_sources AS sources
+                       JOIN research_runs AS owner ON owner.id = sources.run_id
+                       WHERE owner.workspace_id = $1""",
+                    workspace_id,
+                )
+            )
+            next_rank = await connection.fetchval(
+                "SELECT COALESCE(MAX(rank), 0) + 1 FROM research_sources WHERE run_id = $1",
                 run_id,
             )
+            persisted_sources: list[SourceCandidate] = []
+            for source in sources:
+                if source.url in known_urls:
+                    continue
+                persisted = source.model_copy(update={"rank": next_rank})
+                await connection.execute(
+                    """INSERT INTO research_sources
+                       (id, run_id, rank, title, url, snippet, engine, preflight_status,
+                        preflight_reason, preflight_checked_at, preflight_content_type,
+                        preflight_content_hash, preflight_trust_disposition)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
+                    uuid4(),
+                    run_id,
+                    persisted.rank,
+                    persisted.title,
+                    persisted.url,
+                    persisted.snippet,
+                    persisted.engine,
+                    "pending",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+                known_urls.add(source.url)
+                next_rank += 1
+                persisted_sources.append(persisted)
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.search.completed",
+                {
+                    "discovered_source_count": len(sources),
+                    "new_source_count": len(persisted_sources),
+                    "known_source_count": len(sources) - len(persisted_sources),
+                    "requested_max_results": requested_max_results,
+                    "new_source_urls": [source.url for source in persisted_sources],
+                },
+            )
+            if persisted_sources:
+                await connection.execute(
+                    """UPDATE research_runs SET status = 'preflighting', updated_at = now()
+                       WHERE id = $1""",
+                    run_id,
+                )
+            elif not known_urls:
+                await connection.execute(
+                    "UPDATE research_runs SET status = 'ready', updated_at = now() WHERE id = $1",
+                    run_id,
+                )
+        return persisted_sources
 
     async def mark_candidate_checking(self, run_id: UUID, url: str) -> None:
         pool = await self._connection_pool()
@@ -341,6 +453,25 @@ class ResearchStore:
             exists = await connection.fetchval("SELECT 1 FROM research_runs WHERE id = $1", run_id)
             if not exists:
                 raise KeyError(run_id)
+            known = await connection.fetchval(
+                """SELECT 1 FROM research_evidence AS existing
+                   JOIN research_runs AS owner ON owner.id = existing.run_id
+                   JOIN research_runs AS current_run ON current_run.id = $1
+                   WHERE owner.workspace_id = current_run.workspace_id
+                     AND existing.url = $2 AND existing.content_hash = $3
+                   LIMIT 1""",
+                run_id,
+                evidence.url,
+                evidence.content_hash,
+            )
+            if known:
+                await self._append_audit(
+                    connection,
+                    run_id,
+                    "research.evidence.reused",
+                    {"url": evidence.url, "content_hash": evidence.content_hash},
+                )
+                return
             await connection.execute(
                 """INSERT INTO research_evidence
                    (id, run_id, url, retrieved_at, content_type, text, content_hash,
@@ -525,13 +656,18 @@ class ResearchStore:
                 """SELECT url, retrieved_at, content_type, text, content_hash, extraction_method
                    FROM (
                        SELECT DISTINCT ON (url)
-                           url, retrieved_at, content_type, text, content_hash, extraction_method
-                       FROM research_evidence
-                       WHERE run_id = $1
-                       ORDER BY url, retrieved_at DESC
+                           evidence.url, evidence.retrieved_at, evidence.content_type,
+                           evidence.text,
+                           evidence.content_hash, evidence.extraction_method
+                       FROM research_evidence AS evidence
+                       JOIN research_runs AS owner ON owner.id = evidence.run_id
+                       JOIN research_sources AS candidate ON candidate.url = evidence.url
+                       WHERE candidate.run_id = $1 AND owner.workspace_id = $2
+                       ORDER BY evidence.url, evidence.retrieved_at DESC
                    ) AS latest_evidence
                    ORDER BY retrieved_at""",
                 run_id,
+                workspace_id,
             )
             events = await connection.fetch(
                 """SELECT event_type, occurred_at, details FROM research_audit_events
@@ -562,8 +698,11 @@ class ResearchStore:
                           COUNT(DISTINCT evidence.id)::integer AS evidence_count
                    FROM research_runs AS runs
                    LEFT JOIN research_sources AS sources ON sources.run_id = runs.id
-                   LEFT JOIN research_evidence AS evidence ON evidence.run_id = runs.id
+                   LEFT JOIN research_sources AS evidence_source ON evidence_source.run_id = runs.id
+                   LEFT JOIN research_evidence AS evidence ON evidence.url = evidence_source.url
+                   LEFT JOIN research_runs AS evidence_owner ON evidence_owner.id = evidence.run_id
                    WHERE runs.workspace_id = $1
+                     AND (evidence_owner.workspace_id = $1 OR evidence_owner.workspace_id IS NULL)
                    GROUP BY runs.id
                    ORDER BY runs.updated_at DESC
                    LIMIT $2""",
@@ -591,3 +730,7 @@ class ResearchStore:
     @staticmethod
     def _details(value: object) -> dict[str, object]:
         return json.loads(value) if isinstance(value, str) else dict(value)
+
+    @staticmethod
+    def _normalize_question(question: str) -> str:
+        return re.sub(r"\s+", " ", question.strip()).casefold()

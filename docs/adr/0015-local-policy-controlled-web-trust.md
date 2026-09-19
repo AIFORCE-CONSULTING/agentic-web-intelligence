@@ -92,14 +92,14 @@ operator and any agent caller cannot choose this route. Temporal makes
 server-authorized work durable; it does not own policy authority, create human
 approval, or open a new caller path.
 
-### Rediscovery
+### Target reuse
 
-The platform preserves completed research runs and their immutable evidence
-history. When the operator requests the same completed question again, the UI
-requires confirmation and the API verifies that confirmation against the latest
-workspace-owned run. A confirmed rediscovery creates a new run and records the
-prior run identifier in its audit trail. It never overwrites prior captures,
-trust decisions, or summaries.
+The platform preserves one workspace-owned target for each normalized question.
+When the operator requests that target again, the API returns its existing run
+and does not repeat discovery, retrieval, trust evaluation, or summarization.
+When a new target's search results include a URL already retained in the same
+workspace, the platform reuses the known capture and its trust result instead
+of fetching it again.
 
 ### Provenance and browser boundaries
 

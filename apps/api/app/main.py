@@ -24,6 +24,7 @@ from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
     RegenerateEvidenceSummaryRequest,
+    WorkspaceEvidenceSummaryArtifactList,
 )
 from app.evidence_summaries.service import (
     EvidenceSummaryAutomation,
@@ -1182,60 +1183,47 @@ def create_app() -> FastAPI:
 
     @app.post("/v1/research/runs", response_model=ResearchRun, status_code=201, tags=["research"])
     async def create_research_run(
-        request: ResearchRunRequest, http_request: Request
+        request: ResearchRunRequest, http_request: Request, response: Response
     ) -> ResearchRun:
         """Persist a discovery run and its source provenance as one durable record."""
 
         user = await require_workspace_permission(http_request, "research.write")
         store: ResearchStore = http_request.app.state.research_store
         try:
-            prior_run = await store.latest_ready_run_for_question(
-                user.workspace_id, request.question
-            )
-            if prior_run is not None:
-                if request.rediscover_from_run_id is None:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "Sources were already discovered for this question. "
-                            "Confirm rediscovery before starting a new run."
-                        ),
-                    )
-                if request.rediscover_from_run_id != prior_run.id:
-                    raise HTTPException(
-                        status_code=409,
-                        detail=(
-                            "The rediscovery confirmation does not match the latest discovery run."
-                        ),
-                    )
-            run = await store.create_run(user.workspace_id, request.question)
-            if prior_run is not None:
-                await store.record_rediscovery_requested(run.id, prior_run.id)
+            run, created = await store.get_or_create_run(user.workspace_id, request.question)
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:
-                await store.mark_failed(run.id, str(error))
+                if created:
+                    await store.mark_failed(run.id, str(error))
                 raise HTTPException(status_code=503, detail=str(error)) from error
             sources = [
                 SourceCandidate(rank=index, **result.model_dump())
                 for index, result in enumerate(search.results, start=1)
             ]
-            await store.save_sources(run.id, sources)
-            if len(sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
+            new_sources = await store.save_new_sources(run.id, sources, request.max_results)
+            new_urls = [source.url for source in new_sources]
+            if new_sources and len(new_sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
                 await http_request.app.state.candidate_preflight_service.preflight_run(
-                    user.workspace_id, run.id
+                    user.workspace_id, run.id, new_urls
                 )
                 automation: EvidenceSummaryAutomation = (
                     http_request.app.state.evidence_summary_automation
                 )
-                await automation.start_for_discovered_candidates(user.workspace_id, run.id)
-            else:
+                await automation.start_for_discovered_candidates(
+                    user.workspace_id, run.id, new_urls
+                )
+            elif new_sources:
                 try:
-                    await http_request.app.state.candidate_preflight_temporal.schedule(run.id)
+                    await http_request.app.state.candidate_preflight_temporal.schedule(
+                        run.id, new_urls
+                    )
                 except CandidatePreflightUnavailable as error:
                     await store.fail_candidate_preflight(run.id, str(error))
             persisted_run = await store.get_run(user.workspace_id, run.id)
             assert persisted_run is not None
+            if not created:
+                response.status_code = 200
             return persisted_run
         except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
@@ -1461,6 +1449,25 @@ def create_app() -> FastAPI:
         if batch is None:
             raise HTTPException(status_code=404, detail="Summary request was not found.")
         return batch
+
+    @app.get(
+        "/v1/evidence-summary-artifacts",
+        response_model=WorkspaceEvidenceSummaryArtifactList,
+        tags=["evidence-summaries"],
+    )
+    async def list_workspace_evidence_summary_artifacts(
+        http_request: Request,
+    ) -> WorkspaceEvidenceSummaryArtifactList:
+        """List one newest stored source summary per URL in the current workspace."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            return WorkspaceEvidenceSummaryArtifactList(
+                artifacts=await store.list_workspace_artifacts(user.workspace_id)
+            )
+        except EvidenceSummaryStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
 
     @app.post(
         "/v1/evidence-summary-executions/{batch_id}/regenerate",

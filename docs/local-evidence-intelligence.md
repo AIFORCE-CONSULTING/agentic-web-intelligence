@@ -120,9 +120,11 @@ Evidence summaries start from a persisted research run:
    candidates remain visible with their reasons but do not enter model context.
 4. An authorized operator may accept a specific `review_required` evidence
    version with a reason; the platform then automatically summarizes it.
-5. Inspect generated summaries next to the original source evidence. To repeat
-   a completed question, confirm rediscovery; the new run preserves a link to
-   the earlier run rather than overwriting it.
+5. Inspect generated summaries through the workspace keyword view. Each keyword
+   groups every stored source summary that uses it, and a source link opens the
+   newest stored summary for that URL without navigating to the external page.
+   Repeating a completed normalized question reopens its existing target and
+   does not create another discovery run or fetch its sources again.
 
 The summary API is intentionally narrow:
 
@@ -132,6 +134,8 @@ The summary API is intentionally narrow:
   execution.
 - `GET /v1/research/runs/{run_id}/evidence-summary-execution` restores the most
   recent summary execution for a run.
+- `GET /v1/evidence-summary-artifacts` returns one newest stored summary per
+  URL for the current workspace, which powers the workspace keyword view.
 - `POST /v1/evidence-summary-executions/{batch_id}/regenerate` regenerates an
   already completed selection.
 

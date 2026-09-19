@@ -95,9 +95,8 @@ truthfulness or replace browser safety protections.
   blocked candidate metadata so future agents can reuse the findings without
   treating a past URL result as a permanent verdict.
 - Automatically summarize eligible preflight evidence and accepted reviewed
-  evidence through platform-selected direct or Temporal execution. Preserve
-  prior runs when rediscovering a completed question rather than exposing
-  manual extraction or regeneration controls.
+  evidence through platform-selected direct or Temporal execution without
+  exposing manual extraction or regeneration controls.
 - Evaluate an evidence version after acquisition and before it is eligible for
   summaries, keywords, or future evidence-grounded capabilities.
 - Persist an immutable evaluation record with retrieval facts, policy version,
@@ -107,6 +106,31 @@ truthfulness or replace browser safety protections.
   dispositions. Preserve raw capture for audit regardless of disposition, but
   prevent evidence requiring review or blocked evidence from automated model
   context.
+
+### Current Phase 7 priorities
+
+1. Keep one canonical research run for each normalized web-search target. A
+   repeated **Discover sources** action performs a fresh provider search but
+   never creates a duplicate target container.
+2. On repeated discovery, append and acquire/preflight only source URLs that
+   are not already present anywhere in the workspace database. Preserve prior
+   evidence, trust evaluations, and summaries without re-fetching or
+   re-summarizing them.
+3. Add a workspace-wide keyword-centered operator view: render each keyword
+   as a visual card and list every related stored source summary beneath it.
+   A source may appear under more than one keyword, and each source link opens
+   its stored source summary rather than the original external webpage.
+4. Raise the governed discovery result limit from 5 to 50 sources so the
+   platform can acquire and evaluate a broader initial evidence set.
+5. After eligible sources are summarized, group sources that share keywords
+   and generate a cross-source synthesis describing what their summaries have
+   in common and where they differ.
+6. Revisit both the chunk and final summarization prompts and their output
+   contracts so every generated keyword is substantively represented in that
+   source's summary.
+
+### Remaining Phase 7 trust-layer work
+
 - Add a review experience for evidence requiring review. A human acceptance or
   override records its identity, reason, scope, and expiry independently of the
   UI and execution mechanism.

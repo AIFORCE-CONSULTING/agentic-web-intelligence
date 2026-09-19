@@ -10,6 +10,7 @@ import pytest
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    WorkspaceEvidenceSummaryArtifact,
 )
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
@@ -722,6 +723,42 @@ def test_searxng_provider_normalizes_and_bounds_results() -> None:
     ]
 
 
+def test_searxng_provider_pages_and_deduplicates_results() -> None:
+    requested_pages: list[str] = []
+
+    async def search() -> SearchResponse:
+        def response_for(request: httpx.Request) -> httpx.Response:
+            page = request.url.params["pageno"]
+            requested_pages.append(page)
+            start = 0 if page == "1" else 9
+            return httpx.Response(
+                200,
+                json={
+                    "results": [
+                        {
+                            "title": f"Source {index}",
+                            "url": f"https://example.com/source-{index}",
+                        }
+                        for index in range(start, start + 10)
+                    ]
+                },
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(response_for)) as client:
+            return await SearxngSearchProvider(client, "http://searxng:8080").search(
+                "evidence", 15
+            )
+
+    response = asyncio.run(search())
+
+    assert requested_pages == ["1", "2"]
+    assert len(response.results) == 15
+    assert [result.url for result in response.results] == [
+        f"https://example.com/source-{index}" for index in range(15)
+    ]
+
+
 def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.MonkeyPatch) -> None:
     async def unavailable(_: str, __: int) -> SearchResponse:
         raise ToolProviderError("The search provider is unavailable.")
@@ -747,20 +784,21 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
         def __init__(self) -> None:
             self.sources: list[SearchResult] = []
 
-        async def create_run(self, _: object, question: str) -> ResearchRun:
+        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
             return ResearchRun(
                 id=run_id,
                 question=question,
                 status="searching",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-            )
+            ), True
 
-        async def latest_ready_run_for_question(self, *_: object) -> None:
-            return None
-
-        async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
+        async def save_new_sources(
+            self, _: object, sources: list[SearchResult], requested_max_results: int
+        ) -> list[SearchResult]:
+            assert requested_max_results == 10
             self.sources = sources
+            return sources
 
         async def get_run(self, *_: object) -> ResearchRun:
             return ResearchRun(
@@ -772,7 +810,8 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
                 sources=self.sources,
             )
 
-    async def search(_: str, __: int) -> SearchResponse:
+    async def search(_: str, max_results: int) -> SearchResponse:
+        assert max_results == 10
         return SearchResponse(
             query="evidence",
             results=[SearchResult(title="Source", url="https://example.com", snippet="Summary")],
@@ -797,7 +836,9 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post("/v1/research/runs", json={"question": "evidence"})
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 10}
+            )
 
     response = asyncio.run(request())
 
@@ -806,37 +847,119 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.json()["sources"][0]["rank"] == 1
 
 
-def test_run_endpoint_requires_explicit_rediscovery_confirmation() -> None:
+def test_run_endpoint_rejects_unsupported_source_count() -> None:
+    app, _ = authenticated_app(create_app())
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 15}
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
+
+
+def test_run_endpoint_refreshes_an_existing_normalized_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prior_run_id = uuid4()
+    search_called = False
+    preflight_urls: list[str] = []
+    summary_urls: list[str] = []
 
     class FakeStore:
-        async def latest_ready_run_for_question(self, _: object, question: str) -> ResearchRun:
+        def __init__(self) -> None:
+            self.sources = [
+                SourceCandidate(
+                    rank=1,
+                    title="Existing source",
+                    url="https://example.com/existing",
+                    snippet="Persisted source.",
+                )
+            ]
+
+        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
             return ResearchRun(
                 id=prior_run_id,
                 question=question,
                 status="ready",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-            )
+            ), False
 
-        async def create_run(self, *_: object) -> ResearchRun:
-            raise AssertionError("Confirmation must be required before creating a duplicate run.")
+        async def save_new_sources(
+            self, _: object, sources: list[SourceCandidate], __: int
+        ) -> list[SourceCandidate]:
+            fresh = [source for source in sources if source.url != self.sources[0].url]
+            self.sources.extend(fresh)
+            return fresh
+
+        async def get_run(self, _: object, requested_run_id: object) -> ResearchRun:
+            assert requested_run_id == prior_run_id
+            return ResearchRun(
+                id=prior_run_id,
+                question="evidence",
+                status="ready",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+                sources=self.sources,
+            )
 
     app, _ = authenticated_app(create_app())
     app.state.research_store = FakeStore()
 
+    async def search(_: str, __: int) -> SearchResponse:
+        nonlocal search_called
+        search_called = True
+        return SearchResponse(
+            query="evidence",
+            results=[
+                SearchResult(title="Existing", url="https://example.com/existing"),
+                SearchResult(title="Fresh", url="https://example.com/fresh"),
+            ],
+        )
+
+    monkeypatch.setattr("app.main.run_search_workflow", search)
+
+    class FakePreflightService:
+        async def preflight_run(
+            self, _: object, __: object, source_urls: list[str]
+        ) -> None:
+            preflight_urls.extend(source_urls)
+            return None
+
+    app.state.candidate_preflight_service = FakePreflightService()
+
+    class FakeSummaryAutomation:
+        async def start_for_discovered_candidates(
+            self, _: object, __: object, source_urls: list[str]
+        ) -> None:
+            summary_urls.extend(source_urls)
+            return None
+
+    app.state.evidence_summary_automation = FakeSummaryAutomation()
+
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post("/v1/research/runs", json={"question": "evidence"})
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 10}
+            )
 
     response = asyncio.run(request())
 
-    assert response.status_code == 409
-    assert response.json()["detail"] == (
-        "Sources were already discovered for this question. "
-        "Confirm rediscovery before starting a new run."
-    )
+    assert response.status_code == 200
+    assert response.json()["id"] == str(prior_run_id)
+    assert [source["url"] for source in response.json()["sources"]] == [
+        "https://example.com/existing",
+        "https://example.com/fresh",
+    ]
+    assert search_called is True
+    assert preflight_urls == ["https://example.com/fresh"]
+    assert summary_urls == ["https://example.com/fresh"]
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:
@@ -883,6 +1006,50 @@ def test_latest_summary_execution_restores_persisted_source_results() -> None:
     source = response.json()["sources"][0]
     assert source["summary"] == "Persisted summary."
     assert source["keywords"] == ["persisted", "summary"]
+
+
+def test_workspace_summary_artifacts_return_one_summary_per_stored_url() -> None:
+    run_id = uuid4()
+    app, user = authenticated_app(create_app())
+
+    class FakeSummaryStore:
+        async def list_workspace_artifacts(
+            self, workspace_id: object
+        ) -> list[WorkspaceEvidenceSummaryArtifact]:
+            assert workspace_id == user.workspace_id
+            return [
+                WorkspaceEvidenceSummaryArtifact(
+                    run_id=run_id,
+                    url="https://example.com/source",
+                    title="Stored source",
+                    chunk_count=2,
+                    summary="Stored summary.",
+                    keywords=["stored", "summary"],
+                    evidence_sufficient=True,
+                )
+            ]
+
+    app.state.evidence_summary_store = FakeSummaryStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/v1/evidence-summary-artifacts")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["artifacts"] == [
+        {
+            "run_id": str(run_id),
+            "url": "https://example.com/source",
+            "title": "Stored source",
+            "chunk_count": 2,
+            "summary": "Stored summary.",
+            "keywords": ["stored", "summary"],
+            "evidence_sufficient": True,
+        }
+    ]
 
 
 def test_operator_regeneration_reuses_evidence_and_overwrites_derived_summary() -> None:

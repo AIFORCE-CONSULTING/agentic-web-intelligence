@@ -72,8 +72,9 @@ Invoke-RestMethod -Method Post `
   -Body '{"query":"agentic web intelligence","max_results":2}'
 ~~~
 
-The platform caps the number of returned results, normalizes source fields, and
-filters results that point to non-public network destinations.
+The platform caps discovery at 50 results, pages through the internal provider
+as needed, normalizes source fields, removes duplicate URLs from one discovery
+request, and filters results that point to non-public network destinations.
 
 ## Persistent research run
 
@@ -83,7 +84,7 @@ Create a research run instead of using the transient search endpoint:
 $run = Invoke-RestMethod -Method Post `
   -Uri http://localhost:8000/v1/research/runs `
   -ContentType application/json `
-  -Body '{"question":"agentic web intelligence","max_results":2}'
+  -Body '{"question":"agentic web intelligence","max_results":5}'
 $run.id
 ~~~
 
@@ -104,6 +105,9 @@ UI, and the durable worker with the API.
 `GET /v1/research/runs` returns the 25 most recently updated runs by default,
 including source and evidence counts but not full evidence text. The operator
 console uses this bounded library to reopen a run without re-running discovery.
+When legacy repeated normalized targets exist, the platform retains the
+target-keyed run and prunes its obsolete predecessor runs together with their
+dependent provenance before it accepts new discovery work.
 
 ## Extraction policy
 

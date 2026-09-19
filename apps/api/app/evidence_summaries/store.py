@@ -8,6 +8,7 @@ import asyncpg
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    WorkspaceEvidenceSummaryArtifact,
 )
 
 SCHEMA = """
@@ -335,10 +336,9 @@ class EvidenceSummaryStore:
             artifact = await connection.fetchrow(
                 """SELECT id, summary, keywords, evidence_sufficient
                    FROM evidence_summary_artifacts
-                   WHERE workspace_id = $1 AND run_id = $2 AND source_url = $3
-                     AND content_hash = $4""",
+                   WHERE workspace_id = $1 AND source_url = $2 AND content_hash = $3
+                   ORDER BY created_at DESC LIMIT 1""",
                 execution.workspace_id,
-                execution.run_id,
                 url,
                 content_hash,
             )
@@ -348,13 +348,12 @@ class EvidenceSummaryStore:
                        FROM evidence_summary_execution_sources AS sources
                        JOIN evidence_summary_executions AS prior
                          ON prior.id = sources.execution_id
-                       WHERE prior.workspace_id = $1 AND prior.run_id = $2
-                         AND sources.url = $3 AND sources.content_hash = $4
+                       WHERE prior.workspace_id = $1 AND sources.url = $2
+                         AND sources.content_hash = $3
                          AND sources.status = 'completed' AND sources.summary IS NOT NULL
                        ORDER BY prior.created_at DESC
                        LIMIT 1""",
                     execution.workspace_id,
-                    execution.run_id,
                     url,
                     content_hash,
                 )
@@ -541,6 +540,34 @@ class EvidenceSummaryStore:
             )
         return await self.get_execution(workspace_id, execution_id) if workspace_id else None
 
+    async def list_workspace_artifacts(
+        self, workspace_id: UUID, limit: int = 500
+    ) -> list[WorkspaceEvidenceSummaryArtifact]:
+        """Return the newest usable summary once for each workspace URL."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT DISTINCT ON (artifacts.source_url)
+                          artifacts.run_id, artifacts.source_url AS url,
+                          COALESCE(source.title, artifacts.source_url) AS title,
+                          artifacts.chunk_count, artifacts.summary, artifacts.keywords,
+                          artifacts.evidence_sufficient
+                   FROM evidence_summary_artifacts AS artifacts
+                   LEFT JOIN LATERAL (
+                       SELECT title FROM research_sources
+                       WHERE run_id = artifacts.run_id AND url = artifacts.source_url
+                       ORDER BY rank
+                       LIMIT 1
+                   ) AS source ON TRUE
+                   WHERE artifacts.workspace_id = $1
+                   ORDER BY artifacts.source_url, artifacts.created_at DESC
+                   LIMIT $2""",
+                workspace_id,
+                limit,
+            )
+        return [self._artifact_contract(row) for row in rows]
+
     async def _update_source(self, execution_id: UUID, url: str, status: str) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
@@ -575,3 +602,10 @@ class EvidenceSummaryStore:
         if isinstance(values.get("keywords"), str):
             values["keywords"] = json.loads(values["keywords"])
         return EvidenceSummaryExecutionSource(**values)
+
+    @staticmethod
+    def _artifact_contract(artifact: asyncpg.Record) -> WorkspaceEvidenceSummaryArtifact:
+        values = dict(artifact)
+        if isinstance(values.get("keywords"), str):
+            values["keywords"] = json.loads(values["keywords"])
+        return WorkspaceEvidenceSummaryArtifact(**values)

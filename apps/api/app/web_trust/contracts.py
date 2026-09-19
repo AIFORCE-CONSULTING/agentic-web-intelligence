@@ -9,6 +9,15 @@ from pydantic import BaseModel, ConfigDict, Field
 TrustDisposition = Literal["eligible", "eligible_with_notice", "review_required", "blocked"]
 
 
+class CandidatePreflightRequest(BaseModel):
+    """Server-selected source batch for one durable candidate-preflight workflow."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    run_id: UUID
+    source_urls: list[str] = Field(min_length=1, max_length=50)
+
+
 class TrustRuleOutcome(BaseModel):
     """One deterministic rule result retained with an evaluation."""
 

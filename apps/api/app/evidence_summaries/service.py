@@ -360,6 +360,8 @@ class EvidenceSummaryTemporalBoundary:
 class EvidenceSummaryAutomation:
     """Start summaries only for server-selected, preflighted evidence."""
 
+    _MAX_SOURCES_PER_EXECUTION = 5
+
     def __init__(
         self,
         service: EvidenceSummaryService,
@@ -373,20 +375,31 @@ class EvidenceSummaryAutomation:
         self._temporal = temporal
 
     async def start_for_discovered_candidates(
-        self, workspace_id: UUID, run_id: UUID
+        self, workspace_id: UUID, run_id: UUID, source_urls: list[str] | None = None
     ) -> EvidenceSummaryExecution | None:
         """Automatically summarize only candidates already eligible at preflight."""
 
         run = await self._research_store.get_run(workspace_id, run_id)
         if run is None:
             raise EvidenceSummaryUnavailable("The research run no longer exists.")
+        allowed_urls = set(source_urls) if source_urls is not None else None
         urls = [
             source.url for source in run.sources
             if source.preflight_status == "ready_to_extract"
+            and (allowed_urls is None or source.url in allowed_urls)
         ]
         if not urls:
             return None
-        return await self.start_for_urls(workspace_id, run_id, urls)
+        executions = []
+        for offset in range(0, len(urls), self._MAX_SOURCES_PER_EXECUTION):
+            executions.append(
+                await self.start_for_urls(
+                    workspace_id,
+                    run_id,
+                    urls[offset : offset + self._MAX_SOURCES_PER_EXECUTION],
+                )
+            )
+        return executions[-1]
 
     async def start_for_urls(
         self, workspace_id: UUID, run_id: UUID, urls: list[str]

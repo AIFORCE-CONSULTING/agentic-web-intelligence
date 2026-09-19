@@ -793,8 +793,11 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
                 updated_at=datetime.now(UTC),
             ), True
 
-        async def save_sources(self, _: object, sources: list[SearchResult]) -> None:
+        async def save_new_sources(
+            self, _: object, sources: list[SearchResult]
+        ) -> list[SearchResult]:
             self.sources = sources
+            return sources
 
         async def get_run(self, *_: object) -> ResearchRun:
             return ResearchRun(
@@ -840,11 +843,25 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     assert response.json()["sources"][0]["rank"] == 1
 
 
-def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_endpoint_refreshes_an_existing_normalized_target(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     prior_run_id = uuid4()
     search_called = False
+    preflight_urls: list[str] = []
+    summary_urls: list[str] = []
 
     class FakeStore:
+        def __init__(self) -> None:
+            self.sources = [
+                SourceCandidate(
+                    rank=1,
+                    title="Existing source",
+                    url="https://example.com/existing",
+                    snippet="Persisted source.",
+                )
+            ]
+
         async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
             return ResearchRun(
                 id=prior_run_id,
@@ -854,6 +871,13 @@ def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.M
                 updated_at=datetime.now(UTC),
             ), False
 
+        async def save_new_sources(
+            self, _: object, sources: list[SourceCandidate]
+        ) -> list[SourceCandidate]:
+            fresh = [source for source in sources if source.url != self.sources[0].url]
+            self.sources.extend(fresh)
+            return fresh
+
         async def get_run(self, _: object, requested_run_id: object) -> ResearchRun:
             assert requested_run_id == prior_run_id
             return ResearchRun(
@@ -862,14 +886,7 @@ def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.M
                 status="ready",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
-                sources=[
-                    SourceCandidate(
-                        rank=1,
-                        title="Existing source",
-                        url="https://example.com/existing",
-                        snippet="Persisted source.",
-                    )
-                ],
+                sources=self.sources,
             )
 
     app, _ = authenticated_app(create_app())
@@ -878,9 +895,33 @@ def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.M
     async def search(_: str, __: int) -> SearchResponse:
         nonlocal search_called
         search_called = True
-        raise AssertionError("An existing target must not invoke the search provider.")
+        return SearchResponse(
+            query="evidence",
+            results=[
+                SearchResult(title="Existing", url="https://example.com/existing"),
+                SearchResult(title="Fresh", url="https://example.com/fresh"),
+            ],
+        )
 
     monkeypatch.setattr("app.main.run_search_workflow", search)
+
+    class FakePreflightService:
+        async def preflight_run(
+            self, _: object, __: object, source_urls: list[str]
+        ) -> None:
+            preflight_urls.extend(source_urls)
+            return None
+
+    app.state.candidate_preflight_service = FakePreflightService()
+
+    class FakeSummaryAutomation:
+        async def start_for_discovered_candidates(
+            self, _: object, __: object, source_urls: list[str]
+        ) -> None:
+            summary_urls.extend(source_urls)
+            return None
+
+    app.state.evidence_summary_automation = FakeSummaryAutomation()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -891,8 +932,13 @@ def test_run_endpoint_reuses_an_existing_normalized_target(monkeypatch: pytest.M
 
     assert response.status_code == 200
     assert response.json()["id"] == str(prior_run_id)
-    assert response.json()["sources"][0]["title"] == "Existing source"
-    assert search_called is False
+    assert [source["url"] for source in response.json()["sources"]] == [
+        "https://example.com/existing",
+        "https://example.com/fresh",
+    ]
+    assert search_called is True
+    assert preflight_urls == ["https://example.com/fresh"]
+    assert summary_urls == ["https://example.com/fresh"]
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:

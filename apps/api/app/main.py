@@ -1191,40 +1191,39 @@ def create_app() -> FastAPI:
         store: ResearchStore = http_request.app.state.research_store
         try:
             run, created = await store.get_or_create_run(user.workspace_id, request.question)
-            if not created:
-                existing = await store.get_run(user.workspace_id, run.id)
-                if existing is None:
-                    raise HTTPException(
-                        status_code=404,
-                        detail="The existing research target is unavailable.",
-                    )
-                response.status_code = 200
-                return existing
             try:
                 search = await run_search_workflow(request.question, request.max_results)
             except ToolProviderError as error:
-                await store.mark_failed(run.id, str(error))
+                if created:
+                    await store.mark_failed(run.id, str(error))
                 raise HTTPException(status_code=503, detail=str(error)) from error
             sources = [
                 SourceCandidate(rank=index, **result.model_dump())
                 for index, result in enumerate(search.results, start=1)
             ]
-            await store.save_sources(run.id, sources)
-            if len(sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
+            new_sources = await store.save_new_sources(run.id, sources)
+            new_urls = [source.url for source in new_sources]
+            if new_sources and len(new_sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
                 await http_request.app.state.candidate_preflight_service.preflight_run(
-                    user.workspace_id, run.id
+                    user.workspace_id, run.id, new_urls
                 )
                 automation: EvidenceSummaryAutomation = (
                     http_request.app.state.evidence_summary_automation
                 )
-                await automation.start_for_discovered_candidates(user.workspace_id, run.id)
-            else:
+                await automation.start_for_discovered_candidates(
+                    user.workspace_id, run.id, new_urls
+                )
+            elif new_sources:
                 try:
-                    await http_request.app.state.candidate_preflight_temporal.schedule(run.id)
+                    await http_request.app.state.candidate_preflight_temporal.schedule(
+                        run.id, new_urls
+                    )
                 except CandidatePreflightUnavailable as error:
                     await store.fail_candidate_preflight(run.id, str(error))
             persisted_run = await store.get_run(user.workspace_id, run.id)
             assert persisted_run is not None
+            if not created:
+                response.status_code = 200
             return persisted_run
         except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error

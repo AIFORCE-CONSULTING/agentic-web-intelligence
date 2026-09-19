@@ -10,7 +10,11 @@ from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
 )
-from app.evidence_summaries.service import EvidenceSummaryService, EvidenceSummaryUnavailable
+from app.evidence_summaries.service import (
+    EvidenceSummaryAutomation,
+    EvidenceSummaryService,
+    EvidenceSummaryUnavailable,
+)
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
 from app.web_research.contracts import Evidence, SourceCandidate, ToolPolicyError
@@ -157,7 +161,7 @@ def test_candidate_preflight_persists_reusable_evidence_and_failed_candidate_met
             self.completed = False
 
         async def get_run(self, *_: object):
-            return SimpleNamespace(sources=[available, blocked])
+            return SimpleNamespace(sources=[available, blocked], evidence=[])
 
         async def mark_candidate_checking(self, *_: object) -> None:
             return None
@@ -190,6 +194,90 @@ def test_candidate_preflight_persists_reusable_evidence_and_failed_candidate_met
     assert research_store.results[1][2] == "blocked"
     assert "maximum permitted size" in str(research_store.results[1][3])
     assert research_store.completed is True
+
+
+def test_candidate_preflight_evaluates_captured_checking_evidence_without_refetching(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    source = SourceCandidate(
+        rank=1,
+        title="Captured",
+        url="https://example.com/captured",
+        preflight_status="checking",
+    )
+    captured = evidence(url=source.url)
+
+    class FakeResearchStore:
+        def __init__(self) -> None:
+            self.saved: list[Evidence] = []
+            self.results: list[tuple[object, ...]] = []
+
+        async def get_run(self, *_: object):
+            return SimpleNamespace(sources=[source], evidence=[captured])
+
+        async def mark_candidate_checking(self, *_: object) -> None:
+            raise AssertionError("Captured evidence must not be fetched again.")
+
+        async def save_evidence(self, _: object, value: Evidence) -> None:
+            self.saved.append(value)
+
+        async def record_candidate_preflight(self, *args: object, **kwargs: object) -> None:
+            self.results.append((*args, kwargs))
+
+        async def complete_candidate_preflight(self, _: object) -> None:
+            return None
+
+    async def extract(_: str) -> Evidence:
+        raise AssertionError("Captured evidence must not be extracted again.")
+
+    monkeypatch.setattr("app.web_trust.preflight.run_extract_workflow", extract)
+    store = FakeResearchStore()
+    asyncio.run(
+        CandidatePreflightService(store, EvidenceTrustService(FakeTrustStore())).preflight_run(
+            workspace_id, run_id, [source.url]
+        )
+    )
+
+    assert store.saved == []
+    assert store.results[0][2] == "ready_to_extract"
+
+
+def test_summary_automation_batches_eligible_candidates_within_execution_limit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    urls = [f"https://example.com/source-{index}" for index in range(6)]
+
+    class FakeResearchStore:
+        async def get_run(self, *_: object):
+            return SimpleNamespace(
+                sources=[
+                    SourceCandidate(
+                        rank=index + 1,
+                        title=f"Source {index}",
+                        url=url,
+                        preflight_status="ready_to_extract",
+                    )
+                    for index, url in enumerate(urls)
+                ]
+            )
+
+    automation = EvidenceSummaryAutomation(
+        object(), object(), FakeResearchStore(), object()
+    )
+    batches: list[list[str]] = []
+
+    async def start_for_urls(_: object, __: object, batch: list[str]) -> object:
+        batches.append(batch)
+        return SimpleNamespace(id=len(batches))
+
+    monkeypatch.setattr(automation, "start_for_urls", start_for_urls)
+
+    result = asyncio.run(automation.start_for_discovered_candidates(workspace_id, run_id, urls))
+
+    assert batches == [urls[:5], urls[5:]]
+    assert result.id == 2
 
 
 def test_summary_preparation_excludes_evidence_requiring_review() -> None:

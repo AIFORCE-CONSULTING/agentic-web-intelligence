@@ -277,7 +277,11 @@ class ResearchStore:
             events.append(McpToolAuditEvent(**event))
         return events
 
-    async def save_sources(self, run_id: UUID, sources: list[SourceCandidate]) -> None:
+    async def save_new_sources(
+        self, run_id: UUID, sources: list[SourceCandidate]
+    ) -> list[SourceCandidate]:
+        """Append only workspace-new source URLs to the canonical target."""
+
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
             workspace_id = await connection.fetchval(
@@ -285,25 +289,27 @@ class ResearchStore:
             )
             if workspace_id is None:
                 raise KeyError(run_id)
-            reused_count = 0
-            for source in sources:
-                known = await connection.fetchrow(
-                    """SELECT sources.preflight_status, sources.preflight_reason,
-                              sources.preflight_checked_at, sources.preflight_content_type,
-                              sources.preflight_content_hash, sources.preflight_trust_disposition
+            await connection.execute(
+                "SELECT 1 FROM research_runs WHERE id = $1 FOR UPDATE", run_id
+            )
+            known_urls = set(
+                await connection.fetchval(
+                    """SELECT COALESCE(array_agg(DISTINCT sources.url), ARRAY[]::text[])
                        FROM research_sources AS sources
                        JOIN research_runs AS owner ON owner.id = sources.run_id
-                       WHERE owner.workspace_id = $1 AND sources.url = $2
-                         AND sources.run_id <> $3
-                         AND sources.preflight_status NOT IN ('pending', 'checking')
-                       ORDER BY sources.preflight_checked_at DESC NULLS LAST, owner.updated_at DESC
-                       LIMIT 1""",
+                       WHERE owner.workspace_id = $1""",
                     workspace_id,
-                    source.url,
-                    run_id,
                 )
-                if known is not None:
-                    reused_count += 1
+            )
+            next_rank = await connection.fetchval(
+                "SELECT COALESCE(MAX(rank), 0) + 1 FROM research_sources WHERE run_id = $1",
+                run_id,
+            )
+            persisted_sources: list[SourceCandidate] = []
+            for source in sources:
+                if source.url in known_urls:
+                    continue
+                persisted = source.model_copy(update={"rank": next_rank})
                 await connection.execute(
                     """INSERT INTO research_sources
                        (id, run_id, rank, title, url, snippet, engine, preflight_status,
@@ -312,29 +318,44 @@ class ResearchStore:
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
                     uuid4(),
                     run_id,
-                    source.rank,
-                    source.title,
-                    source.url,
-                    source.snippet,
-                    source.engine,
-                    known["preflight_status"] if known else "pending",
-                    known["preflight_reason"] if known else None,
-                    known["preflight_checked_at"] if known else None,
-                    known["preflight_content_type"] if known else None,
-                    known["preflight_content_hash"] if known else None,
-                    known["preflight_trust_disposition"] if known else None,
+                    persisted.rank,
+                    persisted.title,
+                    persisted.url,
+                    persisted.snippet,
+                    persisted.engine,
+                    "pending",
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
                 )
+                known_urls.add(source.url)
+                next_rank += 1
+                persisted_sources.append(persisted)
             await self._append_audit(
                 connection,
                 run_id,
                 "research.search.completed",
-                {"source_count": len(sources), "reused_source_count": reused_count},
+                {
+                    "discovered_source_count": len(sources),
+                    "new_source_count": len(persisted_sources),
+                    "known_source_count": len(sources) - len(persisted_sources),
+                    "new_source_urls": [source.url for source in persisted_sources],
+                },
             )
-            await connection.execute(
-                """UPDATE research_runs SET status = 'preflighting', updated_at = now()
-                   WHERE id = $1""",
-                run_id,
-            )
+            if persisted_sources:
+                await connection.execute(
+                    """UPDATE research_runs SET status = 'preflighting', updated_at = now()
+                       WHERE id = $1""",
+                    run_id,
+                )
+            elif not known_urls:
+                await connection.execute(
+                    "UPDATE research_runs SET status = 'ready', updated_at = now() WHERE id = $1",
+                    run_id,
+                )
+        return persisted_sources
 
     async def mark_candidate_checking(self, run_id: UUID, url: str) -> None:
         pool = await self._connection_pool()

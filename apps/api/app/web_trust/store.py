@@ -109,7 +109,8 @@ class WebTrustStore:
                          AND (expires_at IS NULL OR expires_at > now())
                        ORDER BY created_at DESC LIMIT 1
                    ) AS override ON TRUE
-                   WHERE evaluation.workspace_id = $1 AND evaluation.source_url = $3
+                   WHERE evaluation.workspace_id = $1 AND evaluation.run_id = $2
+                     AND evaluation.source_url = $3
                      AND evaluation.content_hash = $4
                    ORDER BY evaluation.created_at DESC LIMIT 1""",
                 workspace_id, run_id, source_url, content_hash,

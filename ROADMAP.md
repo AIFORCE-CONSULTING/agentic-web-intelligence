@@ -109,13 +109,13 @@ truthfulness or replace browser safety protections.
 
 ### Current Phase 7 priorities
 
-1. Remove rediscovery for now. Do not create duplicate research runs, source
-   candidates, evidence versions, trust evaluations, or summaries merely
-   because an operator repeats a completed search.
-2. Treat a normalized web-search target as discoverable once. When an operator
-   selects **Discover sources**, use the platform's existing source records and
-   acquire/preflight only source URLs that are not already present in the
-   database for that target.
+1. Keep one canonical research run for each normalized web-search target. A
+   repeated **Discover sources** action performs a fresh provider search but
+   never creates a duplicate target container.
+2. On repeated discovery, append and acquire/preflight only source URLs that
+   are not already present anywhere in the workspace database. Preserve prior
+   evidence, trust evaluations, and summaries without re-fetching or
+   re-summarizing them.
 3. Add a workspace-wide keyword-centered operator view: render each keyword
    as a visual card and list every related stored source summary beneath it.
    A source may appear under more than one keyword, and each source link opens

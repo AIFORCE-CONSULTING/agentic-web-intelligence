@@ -12,6 +12,7 @@ h2 { font-size: 1.2rem; margin: 0; }
 section { background: #fff; border: 1px solid #dce4ef; border-radius: 14px; margin-top: 1.5rem; padding: 1.4rem; box-shadow: 0 1px 2px #17203308; }
 .form-row { align-items: end; display: flex; gap: .85rem; margin-top: 1rem; }
 label { color: #344259; display: grid; flex: 1; font-size: .86rem; font-weight: 700; gap: .35rem; }
+.source-count { flex: 0 0 7rem; }
 input { border: 1px solid #b9c6d8; border-radius: 8px; font: inherit; padding: .7rem .8rem; width: 100%; }
 select, textarea { border: 1px solid #b9c6d8; border-radius: 8px; font: inherit; padding: .7rem .8rem; width: 100%; }
 input:focus { border-color: #087ea4; box-shadow: 0 0 0 3px #087ea428; outline: none; }

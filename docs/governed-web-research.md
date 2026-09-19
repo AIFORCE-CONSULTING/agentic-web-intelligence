@@ -84,7 +84,7 @@ Create a research run instead of using the transient search endpoint:
 $run = Invoke-RestMethod -Method Post `
   -Uri http://localhost:8000/v1/research/runs `
   -ContentType application/json `
-  -Body '{"question":"agentic web intelligence","max_results":2}'
+  -Body '{"question":"agentic web intelligence","max_results":5}'
 $run.id
 ~~~
 

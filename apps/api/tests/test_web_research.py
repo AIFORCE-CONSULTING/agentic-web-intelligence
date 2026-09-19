@@ -794,8 +794,9 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
             ), True
 
         async def save_new_sources(
-            self, _: object, sources: list[SearchResult]
+            self, _: object, sources: list[SearchResult], requested_max_results: int
         ) -> list[SearchResult]:
+            assert requested_max_results == 10
             self.sources = sources
             return sources
 
@@ -809,7 +810,8 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
                 sources=self.sources,
             )
 
-    async def search(_: str, __: int) -> SearchResponse:
+    async def search(_: str, max_results: int) -> SearchResponse:
+        assert max_results == 10
         return SearchResponse(
             query="evidence",
             results=[SearchResult(title="Source", url="https://example.com", snippet="Summary")],
@@ -834,13 +836,30 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post("/v1/research/runs", json={"question": "evidence"})
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 10}
+            )
 
     response = asyncio.run(request())
 
     assert response.status_code == 201
     assert response.json()["status"] == "ready"
     assert response.json()["sources"][0]["rank"] == 1
+
+
+def test_run_endpoint_rejects_unsupported_source_count() -> None:
+    app, _ = authenticated_app(create_app())
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 15}
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
 
 
 def test_run_endpoint_refreshes_an_existing_normalized_target(
@@ -872,7 +891,7 @@ def test_run_endpoint_refreshes_an_existing_normalized_target(
             ), False
 
         async def save_new_sources(
-            self, _: object, sources: list[SourceCandidate]
+            self, _: object, sources: list[SourceCandidate], __: int
         ) -> list[SourceCandidate]:
             fresh = [source for source in sources if source.url != self.sources[0].url]
             self.sources.extend(fresh)
@@ -926,7 +945,9 @@ def test_run_endpoint_refreshes_an_existing_normalized_target(
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
-            return await client.post("/v1/research/runs", json={"question": "evidence"})
+            return await client.post(
+                "/v1/research/runs", json={"question": "evidence", "max_results": 10}
+            )
 
     response = asyncio.run(request())
 

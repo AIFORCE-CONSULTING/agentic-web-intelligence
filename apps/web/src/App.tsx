@@ -1,6 +1,7 @@
 import { FormEvent, useEffect, useState } from "react";
 
 type Health = { status: string; service: string; environment: string };
+type DiscoverySourceCount = 50 | 40 | 30 | 20 | 10 | 5;
 type DependencyHealth = {
   name: string; status: "ready" | "unavailable" | "unconfigured"; detail: string;
 };
@@ -562,6 +563,7 @@ export function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [serviceHealth, setServiceHealth] = useState<ServiceHealth | null>(null);
   const [question, setQuestion] = useState("What is agentic web intelligence?");
+  const [discoverySourceCount, setDiscoverySourceCount] = useState<DiscoverySourceCount>(50);
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
@@ -668,7 +670,7 @@ export function App() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           question,
-          max_results: 50,
+          max_results: discoverySourceCount,
         }),
       });
       setRun(created);
@@ -782,6 +784,15 @@ export function App() {
         <form onSubmit={createRun} className="form-row">
           <label>Research question
             <input value={question} onChange={(event) => setQuestion(event.target.value)} required />
+          </label>
+          <label className="source-count">Sources
+            <select
+              value={discoverySourceCount}
+              onChange={(event) => setDiscoverySourceCount(Number(event.target.value) as DiscoverySourceCount)}
+              aria-label="Number of sources to discover"
+            >
+              {[50, 40, 30, 20, 10, 5].map((count) => <option key={count} value={count}>{count}</option>)}
+            </select>
           </label>
           <button type="submit" disabled={busy || !health}>{busy ? "Working…" : "Discover sources"}</button>
         </form>

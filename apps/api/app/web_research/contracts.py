@@ -74,7 +74,7 @@ class ResearchRunRequest(BaseModel):
     """Create a durable, discovery-first research run."""
 
     question: str = Field(min_length=1, max_length=512)
-    max_results: int = Field(default=50, ge=1, le=50)
+    max_results: Literal[50, 40, 30, 20, 10, 5] = 50
 
 
 class SourceCandidate(SearchResult):

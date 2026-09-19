@@ -278,7 +278,7 @@ class ResearchStore:
         return events
 
     async def save_new_sources(
-        self, run_id: UUID, sources: list[SourceCandidate]
+        self, run_id: UUID, sources: list[SourceCandidate], requested_max_results: int
     ) -> list[SourceCandidate]:
         """Append only workspace-new source URLs to the canonical target."""
 
@@ -341,6 +341,7 @@ class ResearchStore:
                     "discovered_source_count": len(sources),
                     "new_source_count": len(persisted_sources),
                     "known_source_count": len(sources) - len(persisted_sources),
+                    "requested_max_results": requested_max_results,
                     "new_source_urls": [source.url for source in persisted_sources],
                 },
             )

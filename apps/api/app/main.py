@@ -1201,7 +1201,7 @@ def create_app() -> FastAPI:
                 SourceCandidate(rank=index, **result.model_dump())
                 for index, result in enumerate(search.results, start=1)
             ]
-            new_sources = await store.save_new_sources(run.id, sources)
+            new_sources = await store.save_new_sources(run.id, sources, request.max_results)
             new_urls = [source.url for source in new_sources]
             if new_sources and len(new_sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
                 await http_request.app.state.candidate_preflight_service.preflight_run(

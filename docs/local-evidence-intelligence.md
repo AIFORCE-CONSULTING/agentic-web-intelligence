@@ -52,7 +52,13 @@ from the summary execution mechanism.
 Generated summaries are derived artifacts. The original extracted source
 evidence remains the source of truth, and Postgres remains the canonical record
 for each summary request, selected URL, route, status, chunk policy, generated
-summary, keywords, sufficiency flag, and regeneration attempt.
+summary, keywords, keyword coverage, prompt version, sufficiency flag, and
+regeneration attempt. Keyword coverage records one exact sentence from the
+saved summary for each keyword; the platform rejects a model response when a
+keyword has no matching, explanatory sentence in that summary. The fixed
+`evidence-keyword-coverage-v1` prompt contract applies to new summaries and
+regenerations. Existing artifacts remain readable with no retroactive claim of
+coverage or prompt-version provenance.
 
 Only authenticated administrators can configure the local provider. Authenticated
 operators can request summaries for workspace-owned research runs and selected
@@ -170,6 +176,12 @@ Those chunk summaries are then consolidated into one page-level summary and
 keyword set. When consolidation input would exceed the fixed budget, the
 platform recursively records bounded consolidation groups before producing the
 final source summary.
+
+Both the chunk and final prompts require the model to write the summary before
+choosing keywords. A keyword must be a term or short phrase the summary actually
+explains, and the response must provide the exact supporting summary sentence
+for every keyword. Ollama receives the corresponding JSON schema; the API still
+validates the returned data before persisting the final source artifact.
 
 Final summaries include an `evidence_sufficient` flag. When the extracted
 evidence is insufficient, the summary must say so instead of filling gaps.

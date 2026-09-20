@@ -37,14 +37,17 @@ type EvidenceSummaryBatch = {
   id: string; route: "undetermined" | "direct" | "durable"; status: string;
   sources: {
     content_hash?: string | null; url: string; chunk_count?: number | null; status: string;
-    summary?: string | null; keywords?: string[] | null; evidence_sufficient?: boolean | null;
+    summary?: string | null; keywords?: string[] | null;
+    keyword_coverage?: Record<string, string> | null; prompt_version?: string | null;
+    evidence_sufficient?: boolean | null;
     artifact_reused?: boolean;
     failure_reason?: string | null;
   }[];
 };
 type WorkspaceSummaryArtifact = {
   run_id: string; url: string; title: string; chunk_count?: number | null;
-  summary: string; keywords: string[]; evidence_sufficient: boolean;
+  summary: string; keywords: string[]; keyword_coverage?: Record<string, string> | null;
+  prompt_version?: string | null; evidence_sufficient: boolean;
 };
 type WorkspaceSummaryArtifactList = { artifacts: WorkspaceSummaryArtifact[] };
 type AuthenticatedUser = {

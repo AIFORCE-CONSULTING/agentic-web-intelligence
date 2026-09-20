@@ -29,6 +29,8 @@ class EvidenceSummaryExecutionSource(BaseModel):
     chunking_policy_version: str | None = None
     summary: str | None = None
     keywords: list[str] | None = None
+    keyword_coverage: dict[str, str] | None = None
+    prompt_version: str | None = None
     evidence_sufficient: bool | None = None
     artifact_reused: bool = False
     failure_reason: str | None = None
@@ -64,6 +66,8 @@ class WorkspaceEvidenceSummaryArtifact(BaseModel):
     chunk_count: int | None = None
     summary: str
     keywords: list[str]
+    keyword_coverage: dict[str, str] | None = None
+    prompt_version: str | None = None
     evidence_sufficient: bool
 
 

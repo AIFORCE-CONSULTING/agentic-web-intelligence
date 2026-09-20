@@ -1047,6 +1047,8 @@ def test_workspace_summary_artifacts_return_one_summary_per_stored_url() -> None
             "chunk_count": 2,
             "summary": "Stored summary.",
             "keywords": ["stored", "summary"],
+            "keyword_coverage": None,
+            "prompt_version": None,
             "evidence_sufficient": True,
         }
     ]

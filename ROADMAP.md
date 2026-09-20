@@ -107,7 +107,7 @@ truthfulness or replace browser safety protections.
   prevent evidence requiring review or blocked evidence from automated model
   context.
 
-### Current Phase 7 priorities
+### Completed Phase 7 priorities
 
 1. Keep one canonical research run for each normalized web-search target. A
    repeated **Discover sources** action performs a fresh provider search but
@@ -122,12 +122,16 @@ truthfulness or replace browser safety protections.
    its stored source summary rather than the original external webpage.
 4. Raise the governed discovery result limit from 5 to 50 sources so the
    platform can acquire and evaluate a broader initial evidence set.
-5. After eligible sources are summarized, group sources that share keywords
+5. Revisit both the chunk and final summarization prompts and their output
+   contracts. Every stored keyword now has a persisted, validated supporting
+   sentence from its source summary, and source summaries record the fixed
+   prompt version used to create them.
+
+### Current Phase 7 priority
+
+1. After eligible sources are summarized, group sources that share keywords
    and generate a cross-source synthesis describing what their summaries have
    in common and where they differ.
-6. Revisit both the chunk and final summarization prompts and their output
-   contracts so every generated keyword is substantively represented in that
-   source's summary.
 
 ### Remaining Phase 7 trust-layer work
 

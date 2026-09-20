@@ -40,6 +40,8 @@ CREATE TABLE IF NOT EXISTS evidence_summary_execution_sources (
     chunking_policy_version TEXT,
     summary TEXT,
     keywords JSONB,
+    keyword_coverage JSONB,
+    prompt_version TEXT,
     evidence_sufficient BOOLEAN,
     artifact_id UUID,
     artifact_reused BOOLEAN NOT NULL DEFAULT FALSE,
@@ -57,6 +59,8 @@ CREATE TABLE IF NOT EXISTS evidence_summary_artifacts (
     chunking_policy_version TEXT,
     summary TEXT NOT NULL,
     keywords JSONB NOT NULL,
+    keyword_coverage JSONB,
+    prompt_version TEXT,
     evidence_sufficient BOOLEAN NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (workspace_id, run_id, source_url, content_hash)
@@ -94,6 +98,8 @@ ALTER TABLE evidence_summary_executions ADD COLUMN IF NOT EXISTS regeneration_re
     NOT NULL DEFAULT FALSE;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS summary TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS keywords JSONB;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS keyword_coverage JSONB;
+ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS prompt_version TEXT;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS content_characters INTEGER;
 ALTER TABLE evidence_summary_execution_sources
     ADD COLUMN IF NOT EXISTS chunking_policy_version TEXT;
@@ -102,6 +108,8 @@ ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS artifact
 ALTER TABLE evidence_summary_execution_sources
     ADD COLUMN IF NOT EXISTS artifact_reused BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE evidence_summary_execution_sources ADD COLUMN IF NOT EXISTS failure_reason TEXT;
+ALTER TABLE evidence_summary_artifacts ADD COLUMN IF NOT EXISTS keyword_coverage JSONB;
+ALTER TABLE evidence_summary_artifacts ADD COLUMN IF NOT EXISTS prompt_version TEXT;
 ALTER TABLE evidence_summary_executions
     DROP CONSTRAINT IF EXISTS evidence_summary_executions_status_check;
 ALTER TABLE evidence_summary_executions
@@ -257,6 +265,7 @@ class EvidenceSummaryStore:
             await connection.execute(
                 """UPDATE evidence_summary_execution_sources
                    SET status = 'extracted', summary = NULL, keywords = NULL,
+                       keyword_coverage = NULL, prompt_version = NULL,
                        evidence_sufficient = NULL, artifact_id = NULL, artifact_reused = FALSE,
                        failure_reason = NULL
                    WHERE execution_id = $1 AND url = ANY($2::text[])""",
@@ -278,6 +287,8 @@ class EvidenceSummaryStore:
         url: str,
         summary: str,
         keywords: list[str],
+        keyword_coverage: dict[str, str],
+        prompt_version: str,
         evidence_sufficient: bool,
     ) -> None:
         execution = await self.get_execution_for_worker(execution_id)
@@ -291,11 +302,14 @@ class EvidenceSummaryStore:
         async with pool.acquire() as connection, connection.transaction():
             artifact = await connection.fetchrow(
                 """INSERT INTO evidence_summary_artifacts
-                   (id, workspace_id, run_id, source_url, content_hash, content_characters,
-                    chunk_count, chunking_policy_version, summary, keywords, evidence_sufficient)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11)
+                    (id, workspace_id, run_id, source_url, content_hash, content_characters,
+                    chunk_count, chunking_policy_version, summary, keywords, keyword_coverage,
+                    prompt_version, evidence_sufficient)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb, $11::jsonb, $12, $13)
                    ON CONFLICT (workspace_id, run_id, source_url, content_hash) DO UPDATE
                    SET summary = EXCLUDED.summary, keywords = EXCLUDED.keywords,
+                       keyword_coverage = EXCLUDED.keyword_coverage,
+                       prompt_version = EXCLUDED.prompt_version,
                        evidence_sufficient = EXCLUDED.evidence_sufficient
                    RETURNING id""",
                 artifact_id,
@@ -308,17 +322,22 @@ class EvidenceSummaryStore:
                 source.chunking_policy_version,
                 summary,
                 json.dumps(keywords),
+                json.dumps(keyword_coverage),
+                prompt_version,
                 evidence_sufficient,
             )
             await connection.execute(
                 """UPDATE evidence_summary_execution_sources
                    SET status = 'completed', summary = $3, keywords = $4::jsonb,
-                       evidence_sufficient = $5, artifact_id = $6, artifact_reused = FALSE
+                       keyword_coverage = $5::jsonb, prompt_version = $6,
+                       evidence_sufficient = $7, artifact_id = $8, artifact_reused = FALSE
                    WHERE execution_id = $1 AND url = $2""",
                 execution_id,
                 url,
                 summary,
                 json.dumps(keywords),
+                json.dumps(keyword_coverage),
+                prompt_version,
                 evidence_sufficient,
                 artifact["id"],
             )
@@ -334,7 +353,8 @@ class EvidenceSummaryStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
             artifact = await connection.fetchrow(
-                """SELECT id, summary, keywords, evidence_sufficient
+                """SELECT id, summary, keywords, keyword_coverage, prompt_version,
+                          evidence_sufficient
                    FROM evidence_summary_artifacts
                    WHERE workspace_id = $1 AND source_url = $2 AND content_hash = $3
                    ORDER BY created_at DESC LIMIT 1""",
@@ -344,7 +364,8 @@ class EvidenceSummaryStore:
             )
             if artifact is None:
                 legacy = await connection.fetchrow(
-                    """SELECT sources.summary, sources.keywords, sources.evidence_sufficient
+                    """SELECT sources.summary, sources.keywords, sources.keyword_coverage,
+                              sources.prompt_version, sources.evidence_sufficient
                        FROM evidence_summary_execution_sources AS sources
                        JOIN evidence_summary_executions AS prior
                          ON prior.id = sources.execution_id
@@ -365,8 +386,8 @@ class EvidenceSummaryStore:
                 await connection.execute(
                     """INSERT INTO evidence_summary_artifacts
                        (id, workspace_id, run_id, source_url, content_hash, summary, keywords,
-                        evidence_sufficient)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8)
+                        keyword_coverage, prompt_version, evidence_sufficient)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, $10)
                        ON CONFLICT (workspace_id, run_id, source_url, content_hash) DO NOTHING""",
                     uuid4(),
                     execution.workspace_id,
@@ -375,12 +396,15 @@ class EvidenceSummaryStore:
                     content_hash,
                     legacy["summary"],
                     json.dumps(legacy_keywords),
+                    json.dumps(legacy["keyword_coverage"]),
+                    legacy["prompt_version"],
                     legacy["evidence_sufficient"]
                     if legacy["evidence_sufficient"] is not None
                     else True,
                 )
                 artifact = await connection.fetchrow(
-                    """SELECT id, summary, keywords, evidence_sufficient
+                    """SELECT id, summary, keywords, keyword_coverage, prompt_version,
+                              evidence_sufficient
                        FROM evidence_summary_artifacts
                        WHERE workspace_id = $1 AND run_id = $2 AND source_url = $3
                          AND content_hash = $4""",
@@ -392,10 +416,14 @@ class EvidenceSummaryStore:
             artifact_keywords = artifact["keywords"]
             if isinstance(artifact_keywords, str):
                 artifact_keywords = json.loads(artifact_keywords)
+            artifact_coverage = artifact["keyword_coverage"]
+            if isinstance(artifact_coverage, str):
+                artifact_coverage = json.loads(artifact_coverage)
             await connection.execute(
                 """UPDATE evidence_summary_execution_sources
                    SET status = 'completed', content_hash = $3, summary = $4,
-                       keywords = $5::jsonb, evidence_sufficient = $6, artifact_id = $7,
+                       keywords = $5::jsonb, keyword_coverage = $6::jsonb,
+                       prompt_version = $7, evidence_sufficient = $8, artifact_id = $9,
                        artifact_reused = TRUE, failure_reason = NULL
                    WHERE execution_id = $1 AND url = $2""",
                 execution_id,
@@ -403,6 +431,8 @@ class EvidenceSummaryStore:
                 content_hash,
                 artifact["summary"],
                 json.dumps(artifact_keywords),
+                json.dumps(artifact_coverage),
+                artifact["prompt_version"],
                 artifact["evidence_sufficient"],
                 artifact["id"],
             )
@@ -498,6 +528,7 @@ class EvidenceSummaryStore:
             sources = await connection.fetch(
                 """SELECT url, status, content_hash, content_characters, chunk_count,
                           chunking_policy_version, summary, keywords,
+                          keyword_coverage, prompt_version,
                           evidence_sufficient, artifact_reused, failure_reason
                    FROM evidence_summary_execution_sources
                    WHERE execution_id = $1 ORDER BY url""",
@@ -552,6 +583,7 @@ class EvidenceSummaryStore:
                           artifacts.run_id, artifacts.source_url AS url,
                           COALESCE(source.title, artifacts.source_url) AS title,
                           artifacts.chunk_count, artifacts.summary, artifacts.keywords,
+                          artifacts.keyword_coverage, artifacts.prompt_version,
                           artifacts.evidence_sufficient
                    FROM evidence_summary_artifacts AS artifacts
                    LEFT JOIN LATERAL (
@@ -601,6 +633,8 @@ class EvidenceSummaryStore:
         values = dict(source)
         if isinstance(values.get("keywords"), str):
             values["keywords"] = json.loads(values["keywords"])
+        if isinstance(values.get("keyword_coverage"), str):
+            values["keyword_coverage"] = json.loads(values["keyword_coverage"])
         return EvidenceSummaryExecutionSource(**values)
 
     @staticmethod
@@ -608,4 +642,6 @@ class EvidenceSummaryStore:
         values = dict(artifact)
         if isinstance(values.get("keywords"), str):
             values["keywords"] = json.loads(values["keywords"])
+        if isinstance(values.get("keyword_coverage"), str):
+            values["keyword_coverage"] = json.loads(values["keyword_coverage"])
         return WorkspaceEvidenceSummaryArtifact(**values)

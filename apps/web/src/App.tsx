@@ -11,11 +11,14 @@ type Source = {
   preflight_status: "pending" | "checking" | "ready_to_extract" | "review_required" | "blocked" | "unreachable";
   preflight_reason?: string | null; preflight_checked_at?: string | null;
   preflight_content_type?: string | null; preflight_content_hash?: string | null;
+  preflight_final_url?: string | null;
+  preflight_redirect_result?: "no_redirect" | "redirected" | "redirect_limit_exceeded" | "unsafe_destination_blocked" | null;
   preflight_trust_disposition?: string | null;
 };
 type Evidence = {
   url: string; retrieved_at: string; content_type: string; text: string; content_hash: string;
-  extraction_method: string;
+  extraction_method: string; requested_url?: string | null;
+  redirect_result?: "no_redirect" | "redirected" | "redirect_limit_exceeded" | "unsafe_destination_blocked" | null;
 };
 type EvidenceTrustEvaluation = {
   id: string; source_url: string; content_hash: string; policy_version: string;
@@ -23,6 +26,10 @@ type EvidenceTrustEvaluation = {
   override_reason?: string | null;
 };
 type EvidenceTrustEvaluationList = { evaluations: EvidenceTrustEvaluation[] };
+type EffectiveWebTrustPolicy = {
+  version: string;
+  rules: Record<string, string | number | string[]>;
+};
 type AuditEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
 type ResearchRun = {
   id: string; question: string; status: string; sources: Source[]; evidence: Evidence[];
@@ -573,6 +580,7 @@ export function App() {
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
+  const [trustPolicy, setTrustPolicy] = useState<EffectiveWebTrustPolicy | null>(null);
   const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -614,6 +622,7 @@ export function App() {
     if (health && !isDeveloperRoute && !isAdminRoute) {
       void refreshRunLibrary();
       void loadWorkspaceSummaries();
+      void loadTrustPolicy();
     }
   }, [health]);
 
@@ -720,6 +729,14 @@ export function App() {
     setTrustEvaluations(response.evaluations);
   }
 
+  async function loadTrustPolicy() {
+    try {
+      setTrustPolicy(await apiRequest<EffectiveWebTrustPolicy>("/v1/web-trust-policy"));
+    } catch {
+      setTrustPolicy(null);
+    }
+  }
+
   async function acceptEvidenceForReview(
     evidence: Evidence,
     evaluation: EvidenceTrustEvaluation,
@@ -814,13 +831,17 @@ export function App() {
       </section>
 
       {run && <>
+        {trustPolicy && <section aria-labelledby="trust-policy-heading">
+          <div className="section-heading"><div><p className="eyebrow">Read-only platform policy</p><h2 id="trust-policy-heading">Web trust policy</h2></div><span className="badge">{trustPolicy.version}</span></div>
+          <dl className="trust-policy-details">{Object.entries(trustPolicy.rules).map(([rule, value]) => <div key={rule}><dt>{rule.replaceAll("_", " ")}</dt><dd>{Array.isArray(value) ? value.join(", ") : String(value)}</dd></div>)}</dl>
+        </section>}
         <section aria-labelledby="sources-heading">
           <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><span className="badge">{run.status.replaceAll("_", " ")}</span></div>
           {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
             <li className="source-candidate" key={`${source.rank}-${source.url}`}><div className="source">
-              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small></span>
+              <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_redirect_result ? ` · retrieval ${source.preflight_redirect_result.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small>{source.preflight_final_url && source.preflight_final_url !== source.url && <small>Captured from: {source.preflight_final_url}</small>}</span>
             </div><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a>{(() => {
-              const evidence = run.evidence.find((item) => item.url === source.url && item.content_hash === source.preflight_content_hash);
+              const evidence = run.evidence.find((item) => item.content_hash === source.preflight_content_hash && (item.requested_url === source.url || item.url === source.preflight_final_url || item.url === source.url));
               const evaluation = evidence && trustEvaluations.find((candidate) => candidate.source_url === evidence.url && candidate.content_hash === evidence.content_hash);
               if (!evidence || evaluation?.disposition !== "review_required") return null;
               return <div className="candidate-review"><button type="button" className="secondary" onClick={() => void acceptEvidenceForReview(evidence, evaluation)} disabled={busy}>Accept for automated use</button></div>;

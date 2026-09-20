@@ -18,10 +18,11 @@ browser-agnostic platform decision about evidence eligibility, not a claim that
 a source is true or that a browser should block it.
 
 The initial policy checks HTTPS, supported extracted content types, extraction
-integrity, and extracted-size limits. It records redirect history as unavailable
-because the current evidence contract does not yet retain the redirect chain.
-That limitation creates an `eligible_with_notice` result for otherwise valid
-HTML or plain-text evidence; it does not prevent local summarization.
+integrity, and extracted-size limits. Retrieval retains the requested candidate
+URL, final evidence URL, and a bounded redirect result. The result explains how
+the evidence was reached but does not independently change its trust
+disposition. The extractor continues to validate every redirect destination
+before requesting it.
 
 Extracted text over 200,000 characters is retained as `review_required`, not
 sent to the model, and available for an authorized human to inspect and accept.
@@ -30,10 +31,11 @@ extracted text over 2,000,000 characters. Those hard acquisition limits are not
 overrideable.
 
 Each evaluation is persisted with its policy and component versions, rule
-outcomes, and effective disposition:
+outcomes, and effective disposition. Operators can inspect the effective,
+server-owned policy through the read-only `GET /v1/web-trust-policy` endpoint;
+that endpoint neither changes policy nor re-evaluates evidence.
 
-- `eligible` and `eligible_with_notice` evidence may enter the local-model
-  context.
+- `eligible` evidence may enter the local-model context.
 - `review_required` evidence remains visible in the operator interface but is
   excluded from summaries and keywords until a human operator accepts that exact
   content hash with a recorded reason.

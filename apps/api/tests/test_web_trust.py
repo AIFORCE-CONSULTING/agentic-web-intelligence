@@ -26,6 +26,8 @@ from app.web_trust.service import EvidenceTrustService
 def evidence(url: str = "https://example.com/article", content_type: str = "text/html") -> Evidence:
     return Evidence(
         url=url,
+        requested_url=url,
+        redirect_result="no_redirect",
         retrieved_at=datetime.now(UTC),
         content_type=content_type,
         text="Stored public evidence.",
@@ -41,18 +43,18 @@ class FakeTrustStore:
     async def latest_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
         return self.current
 
-    async def ensure_default_policy(self, *_: object) -> None:
+    async def ensure_policy(self, *_: object) -> None:
         return None
 
     async def record_evaluation(
-        self, workspace_id, run_id, url, content_hash, disposition, rules, version
+        self, workspace_id, run_id, url, content_hash, policy_version, disposition, rules, version
     ):
         self.current = EvidenceTrustEvaluation(
             id=uuid4(),
             run_id=run_id,
             source_url=url,
             content_hash=content_hash,
-            policy_version="local-default-v1",
+            policy_version=policy_version,
             disposition=disposition,
             base_disposition=disposition,
             rule_outcomes=rules,
@@ -76,18 +78,17 @@ class FakeTrustStore:
         return self.current
 
 
-def test_default_policy_allows_supported_web_evidence_with_a_notice() -> None:
+def test_default_policy_allows_supported_web_evidence() -> None:
     store = FakeTrustStore()
     result = asyncio.run(EvidenceTrustService(store).evaluate(uuid4(), uuid4(), evidence()))
 
-    assert result.disposition == "eligible_with_notice"
-    assert result.base_disposition == "eligible_with_notice"
+    assert result.disposition == "eligible"
+    assert result.base_disposition == "eligible"
     assert {item.rule for item in result.rule_outcomes} == {
         "https_required",
         "content_type",
         "extraction_integrity",
         "extracted_size",
-        "redirect_history",
     }
 
 
@@ -190,7 +191,9 @@ def test_candidate_preflight_persists_reusable_evidence_and_failed_candidate_met
 
     assert [item.url for item in research_store.saved] == [available.url]
     assert research_store.results[0][2] == "ready_to_extract"
-    assert research_store.results[0][-1]["trust_disposition"] == "eligible_with_notice"
+    assert research_store.results[0][-1]["trust_disposition"] == "eligible"
+    assert research_store.results[0][-1]["final_url"] == available.url
+    assert research_store.results[0][-1]["redirect_result"] == "no_redirect"
     assert research_store.results[1][2] == "blocked"
     assert "maximum permitted size" in str(research_store.results[1][3])
     assert research_store.completed is True
@@ -319,6 +322,32 @@ def test_summary_preparation_excludes_evidence_requiring_review() -> None:
     assert store.failure_reasons == ["Evidence requires human review before it can be summarized."]
 
 
+def test_effective_web_trust_policy_is_read_only_for_operators() -> None:
+    app, _ = authenticated_app(create_app())
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get("/v1/web-trust-policy")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "version": "local-default-v2",
+        "rules": {
+            "required_scheme": "https",
+            "allowed_content_types": ["text/html", "text/plain"],
+            "maximum_extracted_characters": 200_000,
+            "unknown_content_type_disposition": "review_required",
+            "redirect_metadata": (
+                "Record the requested URL, final URL, and bounded retrieval result; "
+                "redirects do not independently change trust disposition."
+            ),
+        },
+    }
+
+
 def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_acceptance() -> None:
     app = create_app()
     user = AuthenticatedUser(
@@ -328,12 +357,12 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
     run_id = uuid4()
     review = EvidenceTrustEvaluation(
         id=uuid4(), run_id=run_id, source_url="https://example.com/article",
-        content_hash="sha256:content", policy_version="local-default-v1",
+        content_hash="sha256:content", policy_version="local-default-v2",
         disposition="review_required", base_disposition="review_required",
         rule_outcomes=[
             TrustRuleOutcome(rule="content_type", outcome="review_required", detail="Review.")
         ],
-        component_version="web-trust-v1", created_at=datetime.now(UTC),
+        component_version="web-trust-v2", created_at=datetime.now(UTC),
     )
 
     class FakeIdentityService:

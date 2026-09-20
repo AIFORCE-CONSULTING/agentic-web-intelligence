@@ -113,6 +113,7 @@ from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
 from app.web_trust.contracts import (
     CreateEvidenceTrustOverrideRequest,
+    EffectiveWebTrustPolicy,
     EvidenceTrustEvaluation,
     EvidenceTrustEvaluationList,
 )
@@ -1245,6 +1246,20 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Research run was not found.")
         return run
+
+    @app.get(
+        "/v1/web-trust-policy",
+        response_model=EffectiveWebTrustPolicy,
+        tags=["research"],
+    )
+    async def get_effective_web_trust_policy(
+        http_request: Request,
+    ) -> EffectiveWebTrustPolicy:
+        """Show the current server-owned web-trust policy without changing it."""
+
+        await require_workspace_permission(http_request, "research.read")
+        service: EvidenceTrustService = http_request.app.state.web_trust_service
+        return service.effective_policy()
 
     @app.get(
         "/v1/research/runs/{run_id}/evidence-trust",

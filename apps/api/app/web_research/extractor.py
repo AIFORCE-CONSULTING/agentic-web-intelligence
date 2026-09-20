@@ -7,7 +7,12 @@ from hashlib import sha256
 import httpx
 import trafilatura
 
-from app.web_research.contracts import Evidence, ToolPolicyError, ToolRetrievalError
+from app.web_research.contracts import (
+    Evidence,
+    RedirectResult,
+    ToolPolicyError,
+    ToolRetrievalError,
+)
 from app.web_research.policy import (
     MAX_REDIRECTS,
     MAX_RESPONSE_BYTES,
@@ -32,8 +37,16 @@ class WebExtractor:
         """Fetch one public page without following uncontrolled redirects."""
 
         current_url = requested_url
+        redirected = False
         for _ in range(MAX_REDIRECTS + 1):
-            await self._destination_validator(current_url)
+            try:
+                await self._destination_validator(current_url)
+            except ToolPolicyError as error:
+                if redirected:
+                    raise ToolPolicyError(
+                        str(error), redirect_result="unsafe_destination_blocked"
+                    ) from error
+                raise
             try:
                 async with self._client.stream(
                     "GET", current_url, follow_redirects=False
@@ -45,6 +58,7 @@ class WebExtractor:
                                 "The redirect response did not provide a destination."
                             )
                         current_url = str(response.url.join(location))
+                        redirected = True
                         continue
 
                     response.raise_for_status()
@@ -71,17 +85,30 @@ class WebExtractor:
                             raise ToolPolicyError(
                                 "The response exceeds the maximum permitted size."
                             )
-                    return self._to_evidence(response, content_type, bytes(content))
+                    return self._to_evidence(
+                        response,
+                        content_type,
+                        bytes(content),
+                        requested_url,
+                        "redirected" if redirected else "no_redirect",
+                    )
             except httpx.HTTPStatusError as error:
                 raise self._retrieval_error_for_status(error.response.status_code) from error
             except httpx.HTTPError as error:
                 raise ToolRetrievalError("The selected source could not be retrieved.") from error
 
-        raise ToolPolicyError("The request exceeded the maximum number of redirects.")
+        raise ToolPolicyError(
+            "The request exceeded the maximum number of redirects.",
+            redirect_result="redirect_limit_exceeded",
+        )
 
     @staticmethod
     def _to_evidence(
-        response: httpx.Response, content_type: str, raw_content: bytes
+        response: httpx.Response,
+        content_type: str,
+        raw_content: bytes,
+        requested_url: str,
+        redirect_result: RedirectResult,
     ) -> Evidence:
         if content_type == "text/plain":
             text = raw_content.decode(response.encoding or "utf-8", errors="replace").strip()
@@ -102,6 +129,8 @@ class WebExtractor:
             raise ToolPolicyError("The extracted text exceeds the maximum permitted size.")
         return Evidence(
             url=str(response.url),
+            requested_url=requested_url,
+            redirect_result=redirect_result,
             retrieved_at=datetime.now(UTC),
             content_type=content_type,
             text=text,

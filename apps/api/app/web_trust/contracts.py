@@ -9,6 +9,13 @@ from pydantic import BaseModel, ConfigDict, Field
 TrustDisposition = Literal["eligible", "eligible_with_notice", "review_required", "blocked"]
 
 
+class EffectiveWebTrustPolicy(BaseModel):
+    """Read-only view of the policy the server will apply to new evaluations."""
+
+    version: str
+    rules: dict[str, str | int | list[str]]
+
+
 class CandidatePreflightRequest(BaseModel):
     """Server-selected source batch for one durable candidate-preflight workflow."""
 

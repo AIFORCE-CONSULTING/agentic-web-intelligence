@@ -6,11 +6,15 @@ from uuid import UUID
 
 from app.web_research.contracts import Evidence
 from app.web_research.policy import MAX_EXTRACTED_TEXT_CHARS
-from app.web_trust.contracts import EvidenceTrustEvaluation, TrustRuleOutcome
+from app.web_trust.contracts import (
+    EffectiveWebTrustPolicy,
+    EvidenceTrustEvaluation,
+    TrustRuleOutcome,
+)
 from app.web_trust.store import WebTrustStore
 
-_POLICY_VERSION = "local-default-v1"
-_COMPONENT_VERSION = "web-trust-v1"
+_POLICY_VERSION = "local-default-v2"
+_COMPONENT_VERSION = "web-trust-v2"
 _ALLOWED_CONTENT_TYPES = frozenset({"text/html", "text/plain"})
 
 
@@ -31,11 +35,19 @@ class EvidenceTrustService:
         if existing is not None and existing.policy_version == _POLICY_VERSION:
             return existing
         rules = self._rules(evidence)
-        await self._store.ensure_default_policy(workspace_id, self.default_policy())
+        await self._store.ensure_policy(
+            workspace_id, _POLICY_VERSION, self.default_policy()
+        )
         disposition = self._disposition(rules)
         return await self._store.record_evaluation(
-            workspace_id, run_id, evidence.url, evidence.content_hash,
-            disposition, rules, _COMPONENT_VERSION,
+            workspace_id,
+            run_id,
+            evidence.url,
+            evidence.content_hash,
+            _POLICY_VERSION,
+            disposition,
+            rules,
+            _COMPONENT_VERSION,
         )
 
     async def accept(
@@ -64,6 +76,12 @@ class EvidenceTrustService:
     async def list_for_run(self, workspace_id: UUID, run_id: UUID) -> list[EvidenceTrustEvaluation]:
         return await self._store.list_latest_evaluations(workspace_id, run_id)
 
+    @classmethod
+    def effective_policy(cls) -> EffectiveWebTrustPolicy:
+        """Return the code-owned policy that will govern a new evaluation."""
+
+        return EffectiveWebTrustPolicy(version=_POLICY_VERSION, rules=cls.default_policy())
+
     @staticmethod
     def default_policy() -> dict[str, object]:
         """Expose the fixed v1 rules recorded with each workspace policy version."""
@@ -73,6 +91,10 @@ class EvidenceTrustService:
             "allowed_content_types": sorted(_ALLOWED_CONTENT_TYPES),
             "maximum_extracted_characters": MAX_EXTRACTED_TEXT_CHARS,
             "unknown_content_type_disposition": "review_required",
+            "redirect_metadata": (
+                "Record the requested URL, final URL, and bounded retrieval result; "
+                "redirects do not independently change trust disposition."
+            ),
         }
 
     @staticmethod
@@ -113,13 +135,6 @@ class EvidenceTrustService:
                 detail=("Extracted text is within the local policy limit."
                         if len(evidence.text) <= MAX_EXTRACTED_TEXT_CHARS
                         else "Extracted text requires human review before automated use."),
-            ),
-            TrustRuleOutcome(
-                rule="redirect_history",
-                outcome="notice",
-                detail=(
-                    "Redirect history is not retained by the current evidence contract."
-                ),
             ),
         ]
         return rules

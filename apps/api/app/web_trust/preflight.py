@@ -37,7 +37,9 @@ class CandidatePreflightService:
                 "The research run is unavailable for candidate preflight."
             )
         allowed_urls = set(source_urls) if source_urls is not None else None
-        stored_evidence = {evidence.url: evidence for evidence in run.evidence}
+        stored_evidence = {
+            evidence.requested_url or evidence.url: evidence for evidence in run.evidence
+        }
         for source in run.sources:
             if allowed_urls is not None and source.url not in allowed_urls:
                 continue
@@ -50,7 +52,11 @@ class CandidatePreflightService:
                     evidence = await run_extract_workflow(source.url)
                 except ToolPolicyError as error:
                     await self._research_store.record_candidate_preflight(
-                        run_id, source.url, "blocked", str(error)
+                        run_id,
+                        source.url,
+                        "blocked",
+                        str(error),
+                        redirect_result=error.redirect_result,
                     )
                     continue
                 except ToolRetrievalError as error:
@@ -76,6 +82,8 @@ class CandidatePreflightService:
                 status,
                 content_type=evidence.content_type,
                 content_hash=evidence.content_hash,
+                final_url=evidence.url,
+                redirect_result=evidence.redirect_result,
                 trust_disposition=evaluation.disposition,
             )
         await self._research_store.complete_candidate_preflight(run_id)

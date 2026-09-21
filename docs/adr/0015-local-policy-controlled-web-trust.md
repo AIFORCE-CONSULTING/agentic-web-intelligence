@@ -50,16 +50,21 @@ cannot set a disposition or override a policy.
 ### Policy inputs and evaluation record
 
 The initial versioned local policy uses deterministic checks for approved or
-blocked sources, HTTPS, redirects, response content type, response size,
-extraction integrity, and freshness. The evaluator records source identity
-metadata when observed and records provenance results when available.
+blocked sources, HTTPS, response content type, response size, extraction
+integrity, and freshness. Redirect handling is a bounded retrieval diagnostic,
+not an independent trust signal: the platform retains the requested candidate
+URL, final evidence URL, and one result describing whether it reached the page
+directly, redirected, exceeded the redirect limit, or was blocked at an unsafe
+redirect destination. The evaluator records source identity metadata when
+observed and records provenance results when available.
 
 Each evaluation is immutable and records the exact evidence version and
 retrieval facts evaluated, policy and component versions, individual rule
 outcomes, observed identity and provenance signals, final disposition, and
 timestamps. Candidate records additionally retain search provenance, preflight
-status, reason, timestamp, content type, content hash, and trust disposition
-when available. Failed or blocked candidates remain queryable by later agents,
+status, reason, timestamp, content type, content hash, final URL, bounded
+redirect result, and trust disposition when available. Failed or blocked
+candidates remain queryable by later agents,
 but a previous result is not a permanent domain-level verdict: future work must
 recheck according to configured freshness policy. These records explain a
 platform decision; they are not assertions that the underlying content is

@@ -6,6 +6,13 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
+RedirectResult = Literal[
+    "no_redirect",
+    "redirected",
+    "redirect_limit_exceeded",
+    "unsafe_destination_blocked",
+]
+
 
 class ExtractRequest(BaseModel):
     """A request for text evidence from one public webpage."""
@@ -46,6 +53,8 @@ class Evidence(BaseModel):
     """Normalized, bounded evidence returned from the web boundary."""
 
     url: str
+    requested_url: str | None = None
+    redirect_result: RedirectResult | None = None
     retrieved_at: datetime
     content_type: str
     text: str = Field(min_length=1)
@@ -88,6 +97,8 @@ class SourceCandidate(SearchResult):
     preflight_checked_at: datetime | None = None
     preflight_content_type: str | None = None
     preflight_content_hash: str | None = None
+    preflight_final_url: str | None = None
+    preflight_redirect_result: RedirectResult | None = None
     preflight_trust_disposition: Literal[
         "eligible", "eligible_with_notice", "review_required", "blocked"
     ] | None = None
@@ -151,6 +162,10 @@ class McpToolAuditList(BaseModel):
 
 class ToolPolicyError(ValueError):
     """Raised when a request is outside the read-only web-tool policy."""
+
+    def __init__(self, message: str, redirect_result: RedirectResult | None = None) -> None:
+        super().__init__(message)
+        self.redirect_result = redirect_result
 
 
 class ToolProviderError(RuntimeError):

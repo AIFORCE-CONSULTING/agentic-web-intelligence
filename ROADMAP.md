@@ -1,6 +1,6 @@
 # Roadmap
 
-## Phase 1 - Foundation
+## Phase 1 - Foundation (complete)
 
 - Repository scaffold and contribution standards
 - React + FastAPI application boundaries
@@ -9,7 +9,7 @@
 - Architecture Decision Records
 - CI validation and repository templates
 
-## Phase 2 - Governed Web Intelligence
+## Phase 2 - Governed Web Intelligence (complete)
 
 Deliver an evidence-producing web-research workflow through a governed MCP boundary.
 
@@ -28,20 +28,6 @@ Deliver an evidence-producing web-research workflow through a governed MCP bound
 ## Phase 4 - Enterprise Services (complete)
 
 Add authentication, authorization, tool registry, secrets, and governance.
-
-## Post-Phase-4 Parking Lot
-
-These items are intentionally captured for the next planning pass. They do not
-expand the active Phase 4 scope or replace the existing Durable Execution
-roadmap phase.
-
-1. **GitHub Projects integration** — connect the platform's planning workflow
-   to GitHub Projects so an operator can build a roadmap, create tasks, and
-   update their priority quickly.
-2. **Source-candidate review usability** — make each source candidate URL a
-   clickable external link that opens in a new browser tab, and request/display
-   longer article descriptions so an operator has more context before choosing
-   a source for extraction.
 
 ## Phase 5 - Durable Execution (complete)
 
@@ -72,87 +58,128 @@ summaries and page-level keywords.
   output, provenance, and schema validation rules.
 - Process complete pages through bounded overlapping chunks, then consolidate
   page summaries and key phrases with coverage and source-chunk references.
-- Run short single-page summaries directly; use Temporal only for multi-page or
-  restart-sensitive chunk processing.
+- Run Temporal as mandatory platform infrastructure. The platform selects a
+  direct path for one-source, one-chunk summaries and automatically uses the
+  durable workflow for multi-source or multi-chunk processing; an operator
+  never chooses the execution mechanism.
 - Add an operator UI to request, inspect, and distinguish generated summaries
   from extracted source evidence.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7 - Local Policy-Controlled Web Trust
+## Phase 7
+
+### Refactoring
+
+- [ ] Use the existing keyword groups to generate a cross-source synthesis for
+  each shared keyword. Each synthesis identifies what the linked source
+  summaries have in common, where they differ, and their relevant caveats.
+- [x] Keep one canonical research run for each normalized web-search target. A
+  repeated **Discover sources** action performs a fresh provider search but
+  never creates a duplicate target container.
+- [x] On repeated discovery, append and acquire/preflight only source URLs that
+  are not already present anywhere in the workspace database. Preserve prior
+  evidence, trust evaluations, and summaries without re-fetching or
+  re-summarizing them.
+- [x] Add a workspace-wide keyword-centered operator view: render each keyword
+  as a visual card and list every related stored source summary beneath it. A
+  source may appear under more than one keyword, and each source link opens its
+  stored source summary rather than the original external webpage.
+- [x] Raise the governed discovery result limit from 5 to 50 sources so the
+  platform can acquire and evaluate a broader initial evidence set.
+- [x] Revisit both the chunk and final summarization prompts and their output
+  contracts. Every stored keyword now has a persisted, validated supporting
+  sentence from its source summary, and source summaries record the fixed
+  prompt version used to create them.
+
+### Local Policy-Controlled Web Trust
 
 Add a browser-agnostic control point that determines whether a captured web
 evidence version may enter the platform's evidence and AI workflows. This phase
 governs local eligibility; it does not make a universal claim about a source's
 truthfulness or replace browser safety protections.
 
-- Define the source-trust boundary, authority, and enforcement rules in an ADR.
-- Add a versioned, local trust policy with deterministic rules for approved
-  sources, HTTPS, redirects, content types, extraction integrity, freshness,
-  and size limits.
-- Discover and automatically preflight every returned candidate before the
+- [x] Define the source-trust boundary, authority, and enforcement rules in an ADR.
+- [x] Establish the initial, versioned local trust policy and expose it for
+  read-only operator review. The current policy deterministically evaluates
+  HTTPS, supported content types, extraction integrity, and extracted-size
+  limits. It records redirects only as retrieval diagnostics: requested
+  candidate URL, final evidence URL, and one bounded result (`no_redirect`,
+  `redirected`, `redirect_limit_exceeded`, or `unsafe_destination_blocked`).
+  Redirect metadata explains how evidence was reached but does not independently
+  allow, flag, or block it.
+- [x] Discover and automatically preflight every returned candidate before the
   operator selects it. Persist useful evidence, trust results, and failed or
   blocked candidate metadata so future agents can reuse the findings without
   treating a past URL result as a permanent verdict.
-- Automatically summarize eligible preflight evidence and accepted reviewed
+- [x] Automatically summarize eligible preflight evidence and accepted reviewed
   evidence through platform-selected direct or Temporal execution without
   exposing manual extraction or regeneration controls.
-- Evaluate an evidence version after acquisition and before it is eligible for
+- [x] Evaluate an evidence version after acquisition and before it is eligible for
   summaries, keywords, or future evidence-grounded capabilities.
-- Persist an immutable evaluation record with retrieval facts, policy version,
-  rule outcomes, observed provenance and identity signals, disposition,
-  timestamps, and component versions.
-- Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
+- [x] Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
   dispositions. Preserve raw capture for audit regardless of disposition, but
   prevent evidence requiring review or blocked evidence from automated model
   context.
 
-### Completed Phase 7 priorities
+#### Open work
 
-1. Keep one canonical research run for each normalized web-search target. A
-   repeated **Discover sources** action performs a fresh provider search but
-   never creates a duplicate target container.
-2. On repeated discovery, append and acquire/preflight only source URLs that
-   are not already present anywhere in the workspace database. Preserve prior
-   evidence, trust evaluations, and summaries without re-fetching or
-   re-summarizing them.
-3. Add a workspace-wide keyword-centered operator view: render each keyword
-   as a visual card and list every related stored source summary beneath it.
-   A source may appear under more than one keyword, and each source link opens
-   its stored source summary rather than the original external webpage.
-4. Raise the governed discovery result limit from 5 to 50 sources so the
-   platform can acquire and evaluate a broader initial evidence set.
-5. Revisit both the chunk and final summarization prompts and their output
-   contracts. Every stored keyword now has a persisted, validated supporting
-   sentence from its source summary, and source summaries record the fixed
-   prompt version used to create them.
-
-### Current Phase 7 priority
-
-1. After eligible sources are summarized, group sources that share keywords
-   and generate a cross-source synthesis describing what their summaries have
-   in common and where they differ.
-
-### Remaining Phase 7 trust-layer work
-
-- Add a review experience for evidence requiring review. A human acceptance or
+- [ ] Add a review experience for evidence requiring review. A human acceptance or
   override records its identity, reason, scope, and expiry independently of the
   UI and execution mechanism.
-- Re-evaluate evidence after refresh or an applicable policy change. The
+- [ ] Re-evaluate evidence after refresh or an applicable policy change. The
   platform uses direct execution for one ordinary evaluation and automatically
   uses its mandatory Temporal infrastructure when workload, retry, or review
   thresholds require durable execution.
-- Validate C2PA provenance for supported file assets while recording ordinary
+- [ ] Validate C2PA provenance for supported file assets while recording ordinary
   HTML as a distinct case, not as invalid solely because it has no asset-level
   provenance manifest.
-- Validate policy enforcement, policy changes, refresh, overrides, workspace
+- [ ] Validate policy enforcement, policy changes, refresh, overrides, workspace
   isolation, prompt-injection resistance, and direct-versus-durable routing.
 
-## Future Parking Lot
+## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
 
+- **Trust-policy management** — design a separately authorized workflow for
+  changing local trust-policy rules, potentially through a purpose-built MCP
+  capability. The current operator view remains read-only; no UI or agent may
+  change enforcement rules directly.
+- **Evidence freshness and re-capture** — design a governed way to refresh a
+  stored source before enforcing a freshness limit. Today the platform reuses
+  evidence already retained for a source and intentionally does not re-fetch it
+  during discovery, so a freshness rule would otherwise make evidence stale
+  without a way to renew it.
+- **Agent-readiness profile** — record observed agent-facing capabilities for a
+  source without treating them as a trust score or eligibility decision. Future
+  observations may include semantic structure, JSON-LD, documented APIs,
+  declared WebMCP tools, and read-only or consequential tool hints. The profile
+  may use statuses such as `no_agent_interface_observed`,
+  `structured_content_observed`, `machine_interface_declared`, and
+  `agent_tools_observed` to inform future agent behavior only.
+- **Evidence adequacy** — determine whether extraction produced meaningful
+  source content rather than a navigation shell, paywall, login page, or shared
+  template. This is needed before an automated workflow treats a technically
+  successful capture as substantive research evidence.
+- **Publisher access declaration** — record applicable `robots.txt` instructions
+  for the platform's declared automated client identity. Use this to inform
+  responsible retrieval behavior, never as authorization or a source trust
+  score.
+- **Agent-action boundary and safe inspection** — when a source declares
+  WebMCP, OpenAPI, MCP, or another machine-action interface, record its
+  existence while keeping it outside the research extractor. A future tightly
+  controlled browser-inspection capability may observe declared WebMCP tools,
+  but must never invoke them. The platform remains read-only with respect to
+  website-provided tools.
+
+- **GitHub Projects integration** — connect the platform's planning workflow
+  to GitHub Projects so an operator can build a roadmap, create tasks, and
+  update their priority quickly.
+- **Source-candidate review usability** — make each source candidate URL a
+  clickable external link that opens in a new browser tab, and request/display
+  longer article descriptions so an operator has more context before choosing
+  a source for extraction.
 - **Grounded Research Chat** — an authenticated, evidence-grounded chat
   experience on the local model-provider boundary. It would answer only from
   selected workspace-owned research evidence, cite sources, surface uncertainty

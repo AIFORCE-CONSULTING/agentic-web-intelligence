@@ -82,14 +82,16 @@ class WebTrustStore:
                 raise WebTrustStoreUnavailable("Web-trust persistence is unavailable.") from error
         return self._pool
 
-    async def ensure_default_policy(self, workspace_id: UUID, rules: dict[str, object]) -> None:
+    async def ensure_policy(
+        self, workspace_id: UUID, version: str, rules: dict[str, object]
+    ) -> None:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             await connection.execute(
                 """INSERT INTO web_trust_policy_versions (id, workspace_id, version, rules)
-                   VALUES ($1, $2, 'local-default-v1', $3::jsonb)
+                   VALUES ($1, $2, $3, $4::jsonb)
                    ON CONFLICT (workspace_id, version) DO NOTHING""",
-                uuid4(), workspace_id, json.dumps(self._redact(rules)),
+                uuid4(), workspace_id, version, json.dumps(self._redact(rules)),
             )
 
     async def latest_evaluation(
@@ -123,6 +125,7 @@ class WebTrustStore:
         run_id: UUID,
         source_url: str,
         content_hash: str,
+        policy_version: str,
         disposition: str,
         rule_outcomes: list[TrustRuleOutcome],
         component_version: str,
@@ -133,10 +136,17 @@ class WebTrustStore:
                 """INSERT INTO web_evidence_trust_evaluations
                    (id, workspace_id, run_id, source_url, content_hash, policy_version,
                     disposition, rule_outcomes, component_version)
-                   VALUES ($1, $2, $3, $4, $5, 'local-default-v1', $6, $7::jsonb, $8)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8::jsonb, $9)
                    RETURNING *""",
-                uuid4(), workspace_id, run_id, source_url, content_hash, disposition,
-                json.dumps([outcome.model_dump() for outcome in rule_outcomes]), component_version,
+                uuid4(),
+                workspace_id,
+                run_id,
+                source_url,
+                content_hash,
+                policy_version,
+                disposition,
+                json.dumps([outcome.model_dump() for outcome in rule_outcomes]),
+                component_version,
             )
         return self._to_evaluation(row)
 

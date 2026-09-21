@@ -335,6 +335,8 @@ def test_extractor_returns_normalized_plain_text_evidence() -> None:
     assert evidence.text == "A public evidence record."
     assert evidence.content_type == "text/plain"
     assert evidence.extraction_method == "plain-text"
+    assert evidence.requested_url == "https://example.com/evidence"
+    assert evidence.redirect_result == "no_redirect"
 
 
 def test_extractor_returns_main_text_from_html() -> None:
@@ -356,6 +358,35 @@ def test_extractor_returns_main_text_from_html() -> None:
 
     assert evidence.text == "Public evidence."
     assert evidence.extraction_method == "trafilatura"
+    assert evidence.redirect_result == "no_redirect"
+
+
+def test_extractor_records_requested_and_final_urls_after_redirect() -> None:
+    async def extract() -> Evidence:
+        def response_for(request: httpx.Request) -> httpx.Response:
+            if str(request.url) == "https://example.com/start":
+                return httpx.Response(
+                    302,
+                    headers={"location": "https://publisher.example/article"},
+                    request=request,
+                )
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/plain"},
+                content=b"Final public evidence.",
+                request=request,
+            )
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(response_for)) as client:
+            return await WebExtractor(client, permit_public_destination).extract(
+                "https://example.com/start"
+            )
+
+    evidence = asyncio.run(extract())
+
+    assert evidence.requested_url == "https://example.com/start"
+    assert evidence.url == "https://publisher.example/article"
+    assert evidence.redirect_result == "redirected"
 
 
 def test_extractor_rejects_private_network_addresses() -> None:
@@ -394,10 +425,11 @@ def test_extractor_revalidates_each_redirect_target() -> None:
             )
         )
         async with httpx.AsyncClient(transport=transport) as client:
-            with pytest.raises(ToolPolicyError, match="resolves to a non-public"):
+            with pytest.raises(ToolPolicyError, match="resolves to a non-public") as error:
                 await WebExtractor(client, destination_validator).extract(
                     "https://example.com/start"
                 )
+        assert error.value.redirect_result == "unsafe_destination_blocked"
         return validated_urls
 
     assert asyncio.run(extract()) == [
@@ -721,6 +753,25 @@ def test_searxng_provider_normalizes_and_bounds_results() -> None:
             engine="example-engine",
         )
     ]
+
+
+def test_extractor_records_redirect_limit_failure() -> None:
+    async def extract() -> None:
+        transport = httpx.MockTransport(
+            lambda request: httpx.Response(
+                302,
+                headers={"location": "https://example.com/again"},
+                request=request,
+            )
+        )
+        async with httpx.AsyncClient(transport=transport) as client:
+            with pytest.raises(ToolPolicyError, match="maximum number of redirects") as error:
+                await WebExtractor(client, permit_public_destination).extract(
+                    "https://example.com/start"
+                )
+        assert error.value.redirect_result == "redirect_limit_exceeded"
+
+    asyncio.run(extract())
 
 
 def test_searxng_provider_pages_and_deduplicates_results() -> None:

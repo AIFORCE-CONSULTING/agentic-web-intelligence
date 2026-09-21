@@ -53,6 +53,8 @@ CREATE TABLE IF NOT EXISTS research_sources (
     preflight_checked_at TIMESTAMPTZ,
     preflight_content_type TEXT,
     preflight_content_hash TEXT,
+    preflight_final_url TEXT,
+    preflight_redirect_result TEXT,
     preflight_trust_disposition TEXT,
     UNIQUE (run_id, rank)
 );
@@ -60,6 +62,8 @@ CREATE TABLE IF NOT EXISTS research_evidence (
     id UUID PRIMARY KEY,
     run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
+    requested_url TEXT,
+    redirect_result TEXT,
     retrieved_at TIMESTAMPTZ NOT NULL,
     content_type TEXT NOT NULL,
     text TEXT NOT NULL,
@@ -96,7 +100,11 @@ ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_reason TEXT;
 ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_checked_at TIMESTAMPTZ;
 ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_content_type TEXT;
 ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_content_hash TEXT;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_final_url TEXT;
+ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_redirect_result TEXT;
 ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_trust_disposition TEXT;
+ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS requested_url TEXT;
+ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS redirect_result TEXT;
 ALTER TABLE research_runs DROP CONSTRAINT IF EXISTS research_runs_status_check;
 ALTER TABLE research_runs ADD CONSTRAINT research_runs_status_check CHECK (
     status IN ('searching', 'preflighting', 'ready', 'failed')
@@ -314,8 +322,9 @@ class ResearchStore:
                     """INSERT INTO research_sources
                        (id, run_id, rank, title, url, snippet, engine, preflight_status,
                         preflight_reason, preflight_checked_at, preflight_content_type,
-                        preflight_content_hash, preflight_trust_disposition)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)""",
+                        preflight_content_hash, preflight_final_url, preflight_redirect_result,
+                        preflight_trust_disposition)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)""",
                     uuid4(),
                     run_id,
                     persisted.rank,
@@ -324,6 +333,8 @@ class ResearchStore:
                     persisted.snippet,
                     persisted.engine,
                     "pending",
+                    None,
+                    None,
                     None,
                     None,
                     None,
@@ -377,6 +388,8 @@ class ResearchStore:
         reason: str | None = None,
         content_type: str | None = None,
         content_hash: str | None = None,
+        final_url: str | None = None,
+        redirect_result: str | None = None,
         trust_disposition: str | None = None,
     ) -> None:
         """Persist one candidate result even when no evidence can be retained."""
@@ -387,9 +400,18 @@ class ResearchStore:
                 """UPDATE research_sources
                    SET preflight_status = $3, preflight_reason = $4, preflight_checked_at = now(),
                        preflight_content_type = $5, preflight_content_hash = $6,
-                       preflight_trust_disposition = $7
+                       preflight_final_url = $7, preflight_redirect_result = $8,
+                       preflight_trust_disposition = $9
                    WHERE run_id = $1 AND url = $2""",
-                run_id, url, status, reason, content_type, content_hash, trust_disposition,
+                run_id,
+                url,
+                status,
+                reason,
+                content_type,
+                content_hash,
+                final_url,
+                redirect_result,
+                trust_disposition,
             )
             await self._append_audit(
                 connection,
@@ -400,6 +422,8 @@ class ResearchStore:
                     "status": status,
                     "reason": reason,
                     "content_hash": content_hash,
+                    "final_url": final_url,
+                    "redirect_result": redirect_result,
                     "trust_disposition": trust_disposition,
                 },
             )
@@ -468,18 +492,25 @@ class ResearchStore:
                 await self._append_audit(
                     connection,
                     run_id,
-                    "research.evidence.reused",
-                    {"url": evidence.url, "content_hash": evidence.content_hash},
+                "research.evidence.reused",
+                    {
+                        "requested_url": evidence.requested_url,
+                        "url": evidence.url,
+                        "content_hash": evidence.content_hash,
+                        "redirect_result": evidence.redirect_result,
+                    },
                 )
                 return
             await connection.execute(
                 """INSERT INTO research_evidence
-                   (id, run_id, url, retrieved_at, content_type, text, content_hash,
-                    extraction_method)
-                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8)""",
+                   (id, run_id, url, requested_url, redirect_result, retrieved_at, content_type,
+                    text, content_hash, extraction_method)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)""",
                 uuid4(),
                 run_id,
                 evidence.url,
+                evidence.requested_url,
+                evidence.redirect_result,
                 evidence.retrieved_at,
                 evidence.content_type,
                 evidence.text,
@@ -488,7 +519,12 @@ class ResearchStore:
             )
             await self._append_audit(
                 connection, run_id, "research.evidence.extracted",
-                {"url": evidence.url, "content_hash": evidence.content_hash},
+                {
+                    "requested_url": evidence.requested_url,
+                    "url": evidence.url,
+                    "content_hash": evidence.content_hash,
+                    "redirect_result": evidence.redirect_result,
+                },
             )
             await connection.execute(
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
@@ -648,22 +684,29 @@ class ResearchStore:
             sources = await connection.fetch(
                 """SELECT rank, title, url, snippet, engine, preflight_status, preflight_reason,
                           preflight_checked_at, preflight_content_type, preflight_content_hash,
+                          preflight_final_url, preflight_redirect_result,
                           preflight_trust_disposition FROM research_sources
                    WHERE run_id = $1 ORDER BY rank""",
                 run_id,
             )
             evidence = await connection.fetch(
-                """SELECT url, retrieved_at, content_type, text, content_hash, extraction_method
+                """SELECT url, requested_url, redirect_result, retrieved_at, content_type, text,
+                          content_hash, extraction_method
                    FROM (
-                       SELECT DISTINCT ON (url)
-                           evidence.url, evidence.retrieved_at, evidence.content_type,
-                           evidence.text,
+                       SELECT DISTINCT ON (candidate.url)
+                           evidence.url, evidence.requested_url, evidence.redirect_result,
+                           evidence.retrieved_at, evidence.content_type, evidence.text,
                            evidence.content_hash, evidence.extraction_method
                        FROM research_evidence AS evidence
                        JOIN research_runs AS owner ON owner.id = evidence.run_id
-                       JOIN research_sources AS candidate ON candidate.url = evidence.url
+                       JOIN research_sources AS candidate
+                         ON candidate.run_id = $1
+                        AND candidate.preflight_content_hash = evidence.content_hash
+                        AND (candidate.preflight_final_url = evidence.url
+                             OR (candidate.preflight_final_url IS NULL
+                                 AND candidate.url = evidence.url))
                        WHERE candidate.run_id = $1 AND owner.workspace_id = $2
-                       ORDER BY evidence.url, evidence.retrieved_at DESC
+                       ORDER BY candidate.url, evidence.retrieved_at DESC
                    ) AS latest_evidence
                    ORDER BY retrieved_at""",
                 run_id,
@@ -699,7 +742,11 @@ class ResearchStore:
                    FROM research_runs AS runs
                    LEFT JOIN research_sources AS sources ON sources.run_id = runs.id
                    LEFT JOIN research_sources AS evidence_source ON evidence_source.run_id = runs.id
-                   LEFT JOIN research_evidence AS evidence ON evidence.url = evidence_source.url
+                   LEFT JOIN research_evidence AS evidence
+                     ON evidence.content_hash = evidence_source.preflight_content_hash
+                    AND (evidence.url = evidence_source.preflight_final_url
+                         OR (evidence_source.preflight_final_url IS NULL
+                             AND evidence.url = evidence_source.url))
                    LEFT JOIN research_runs AS evidence_owner ON evidence_owner.id = evidence.run_id
                    WHERE runs.workspace_id = $1
                      AND (evidence_owner.workspace_id = $1 OR evidence_owner.workspace_id IS NULL)

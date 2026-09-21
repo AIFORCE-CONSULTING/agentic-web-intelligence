@@ -36,6 +36,26 @@ def evidence(url: str = "https://example.com/article", content_type: str = "text
     )
 
 
+def authenticated_app(app):
+    """Provide an operator identity for trust-policy route tests."""
+
+    user = AuthenticatedUser(
+        id=uuid4(),
+        email="operator@example.com",
+        workspace_id=uuid4(),
+        workspace_name="Test workspace",
+        role="operator",
+        authenticated_at=datetime.now(UTC),
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, _: object) -> AuthenticatedUser:
+            return user
+
+    app.state.identity_service = FakeIdentityService()
+    return app, user
+
+
 class FakeTrustStore:
     def __init__(self) -> None:
         self.current: EvidenceTrustEvaluation | None = None

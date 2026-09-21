@@ -100,9 +100,10 @@ governs local eligibility; it does not make a universal claim about a source's
 truthfulness or replace browser safety protections.
 
 - [x] Define the source-trust boundary, authority, and enforcement rules in an ADR.
-- [ ] Add a versioned, local trust policy with deterministic rules for approved
-  sources, HTTPS, content types, extraction integrity, freshness, and size
-  limits. Redirects are retained only as retrieval diagnostics: requested
+- [x] Establish the initial, versioned local trust policy and expose it for
+  read-only operator review. The current policy deterministically evaluates
+  HTTPS, supported content types, extraction integrity, and extracted-size
+  limits. It records redirects only as retrieval diagnostics: requested
   candidate URL, final evidence URL, and one bounded result (`no_redirect`,
   `redirected`, `redirect_limit_exceeded`, or `unsafe_destination_blocked`).
   Redirect metadata explains how evidence was reached but does not independently
@@ -116,25 +117,6 @@ truthfulness or replace browser safety protections.
   exposing manual extraction or regeneration controls.
 - [x] Evaluate an evidence version after acquisition and before it is eligible for
   summaries, keywords, or future evidence-grounded capabilities.
-- [ ] Retain a permanent, explainable trust-decision record for every captured
-  webpage version. The business objective is to let an operator, auditor, or
-  future automated research capability answer: "What did the platform capture,
-  what policy did it apply, and why was this source allowed, flagged for human
-  review, or blocked from AI use?"
-
-  The record must identify the exact evidence version and preserve the material
-  retrieval context, including the requested and final URL, the bounded redirect
-  result, retrieval time, response content type and size, extracted-text size,
-  extraction method, and content hash. It must record the trust-policy and
-  component versions used, every rule outcome and its explanation, observed
-  publisher-identity or provenance signals when available, and the resulting
-  disposition. A separately authorized human acceptance must remain linked to,
-  but never overwrite, the underlying decision.
-
-  Decision records are append-only. A refreshed webpage, changed evidence hash,
-  or applicable policy change creates a new evaluation record rather than
-  altering an older one. This preserves an auditable history without treating a
-  prior result as a permanent verdict about a URL, publisher, or domain.
 - [x] Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
   dispositions. Preserve raw capture for audit regardless of disposition, but
   prevent evidence requiring review or blocked evidence from automated model
@@ -159,6 +141,37 @@ truthfulness or replace browser safety protections.
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
+
+- **Trust-policy management** — design a separately authorized workflow for
+  changing local trust-policy rules, potentially through a purpose-built MCP
+  capability. The current operator view remains read-only; no UI or agent may
+  change enforcement rules directly.
+- **Evidence freshness and re-capture** — design a governed way to refresh a
+  stored source before enforcing a freshness limit. Today the platform reuses
+  evidence already retained for a source and intentionally does not re-fetch it
+  during discovery, so a freshness rule would otherwise make evidence stale
+  without a way to renew it.
+- **Agent-readiness profile** — record observed agent-facing capabilities for a
+  source without treating them as a trust score or eligibility decision. Future
+  observations may include semantic structure, JSON-LD, documented APIs,
+  declared WebMCP tools, and read-only or consequential tool hints. The profile
+  may use statuses such as `no_agent_interface_observed`,
+  `structured_content_observed`, `machine_interface_declared`, and
+  `agent_tools_observed` to inform future agent behavior only.
+- **Evidence adequacy** — determine whether extraction produced meaningful
+  source content rather than a navigation shell, paywall, login page, or shared
+  template. This is needed before an automated workflow treats a technically
+  successful capture as substantive research evidence.
+- **Publisher access declaration** — record applicable `robots.txt` instructions
+  for the platform's declared automated client identity. Use this to inform
+  responsible retrieval behavior, never as authorization or a source trust
+  score.
+- **Agent-action boundary and safe inspection** — when a source declares
+  WebMCP, OpenAPI, MCP, or another machine-action interface, record its
+  existence while keeping it outside the research extractor. A future tightly
+  controlled browser-inspection capability may observe declared WebMCP tools,
+  but must never invoke them. The platform remains read-only with respect to
+  website-provided tools.
 
 - **GitHub Projects integration** — connect the platform's planning workflow
   to GitHub Projects so an operator can build a roadmap, create tasks, and

@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -130,6 +130,50 @@ def test_unsupported_content_requires_human_review_and_can_be_accepted() -> None
     assert accepted is not None
     assert accepted.disposition == "eligible"
     assert accepted.override_reason == "Reviewed"
+
+
+def test_review_acceptance_expiry_must_be_in_the_future() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    with pytest.raises(ValueError, match="Acceptance expiry must be in the future"):
+        asyncio.run(
+            service.accept(
+                workspace_id,
+                run_id,
+                result.source_url,
+                result.content_hash,
+                uuid4(),
+                "The source is appropriate for this research.",
+                datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+
+
+def test_review_acceptance_expiry_must_include_a_timezone() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    with pytest.raises(ValueError, match="Acceptance expiry must include a timezone"):
+        asyncio.run(
+            service.accept(
+                workspace_id,
+                run_id,
+                result.source_url,
+                result.content_hash,
+                uuid4(),
+                "The source is appropriate for this research.",
+                datetime.now(),
+            )
+        )
 
 
 def test_large_extracted_text_requires_human_review() -> None:

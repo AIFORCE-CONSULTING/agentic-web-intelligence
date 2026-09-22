@@ -163,7 +163,8 @@ class WebTrustStore:
                    FROM research_sources AS candidate
                    JOIN LATERAL (
                        SELECT * FROM web_evidence_trust_evaluations
-                       WHERE workspace_id = $1 AND source_url = candidate.url
+                       WHERE workspace_id = $1
+                         AND source_url = COALESCE(candidate.preflight_final_url, candidate.url)
                          AND content_hash = candidate.preflight_content_hash
                        ORDER BY created_at DESC LIMIT 1
                    ) AS evaluation ON TRUE

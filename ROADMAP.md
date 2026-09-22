@@ -92,6 +92,76 @@ summaries and page-level keywords.
   sentence from its source summary, and source summaries record the fixed
   prompt version used to create them.
 
+### Agentic Research Workflow
+
+Build a local research agent that can carry out a bounded web-research task.
+The operator owns the research question. The agent identifies useful research
+steps, while platform code validates and performs each search, evidence, trust,
+storage, and execution action.
+
+#### Foundations already completed
+
+- [x] Define the general capability boundary in ADR 0016. A local model may
+  request an approved platform capability, but platform code remains responsible
+  for validating, executing, recording, and routing the request.
+- [x] Complete a narrow offline evaluation of `qwen3:1.7b` requesting a future
+  public cookie-preference capability. Retain the result as preliminary evidence
+  about that one request. It does not establish that the model can complete the
+  full research workflow.
+
+#### Research-agent design and evaluation
+
+- [x] Rewrite ADR 0016 around the complete agentic research workflow, including
+  topic planning, source research, evidence eligibility, topic coverage, bounded
+  gap searches, final reporting, platform authority, and human review.
+- [x] Update ADR 0014 so the existing evidence summarizer remains a separate,
+  no-tool model role while ADR 0016 governs the research agent.
+- [x] Define and validate the topic-planning response. For one operator question,
+  the model may propose no more than three focused topics. Each topic contains a
+  stable `topic_id`, a plain-language topic description, and one web-search query.
+- [ ] Store topic coverage separately from source keywords. Evidence counts
+  toward a topic only after the platform has acquired usable content, allowed it
+  through the trust workflow, accepted it as relevant to that topic, and stored
+  its summary and keywords.
+- [ ] Add a strict topic-relevance decision using the topic description and a
+  bounded excerpt from an eligible evidence version. Accept only an exact `YES`
+  or `NO`; record every malformed response as a model failure instead of
+  silently interpreting it as approval.
+- [ ] Define the agent's initial research capability catalog. It begins with
+  bounded search and evidence-acquisition requests through the existing governed
+  runtime and MCP host. Cookie-preference handling may be added only after that
+  capability is separately implemented and approved.
+- [ ] Keep request validation, source reuse and de-duplication, trust-policy
+  enforcement, database writes, retry limits, loop counters, and audit records
+  in platform code.
+- [ ] Build a versioned offline evaluation for the complete workflow. Cover topic
+  planning, relevance decisions, duplicate sources, eligible, blocked, and
+  review-required evidence, malformed model responses, hostile webpage
+  instructions, missing-topic searches, loop limits, and final-report grounding.
+- [ ] Run every evaluation case repeatedly with fixed model settings. Record the
+  model version, prompt version, test version, expected result, actual result,
+  and resource use.
+- [ ] Make and record a model-selection decision only after the complete workflow
+  evaluation passes. The existing cookie-preference result alone is not enough
+  to enable live research capabilities.
+
+#### Implementation
+
+- [ ] Add a research orchestration service that coordinates the approved
+  workflow without owning the database, trust policy, or tool implementations.
+- [ ] Connect the orchestration service to the existing search, source reuse,
+  acquisition, trust, summary, keyword, and Temporal-routing services through
+  typed platform interfaces.
+- [ ] Add deterministic topic-coverage tracking. When a planned topic has no
+  qualifying evidence, the model may propose one targeted search query. Platform
+  code limits the entire research task to two additional gap-search rounds.
+- [ ] Generate a Markdown research report from stored source summaries and source
+  references. Require the report to address every planned topic and identify any
+  topic for which the stored evidence remains insufficient.
+- [ ] Add an operator view showing the research question, planned topics, sources
+  considered, trust and relevance results, remaining evidence gaps, gap searches,
+  and final report.
+
 ### Local Policy-Controlled Web Trust
 
 Add a browser-agnostic control point that determines whether a captured web
@@ -124,9 +194,9 @@ truthfulness or replace browser safety protections.
 
 #### Open work
 
-- [ ] Add a review experience for evidence requiring review. A human acceptance or
-  override records its identity, reason, scope, and expiry independently of the
-  UI and execution mechanism.
+- [x] Add a review experience for evidence requiring review. A human acceptance
+  records its identity, reason, exact evidence-version scope, and optional expiry
+  independently of the UI and execution mechanism.
 - [ ] Re-evaluate evidence after refresh or an applicable policy change. The
   platform uses direct execution for one ordinary evaluation and automatically
   uses its mandatory Temporal infrastructure when workload, retry, or review

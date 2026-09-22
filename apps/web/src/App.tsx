@@ -23,9 +23,15 @@ type Evidence = {
 type EvidenceTrustEvaluation = {
   id: string; source_url: string; content_hash: string; policy_version: string;
   disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
-  override_reason?: string | null;
+  base_disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
+  rule_outcomes: TrustRuleOutcome[]; component_version: string; created_at: string;
+  override_reason?: string | null; override_expires_at?: string | null;
+};
+type TrustRuleOutcome = {
+  rule: string; outcome: "passed" | "notice" | "review_required" | "blocked"; detail: string;
 };
 type EvidenceTrustEvaluationList = { evaluations: EvidenceTrustEvaluation[] };
+type ReviewFormState = { evidence: Evidence; evaluation: EvidenceTrustEvaluation };
 type EffectiveWebTrustPolicy = {
   version: string;
   rules: Record<string, string | number | string[]>;
@@ -581,6 +587,10 @@ export function App() {
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
   const [trustPolicy, setTrustPolicy] = useState<EffectiveWebTrustPolicy | null>(null);
+  const [reviewForm, setReviewForm] = useState<ReviewFormState | null>(null);
+  const [reviewReason, setReviewReason] = useState("");
+  const [reviewExpiresAt, setReviewExpiresAt] = useState("");
+  const [candidateStatusFilter, setCandidateStatusFilter] = useState<Source["preflight_status"] | "all">("all");
   const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -662,6 +672,8 @@ export function App() {
       await refreshTrustEvaluations(reopened.id);
       setSelectedAuditIndex(null);
       setSelectedSummaryUrl(null);
+      setReviewForm(null);
+      setCandidateStatusFilter("all");
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
       await loadWorkspaceSummaries();
@@ -689,6 +701,8 @@ export function App() {
       setTrustEvaluations([]);
       setSelectedAuditIndex(null);
       setSelectedSummaryUrl(null);
+      setReviewForm(null);
+      setCandidateStatusFilter("all");
       setSummaryBatch(null);
       await loadSummaryBatch(created.id);
       await loadWorkspaceSummaries();
@@ -737,13 +751,27 @@ export function App() {
     }
   }
 
-  async function acceptEvidenceForReview(
-    evidence: Evidence,
-    evaluation: EvidenceTrustEvaluation,
-  ) {
-    if (!run) return;
-    const reason = window.prompt("Why should this evidence be accepted for automated use?");
-    if (!reason?.trim()) return;
+  function openEvidenceReview(evidence: Evidence, evaluation: EvidenceTrustEvaluation) {
+    setReviewForm({ evidence, evaluation });
+    setReviewReason("");
+    setReviewExpiresAt("");
+  }
+
+  function closeEvidenceReview() {
+    setReviewForm(null);
+    setReviewReason("");
+    setReviewExpiresAt("");
+  }
+
+  async function acceptEvidenceForReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!run || !reviewForm || !reviewReason.trim()) return;
+    const expiresAt = reviewExpiresAt ? new Date(reviewExpiresAt) : null;
+    if (expiresAt && (Number.isNaN(expiresAt.valueOf()) || expiresAt <= new Date())) {
+      setError("Acceptance expiry must be in the future.");
+      return;
+    }
+    if (!window.confirm("Accept this exact captured evidence version for automated use and start its summary?")) return;
     setBusy(true);
     setError(null);
     try {
@@ -753,14 +781,16 @@ export function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            source_url: evidence.url,
-            content_hash: evidence.content_hash,
-            reason: reason.trim(),
+            source_url: reviewForm.evidence.url,
+            content_hash: reviewForm.evidence.content_hash,
+            reason: reviewReason.trim(),
+            ...(expiresAt ? { expires_at: expiresAt.toISOString() } : {}),
           }),
         },
       );
       await refreshTrustEvaluations(run.id);
       await loadSummaryBatch(run.id);
+      closeEvidenceReview();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to accept the evidence.");
     } finally {
@@ -786,6 +816,12 @@ export function App() {
     }
   }
   const keywordCards = [...keywordGroups.values()].sort((left, right) => left.label.localeCompare(right.label));
+  const candidateStatuses = run
+    ? [...new Set(run.sources.map((source) => source.preflight_status))].sort()
+    : [];
+  const visibleCandidates = run
+    ? run.sources.filter((source) => candidateStatusFilter === "all" || source.preflight_status === candidateStatusFilter)
+    : [];
   const selectedSummary = workspaceSummaries.find((source) => source.url === selectedSummaryUrl) ?? null;
   const sourceTitle = (source: WorkspaceSummaryArtifact) => source.title || source.url;
 
@@ -836,17 +872,38 @@ export function App() {
           <dl className="trust-policy-details">{Object.entries(trustPolicy.rules).map(([rule, value]) => <div key={rule}><dt>{rule.replaceAll("_", " ")}</dt><dd>{Array.isArray(value) ? value.join(", ") : String(value)}</dd></div>)}</dl>
         </section>}
         <section aria-labelledby="sources-heading">
-          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><span className="badge">{run.status.replaceAll("_", " ")}</span></div>
-          {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
+          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><div className="candidate-controls"><label>Status<select value={candidateStatusFilter} onChange={(event) => setCandidateStatusFilter(event.target.value as Source["preflight_status"] | "all")} aria-label="Filter candidate preflight by status"><option value="all">All statuses ({run.sources.length})</option>{candidateStatuses.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")} ({run.sources.filter((source) => source.preflight_status === status).length})</option>)}</select></label><span className="badge">{run.status.replaceAll("_", " ")}</span></div></div>
+          {run.sources.length ? visibleCandidates.length ? <ol className="sources">{visibleCandidates.map((source) => (
             <li className="source-candidate" key={`${source.rank}-${source.url}`}><div className="source">
               <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_redirect_result ? ` · retrieval ${source.preflight_redirect_result.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small>{source.preflight_final_url && source.preflight_final_url !== source.url && <small>Captured from: {source.preflight_final_url}</small>}</span>
             </div><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a>{(() => {
               const evidence = run.evidence.find((item) => item.content_hash === source.preflight_content_hash && (item.requested_url === source.url || item.url === source.preflight_final_url || item.url === source.url));
               const evaluation = evidence && trustEvaluations.find((candidate) => candidate.source_url === evidence.url && candidate.content_hash === evidence.content_hash);
               if (!evidence || evaluation?.disposition !== "review_required") return null;
-              return <div className="candidate-review"><button type="button" className="secondary" onClick={() => void acceptEvidenceForReview(evidence, evaluation)} disabled={busy}>Accept for automated use</button></div>;
+              const reviewing = reviewForm?.evidence.url === evidence.url
+                && reviewForm.evidence.content_hash === evidence.content_hash;
+              return <div className="candidate-review">
+                <button type="button" className="secondary" onClick={() => reviewing ? closeEvidenceReview() : openEvidenceReview(evidence, evaluation)} disabled={busy}>{reviewing ? "Close review" : "Review evidence"}</button>
+                {reviewing && <form className="evidence-review" onSubmit={(event) => void acceptEvidenceForReview(event)}>
+                  <div className="section-heading"><div><p className="eyebrow">Human review required</p><h3>Review before automated use</h3></div><span className="badge">{evaluation.policy_version}</span></div>
+                  <p className="hint">Acceptance applies only to this captured evidence version. It will start the platform-owned summary workflow after the decision is recorded.</p>
+                  <dl className="review-details">
+                    <div><dt>Requested URL</dt><dd>{evidence.requested_url ?? source.url}</dd></div>
+                    <div><dt>Final evidence URL</dt><dd>{evidence.url}</dd></div>
+                    <div><dt>Captured</dt><dd>{new Date(evidence.retrieved_at).toLocaleString()}</dd></div>
+                    <div><dt>Evidence version</dt><dd>{evidence.content_hash}</dd></div>
+                    <div><dt>Content type</dt><dd>{evidence.content_type}</dd></div>
+                    <div><dt>Extracted characters</dt><dd>{evidence.text.length.toLocaleString()}</dd></div>
+                  </dl>
+                  <div className="review-rules"><strong>Policy evaluation</strong><ul>{evaluation.rule_outcomes.map((rule) => <li key={rule.rule} className={rule.outcome}><span>{rule.rule.replaceAll("_", " ")}</span><small>{rule.detail}</small></li>)}</ul></div>
+                  <details className="review-evidence"><summary>Captured evidence</summary><pre>{evidence.text}</pre></details>
+                  <label>Acceptance reason<textarea value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} minLength={3} maxLength={500} required /></label>
+                  <label>Acceptance expiry <span className="field-note">Optional. Leave blank for no expiry.</span><input type="datetime-local" value={reviewExpiresAt} onChange={(event) => setReviewExpiresAt(event.target.value)} /></label>
+                  <div className="review-actions"><button type="submit" disabled={busy || !reviewReason.trim()}>Accept evidence and start summary</button><button type="button" className="secondary" onClick={closeEvidenceReview} disabled={busy}>Cancel</button></div>
+                </form>}
+              </div>;
             })()}</li>
-          ))}</ol> : <p>No public source candidates were returned for this question.</p>}
+          ))}</ol> : <p className="hint">No candidates have the selected preflight status.</p> : <p>No public source candidates were returned for this question.</p>}
         </section>
 
         <section aria-labelledby="keywords-heading">

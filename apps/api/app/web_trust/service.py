@@ -1,6 +1,6 @@
 """Deterministic, browser-independent evidence eligibility evaluation."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -69,6 +69,11 @@ class EvidenceTrustService:
             return None
         if evaluation.base_disposition != "review_required":
             raise ValueError("Only evidence requiring review can be accepted.")
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                raise ValueError("Acceptance expiry must include a timezone.")
+            if expires_at <= datetime.now(UTC):
+                raise ValueError("Acceptance expiry must be in the future.")
         return await self._store.accept_evaluation(
             workspace_id, run_id, source_url, content_hash, actor_user_id, reason, expires_at
         )

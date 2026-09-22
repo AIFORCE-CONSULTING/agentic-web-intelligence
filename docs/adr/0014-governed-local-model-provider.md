@@ -3,6 +3,14 @@
 - Status: Accepted
 - Date: 2026-09-11
 
+> **Amendment, 2026-09-22:** This ADR continues to govern the Phase 6 evidence
+> summarizer. That model role receives stored evidence and creates summaries and
+> keywords without planning research or requesting tools. [ADR 0016](0016-governed-local-agent-capability-requests.md)
+> separately governs the local research agent that may plan focused topics and
+> request approved research capabilities. Both roles use the same governed model
+> provider boundary, but they have different prompts, inputs, outputs, authority,
+> evaluations, and audit records.
+
 ## Context
 
 The platform's first live language-model capability will generate a summary and
@@ -64,8 +72,10 @@ instructions needed to return the requested structured result. It receives no
 MCP client, web-search or extraction capability, browser session, filesystem,
 database connection, shell, credential, service identity, runtime client, or
 Temporal client. A model response is untrusted data and cannot create a run,
-change a goal, assign a role, select a tool, grant a capability, alter policy,
-or initiate a handoff.
+change a goal, assign a role, grant a capability, alter policy, or initiate a
+handoff. ADR 0016 defines the separately governed conditions under which a
+local research agent may plan bounded research and request an approved platform
+capability. Platform code validates and performs every requested action.
 
 ### Complete-page processing and output validation
 

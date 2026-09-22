@@ -4,10 +4,12 @@ Phase 6 adds local-first generated summaries and page-level keywords for
 evidence that the governed research workflow has already extracted. It is
 governed by [ADR 0014](adr/0014-governed-local-model-provider.md).
 
-The local model is not an agent. It receives bounded evidence text from the
-platform, returns structured summary data, and has no tools, browser,
+The Phase 6 local model is not an agent. It receives bounded evidence text from
+the platform, returns structured summary data, and has no tools, browser,
 filesystem, database, runtime, credential, or network authority beyond the
-configured local Ollama endpoint.
+configured local Ollama endpoint. [ADR 0016](adr/0016-governed-local-agent-capability-requests.md)
+defines a future, separately governed local-agent capability boundary; it does
+not change this summary and keyword workflow.
 
 ## Local web-trust eligibility
 
@@ -43,11 +45,14 @@ that endpoint neither changes policy nor re-evaluates evidence.
   model context. A human acceptance cannot override a blocked result.
 
 Operators can inspect a run's latest evaluations at
-`GET /v1/research/runs/{run_id}/evidence-trust`. A human operator can accept a
+`GET /v1/research/runs/{run_id}/evidence-trust`. The operator UI provides an
+inline review panel with the captured evidence, retrieval details, policy
+version, and rule outcomes before acceptance. A human operator can accept a
 `review_required` result through
 `POST /v1/research/runs/{run_id}/evidence-trust/accept`; the acceptance records
-the operator, reason, exact evidence version, and optional expiry separately
-from the summary execution mechanism.
+the operator, reason, exact evidence version, and optional future expiry
+separately from the summary execution mechanism. A blocked result cannot be
+accepted.
 
 ## Boundary
 

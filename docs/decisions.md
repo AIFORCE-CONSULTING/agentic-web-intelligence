@@ -16,3 +16,5 @@ Architecture Decision Records (ADRs) capture decisions that materially affect th
 - [ADR 0012 — GitHub Projects connector](adr/0012-human-operated-github-projects-connector.md)
 - [ADR 0013 — Governed durable-execution contract](adr/0013-governed-durable-execution-contract.md)
 - [ADR 0014 — Governed local-model provider](adr/0014-governed-local-model-provider.md)
+- [ADR 0015 — Local policy-controlled web trust](adr/0015-local-policy-controlled-web-trust.md)
+- [ADR 0016 — Governed local agentic research workflow](adr/0016-governed-local-agent-capability-requests.md)

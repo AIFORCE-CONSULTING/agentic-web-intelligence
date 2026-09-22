@@ -1,7 +1,9 @@
 """Strict model-output contracts for agentic research planning."""
 
 import json
-from typing import Annotated, Self
+from datetime import datetime
+from typing import Annotated, Literal, Self
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, RootModel, ValidationError, model_validator
 
@@ -51,3 +53,74 @@ def parse_topic_plan(content: str) -> TopicPlan:
             "The local model returned an invalid topic-planning response."
         ) from error
 
+
+RelevanceDecision = Literal["relevant", "not_relevant", "model_failure"]
+CoverageRequirement = Literal["evidence", "trust", "relevance", "summary"]
+
+
+class TopicRelevanceRecord(BaseModel):
+    """One topic-specific model decision for an exact evidence version."""
+
+    id: UUID
+    topic_record_id: UUID
+    source_url: str
+    content_hash: str
+    decision: RelevanceDecision
+    model_name: str
+    prompt_version: str
+    created_at: datetime
+
+
+class TopicCoverageFacts(BaseModel):
+    """Canonical platform records required before evidence supports a topic."""
+
+    topic_record_id: UUID | None = None
+    evidence_id: UUID | None = None
+    trust_evaluation_id: UUID | None = None
+    relevance_decision_id: UUID | None = None
+    summary_artifact_id: UUID | None = None
+
+
+class TopicCoverageAssessment(BaseModel):
+    """Explain whether one evidence version currently contributes to a topic."""
+
+    counts_toward_topic: bool
+    missing_requirements: list[CoverageRequirement]
+
+
+class TopicCoverageEvidence(BaseModel):
+    """One fully qualified evidence version stored against a planned topic."""
+
+    source_url: str
+    content_hash: str
+    evidence_id: UUID
+    trust_evaluation_id: UUID
+    relevance_decision_id: UUID
+    summary_artifact_id: UUID
+    qualified_at: datetime
+
+
+class TopicCoverage(BaseModel):
+    """Stored coverage for one planned topic, independent of source keywords."""
+
+    topic_id: str
+    topic: str
+    search_query: str
+    status: Literal["uncovered", "covered"]
+    evidence: list[TopicCoverageEvidence] = Field(default_factory=list)
+
+
+def assess_topic_coverage(facts: TopicCoverageFacts) -> TopicCoverageAssessment:
+    """Apply the fixed four-record rule without model interpretation."""
+
+    requirements: tuple[tuple[CoverageRequirement, UUID | None], ...] = (
+        ("evidence", facts.evidence_id),
+        ("trust", facts.trust_evaluation_id),
+        ("relevance", facts.relevance_decision_id),
+        ("summary", facts.summary_artifact_id),
+    )
+    missing = [name for name, record_id in requirements if record_id is None]
+    return TopicCoverageAssessment(
+        counts_toward_topic=facts.topic_record_id is not None and not missing,
+        missing_requirements=missing,
+    )

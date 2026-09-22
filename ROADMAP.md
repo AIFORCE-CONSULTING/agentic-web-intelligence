@@ -119,7 +119,7 @@ storage, and execution action.
 - [x] Define and validate the topic-planning response. For one operator question,
   the model may propose no more than three focused topics. Each topic contains a
   stable `topic_id`, a plain-language topic description, and one web-search query.
-- [ ] Store topic coverage separately from source keywords. Evidence counts
+- [x] Store topic coverage separately from source keywords. Evidence counts
   toward a topic only after the platform has acquired usable content, allowed it
   through the trust workflow, accepted it as relevant to that topic, and stored
   its summary and keywords.

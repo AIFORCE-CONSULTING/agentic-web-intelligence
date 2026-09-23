@@ -123,7 +123,7 @@ storage, and execution action.
   toward a topic only after the platform has acquired usable content, allowed it
   through the trust workflow, accepted it as relevant to that topic, and stored
   its summary and keywords.
-- [ ] Add a strict topic-relevance decision using the topic description and a
+- [x] Add a strict topic-relevance decision using the topic description and a
   bounded excerpt from an eligible evidence version. Accept only an exact `YES`
   or `NO`; record every malformed response as a model failure instead of
   silently interpreting it as approval.

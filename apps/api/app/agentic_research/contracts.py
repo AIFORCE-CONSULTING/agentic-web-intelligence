@@ -68,7 +68,20 @@ class TopicRelevanceRecord(BaseModel):
     decision: RelevanceDecision
     model_name: str
     prompt_version: str
+    model_output: str
+    failure_reason: str | None = None
     created_at: datetime
+
+
+class TopicRelevanceInput(BaseModel):
+    """Eligible evidence and topic context approved for one relevance prompt."""
+
+    operator_question: str
+    topic_id: str
+    topic: str
+    source_url: str
+    content_hash: str
+    evidence_text: str
 
 
 class TopicCoverageFacts(BaseModel):

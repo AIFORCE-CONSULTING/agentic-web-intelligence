@@ -12,6 +12,7 @@ from app.agentic_research.contracts import (
     TopicCoverageEvidence,
     TopicCoverageFacts,
     TopicPlan,
+    TopicRelevanceInput,
     TopicRelevanceRecord,
     assess_topic_coverage,
 )
@@ -39,6 +40,8 @@ CREATE TABLE IF NOT EXISTS agentic_topic_relevance_decisions (
     ),
     model_name TEXT NOT NULL,
     prompt_version TEXT NOT NULL,
+    model_output TEXT NOT NULL DEFAULT '',
+    failure_reason TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE TABLE IF NOT EXISTS agentic_topic_coverage_evidence (
@@ -64,6 +67,10 @@ CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
     );
 CREATE INDEX IF NOT EXISTS agentic_topic_coverage_lookup_idx
     ON agentic_topic_coverage_evidence(topic_record_id, qualified_at);
+ALTER TABLE agentic_topic_relevance_decisions
+    ADD COLUMN IF NOT EXISTS model_output TEXT NOT NULL DEFAULT '';
+ALTER TABLE agentic_topic_relevance_decisions
+    ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 """
 
 
@@ -245,6 +252,8 @@ class AgenticResearchStore:
         decision: RelevanceDecision,
         model_name: str,
         prompt_version: str,
+        model_output: str,
+        failure_reason: str | None = None,
     ) -> TopicRelevanceRecord:
         """Store one validated relevance outcome for an exact topic and evidence version."""
 
@@ -253,8 +262,8 @@ class AgenticResearchStore:
             row = await connection.fetchrow(
                 """INSERT INTO agentic_topic_relevance_decisions
                    (id, topic_record_id, source_url, content_hash, decision,
-                    model_name, prompt_version)
-                   SELECT $6, topic.id, $4, $5, $7, $8, $9
+                    model_name, prompt_version, model_output, failure_reason)
+                   SELECT $6, topic.id, $4, $5, $7, $8, $9, $10, $11
                    FROM agentic_research_topics AS topic
                    WHERE topic.workspace_id = $1 AND topic.run_id = $2
                      AND topic.topic_id = $3
@@ -268,10 +277,78 @@ class AgenticResearchStore:
                 decision,
                 model_name,
                 prompt_version,
+                model_output,
+                failure_reason,
             )
         if row is None:
             raise KeyError(topic_id)
         return TopicRelevanceRecord(**dict(row))
+
+    async def relevance_input(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        topic_id: str,
+        source_url: str,
+        content_hash: str,
+    ) -> TopicRelevanceInput | None:
+        """Return exact evidence only when its latest trust decision permits model use."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """SELECT run.question AS operator_question, topic.topic_id, topic.topic,
+                          evidence.url AS source_url, evidence.content_hash,
+                          evidence.text AS evidence_text
+                   FROM agentic_research_topics AS topic
+                   JOIN research_runs AS run
+                     ON run.id = topic.run_id AND run.workspace_id = topic.workspace_id
+                   JOIN LATERAL (
+                       SELECT stored.url, stored.content_hash, stored.text
+                       FROM research_evidence AS stored
+                       JOIN research_runs AS evidence_run ON evidence_run.id = stored.run_id
+                       WHERE evidence_run.workspace_id = topic.workspace_id
+                         AND stored.url = $4 AND stored.content_hash = $5
+                         AND length(btrim(stored.text)) > 0
+                       ORDER BY stored.retrieved_at DESC
+                       LIMIT 1
+                   ) AS evidence ON TRUE
+                   JOIN LATERAL (
+                       SELECT evaluation.disposition,
+                              active_override.id AS override_id
+                       FROM web_evidence_trust_evaluations AS evaluation
+                       LEFT JOIN LATERAL (
+                           SELECT override.id
+                           FROM web_evidence_trust_overrides AS override
+                           WHERE override.evaluation_id = evaluation.id
+                             AND (
+                                 override.expires_at IS NULL
+                                 OR override.expires_at > now()
+                             )
+                           ORDER BY override.created_at DESC
+                           LIMIT 1
+                       ) AS active_override ON TRUE
+                       WHERE evaluation.workspace_id = topic.workspace_id
+                         AND evaluation.source_url = evidence.url
+                         AND evaluation.content_hash = evidence.content_hash
+                       ORDER BY evaluation.created_at DESC
+                       LIMIT 1
+                   ) AS trust ON (
+                       trust.disposition IN ('eligible', 'eligible_with_notice')
+                       OR (
+                           trust.disposition = 'review_required'
+                           AND trust.override_id IS NOT NULL
+                       )
+                   )
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND topic.topic_id = $3""",
+                workspace_id,
+                run_id,
+                topic_id,
+                source_url,
+                content_hash,
+            )
+        return TopicRelevanceInput(**dict(row)) if row is not None else None
 
     async def qualify_evidence(
         self,

@@ -247,6 +247,20 @@ database access, and website-provided action interfaces are absent from this
 catalog. Cookie-preference handling requires its own implementation and design
 approval before it can be added.
 
+The model does not keep its own limits or history. Ordinary application code
+records each accepted or denied request, prevents the same normalized search
+query from being used repeatedly, limits evidence acquisition for one topic and
+source to three attempts, and permits no more than two additional searches for
+missing evidence. These counts are stored in PostgreSQL so restarting a process
+does not reset them.
+
+Existing platform components continue to own the remaining decisions. The
+research store reuses existing evidence and prevents duplicate sources, the web
+trust service decides whether captured evidence may continue, and the summary
+and topic stores perform database writes. The local model receives results from
+these components; it cannot change their records or declare that their checks
+passed.
+
 ## Scoped memory
 
 The initial memory boundary is deliberately narrow: memory belongs to one

@@ -56,6 +56,7 @@ def parse_topic_plan(content: str) -> TopicPlan:
 
 RelevanceDecision = Literal["relevant", "not_relevant", "model_failure"]
 CoverageRequirement = Literal["evidence", "trust", "relevance", "summary"]
+CapabilityDecision = Literal["accepted", "denied"]
 
 
 class TopicRelevanceRecord(BaseModel):
@@ -121,6 +122,24 @@ class TopicCoverage(BaseModel):
     search_query: str
     status: Literal["uncovered", "covered"]
     evidence: list[TopicCoverageEvidence] = Field(default_factory=list)
+
+
+class ResearchControlState(BaseModel):
+    """Stored limits controlled by the platform for one research task."""
+
+    workspace_id: UUID
+    run_id: UUID
+    gap_search_rounds: int = Field(ge=0, le=2)
+
+
+class CapabilityRequestDecision(BaseModel):
+    """Platform decision about one model-proposed research action."""
+
+    decision: CapabilityDecision
+    reason: str
+    capability: str = Field(min_length=1, max_length=128)
+    arguments: dict[str, object]
+    gap_search_rounds: int = Field(ge=0, le=2)
 
 
 def assess_topic_coverage(facts: TopicCoverageFacts) -> TopicCoverageAssessment:

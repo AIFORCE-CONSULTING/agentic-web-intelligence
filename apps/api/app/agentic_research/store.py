@@ -1,12 +1,15 @@
 """Postgres records for research topics, relevance, and evidence coverage."""
 
+import json
 from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 import asyncpg
 
 from app.agentic_research.contracts import (
+    CapabilityRequestDecision,
     RelevanceDecision,
+    ResearchControlState,
     TopicCoverage,
     TopicCoverageAssessment,
     TopicCoverageEvidence,
@@ -59,6 +62,42 @@ CREATE TABLE IF NOT EXISTS agentic_topic_coverage_evidence (
     qualified_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (topic_record_id, source_url, content_hash)
 );
+CREATE TABLE IF NOT EXISTS agentic_research_control_state (
+    run_id UUID PRIMARY KEY REFERENCES research_runs(id) ON DELETE CASCADE,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    gap_search_rounds INTEGER NOT NULL DEFAULT 0 CHECK (
+        gap_search_rounds BETWEEN 0 AND 2
+    ),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agentic_research_search_requests (
+    id UUID PRIMARY KEY,
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    topic_record_id UUID NOT NULL REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    query TEXT NOT NULL,
+    normalized_query TEXT NOT NULL,
+    purpose TEXT NOT NULL CHECK (purpose IN ('initial', 'gap')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (run_id, normalized_query)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_source_attempts (
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    topic_record_id UUID NOT NULL REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL CHECK (attempt_count BETWEEN 1 AND 3),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (run_id, topic_record_id, source_url)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_capability_audits (
+    id UUID PRIMARY KEY,
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    topic_record_id UUID REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    capability TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('accepted', 'denied')),
+    reason TEXT NOT NULL,
+    arguments JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE INDEX IF NOT EXISTS agentic_research_topics_workspace_run_idx
     ON agentic_research_topics(workspace_id, run_id, created_at);
 CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
@@ -67,6 +106,8 @@ CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
     );
 CREATE INDEX IF NOT EXISTS agentic_topic_coverage_lookup_idx
     ON agentic_topic_coverage_evidence(topic_record_id, qualified_at);
+CREATE INDEX IF NOT EXISTS agentic_research_capability_audits_run_idx
+    ON agentic_research_capability_audits(run_id, created_at);
 ALTER TABLE agentic_topic_relevance_decisions
     ADD COLUMN IF NOT EXISTS model_output TEXT NOT NULL DEFAULT '';
 ALTER TABLE agentic_topic_relevance_decisions
@@ -241,6 +282,148 @@ class AgenticResearchStore:
                     ],
                 )
         return await self.list_topic_coverage(workspace_id, run_id)
+
+    async def control_state(self, workspace_id: UUID, run_id: UUID) -> ResearchControlState:
+        """Create or return the platform-owned counters for one research task."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """INSERT INTO agentic_research_control_state (run_id, workspace_id)
+                   SELECT runs.id, runs.workspace_id FROM research_runs AS runs
+                   WHERE runs.id = $2 AND runs.workspace_id = $1
+                   ON CONFLICT (run_id) DO UPDATE SET run_id = EXCLUDED.run_id
+                   RETURNING workspace_id, run_id, gap_search_rounds""",
+                workspace_id,
+                run_id,
+            )
+        if row is None:
+            raise KeyError(run_id)
+        return ResearchControlState(**dict(row))
+
+    async def begin_gap_search_round(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> ResearchControlState | None:
+        """Atomically reserve one of the task's two additional search rounds."""
+
+        await self.control_state(workspace_id, run_id)
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """UPDATE agentic_research_control_state
+                   SET gap_search_rounds = gap_search_rounds + 1, updated_at = now()
+                   WHERE workspace_id = $1 AND run_id = $2 AND gap_search_rounds < 2
+                   RETURNING workspace_id, run_id, gap_search_rounds""",
+                workspace_id,
+                run_id,
+            )
+        return ResearchControlState(**dict(row)) if row is not None else None
+
+    async def reserve_search_query(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        topic_id: str,
+        query: str,
+        purpose: str,
+    ) -> bool:
+        """Reserve a normalized query once for the entire research task."""
+
+        normalized_query = " ".join(query.casefold().split())
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            inserted = await connection.fetchval(
+                """INSERT INTO agentic_research_search_requests
+                   (id, run_id, topic_record_id, query, normalized_query, purpose)
+                   SELECT $6, topic.run_id, topic.id, $4, $5, $7
+                   FROM agentic_research_topics AS topic
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND topic.topic_id = $3
+                   ON CONFLICT (run_id, normalized_query) DO NOTHING
+                   RETURNING 1""",
+                workspace_id,
+                run_id,
+                topic_id,
+                query,
+                normalized_query,
+                uuid4(),
+                purpose,
+            )
+        return bool(inserted)
+
+    async def reserve_source_attempt(
+        self, workspace_id: UUID, run_id: UUID, topic_id: str, source_url: str
+    ) -> bool:
+        """Reserve no more than three acquisition attempts for one topic and source."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            row = await connection.fetchrow(
+                """SELECT attempts.attempt_count, attempts.topic_record_id
+                   FROM agentic_research_topics AS topic
+                   LEFT JOIN agentic_research_source_attempts AS attempts
+                     ON attempts.run_id = topic.run_id
+                    AND attempts.topic_record_id = topic.id
+                    AND attempts.source_url = $4
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND topic.topic_id = $3
+                   FOR UPDATE OF topic""",
+                workspace_id,
+                run_id,
+                topic_id,
+                source_url,
+            )
+            if row is None:
+                raise KeyError(topic_id)
+            attempt_count = row["attempt_count"]
+            if attempt_count is not None and attempt_count >= 3:
+                return False
+            await connection.execute(
+                """INSERT INTO agentic_research_source_attempts
+                   (run_id, topic_record_id, source_url, attempt_count)
+                   SELECT $2, topic.id, $4, 1
+                   FROM agentic_research_topics AS topic
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND topic.topic_id = $3
+                   ON CONFLICT (run_id, topic_record_id, source_url) DO UPDATE
+                   SET attempt_count = agentic_research_source_attempts.attempt_count + 1,
+                       updated_at = now()""",
+                workspace_id,
+                run_id,
+                topic_id,
+                source_url,
+            )
+        return True
+
+    async def record_capability_decision(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        topic_id: str,
+        decision: CapabilityRequestDecision,
+    ) -> None:
+        """Append the platform's accepted or denied decision, never a model-authored audit."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            result = await connection.execute(
+                """INSERT INTO agentic_research_capability_audits
+                   (id, run_id, topic_record_id, capability, decision, reason, arguments)
+                   SELECT $6, topic.run_id, topic.id, $4, $5, $7, $8::jsonb
+                   FROM agentic_research_topics AS topic
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND topic.topic_id = $3""",
+                workspace_id,
+                run_id,
+                topic_id,
+                decision.capability,
+                decision.decision,
+                uuid4(),
+                decision.reason,
+                json.dumps(decision.arguments),
+            )
+        if result == "INSERT 0 0":
+            raise KeyError(topic_id)
 
     async def record_relevance_decision(
         self,

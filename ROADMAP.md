@@ -131,9 +131,15 @@ storage, and execution action.
   bounded search and evidence-acquisition requests through the existing governed
   runtime and MCP host. Cookie-preference handling may be added only after that
   capability is separately implemented and approved.
-- [ ] Keep request validation, source reuse and de-duplication, trust-policy
+- [x] Keep request validation, source reuse and de-duplication, trust-policy
   enforcement, database writes, retry limits, loop counters, and audit records
-  in platform code.
+  in platform code. The model may suggest the next research action, but the
+  application checks whether it is allowed, prevents repeated searches, limits
+  evidence-acquisition attempts, and stops additional missing-evidence searches
+  after two rounds. These decisions and counts are stored in the database so a
+  restart cannot erase them. Existing application components continue to reuse
+  evidence, prevent duplicate sources, apply the trust policy, save records, and
+  retain the history of accepted and denied requests.
 - [ ] Build a versioned offline evaluation for the complete workflow. Cover topic
   planning, relevance decisions, duplicate sources, eligible, blocked, and
   review-required evidence, malformed model responses, hostile webpage

@@ -127,7 +127,7 @@ storage, and execution action.
   bounded excerpt from an eligible evidence version. Accept only an exact `YES`
   or `NO`; record every malformed response as a model failure instead of
   silently interpreting it as approval.
-- [ ] Define the agent's initial research capability catalog. It begins with
+- [x] Define the agent's initial research capability catalog. It begins with
   bounded search and evidence-acquisition requests through the existing governed
   runtime and MCP host. Cookie-preference handling may be added only after that
   capability is separately implemented and approved.

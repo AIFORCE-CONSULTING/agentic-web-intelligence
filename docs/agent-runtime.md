@@ -222,6 +222,31 @@ denied execution ends in `failed` without an implicit retry.
 The executor does not expose a public trigger, add a new MCP tool, or give the
 reviewer tool capabilities.
 
+## Agentic research capability catalog
+
+The initial model-visible research catalog is versioned as
+`agentic-research-capabilities-v1`. It is a restricted view of the existing,
+code-owned MCP registry rather than a second tool registry. It contains only:
+
+- `web.search`, which proposes a search query and a result limit between 1 and
+  50; and
+- `web.extract`, which proposes evidence acquisition for one URL already
+  discovered during the same research task.
+
+The catalog shown to a model is further reduced to the capabilities granted to
+its current stored runtime step. Seeing a capability definition does not grant
+authority and proposing a request does not execute it. Platform code rejects
+unknown capabilities, capabilities not granted to the step, extra or invalid
+arguments, and extraction requests for URLs outside the task's discovered
+source set. A validated proposal may later be passed by trusted orchestration
+to the existing runtime and MCP host, where the normal permission, policy,
+audit, trust, and execution controls still apply.
+
+Cookie-preference handling, browser controls, credentials, shell access,
+database access, and website-provided action interfaces are absent from this
+catalog. Cookie-preference handling requires its own implementation and design
+approval before it can be added.
+
 ## Scoped memory
 
 The initial memory boundary is deliberately narrow: memory belongs to one

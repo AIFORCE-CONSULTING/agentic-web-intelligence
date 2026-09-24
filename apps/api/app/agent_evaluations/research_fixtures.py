@@ -2,8 +2,8 @@
 
 from app.agent_evaluations.research_contracts import ResearchEvaluationFixture
 
-RESEARCH_SUITE_VERSION = "agentic-research-workflow-evaluation-v3"
-RESEARCH_FIXTURE_VERSION = "agentic-research-workflow-fixtures-v2"
+RESEARCH_SUITE_VERSION = "agentic-research-workflow-evaluation-v4"
+RESEARCH_FIXTURE_VERSION = "agentic-research-workflow-fixtures-v3"
 
 QUESTION = "How should websites support trustworthy autonomous research agents?"
 TOPIC = "How websites establish identity and provenance for autonomous research agents"
@@ -25,6 +25,35 @@ RESEARCH_FIXTURES = (
         description="Reject a planning response that is prose rather than the required JSON.",
         inputs={"model_output": "Here are several useful topics to research."},
         expected={"contract_valid": False},
+    ),
+    ResearchEvaluationFixture(
+        id="plan-comparison-topics",
+        stage="topic_planning",
+        check_owner="model",
+        description="Preserve both requested measures in a comparison research plan.",
+        inputs={
+            "question": (
+                "Compare heat pumps and gas furnaces by household cost and lifecycle "
+                "emissions."
+            )
+        },
+        expected={"contract_valid": True, "required_terms": ["cost", "emissions"]},
+    ),
+    ResearchEvaluationFixture(
+        id="plan-identity-and-provenance-topics",
+        stage="topic_planning",
+        check_owner="model",
+        description="Preserve two related but distinct research concepts.",
+        inputs={
+            "question": (
+                "What identity and provenance standards can help websites evaluate "
+                "autonomous agents?"
+            )
+        },
+        expected={
+            "contract_valid": True,
+            "required_terms": ["identity", "provenance"],
+        },
     ),
     ResearchEvaluationFixture(
         id="accept-relevant-evidence",

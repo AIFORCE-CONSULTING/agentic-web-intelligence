@@ -2,6 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-09-22
+- Model selection recorded: 2026-09-24
 
 ## Context
 
@@ -226,6 +227,44 @@ The completed cookie-preference evaluation remains a preliminary result for one
 future capability. It cannot be used as the model-selection decision for this
 workflow. Enabling live research capabilities requires a separate, recorded
 decision based on the complete evaluation.
+
+### Recorded model selection
+
+The platform selects `qwen3:1.7b` as the initial reasoning model for this
+bounded research workflow. This is a fit-for-purpose decision for the workflow
+defined by this ADR, not a claim that the model is suitable for unrestricted
+agent work or is the strongest available model.
+
+The decision is based on
+`agentic-research-workflow-evaluation-v4`, using
+`agentic-research-workflow-fixtures-v3`, fixed model settings, and the installed
+model artifact with digest
+`8f68893c685c3ddff2aa3fffce2aa60a30bb2da65ca488b61fff134a4d1730e7`.
+All 20 cases passed in each of five attempts. Across three different planning
+questions, 14 of 15 topic plans passed on the first response. One response
+omitted the website perspective from the operator's question. The platform
+identified `website` as the missing concept, permitted one correction, and the
+replacement plan passed.
+
+The first-response omission is a known limitation. The selected operating
+boundary therefore includes the versioned prompt, native JSON schema, platform
+validation, at most one targeted correction, and fail-closed handling when the
+corrected response still fails. Both responses and the concepts identified as
+missing must remain visible in evaluation and runtime records. The model cannot
+approve its own response or continue after the platform rejects it.
+
+Local operation is an explicit product requirement. Selecting a small local
+model keeps the workflow available to people who cannot justify paid research
+subscriptions, recurring cloud inference charges, or high-end local hardware.
+The platform accepts the bounded correction cost rather than making a larger
+model or cloud account a requirement.
+
+This decision clears the model-evaluation gate only. Live research capabilities
+remain disabled until the orchestration and platform integrations in the
+roadmap are implemented and verified. Re-run the complete evaluation before
+adopting a different model artifact, changing a model-owned prompt or contract,
+expanding the workflow's capabilities, or retaining a model after a meaningful
+pattern of production failures.
 
 ## Consequences
 

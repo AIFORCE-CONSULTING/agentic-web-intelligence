@@ -218,14 +218,14 @@ async def run_research_evaluation(
                     and not passed
                     and actual.get("contract_valid") is True
                 ):
+                    initial_output = model_output
+                    missing_terms = actual.get("missing_required_terms", [])
                     corrected_fixture = fixture.model_copy(
                         update={
                             "inputs": {
                                 **fixture.inputs,
                                 "previous_model_output": model_output,
-                                "coverage_feedback": fixture.expected.get(
-                                    "required_terms", []
-                                ),
+                                "coverage_feedback": missing_terms,
                             }
                         }
                     )
@@ -235,6 +235,11 @@ async def run_research_evaluation(
                         fixture, correction.content
                     )
                     actual["correction_used"] = True
+                    actual["initial_model_output"] = initial_output
+                    actual["initial_missing_required_terms"] = missing_terms
+                    actual["corrected_model_output"] = correction.content
+                elif fixture.stage == "topic_planning" and fixture.check_owner == "model":
+                    actual["correction_used"] = False
             except ResearchEvaluationModelError as error:
                 passed, actual, detail = False, {"model_error": True}, str(error)
             attempts.append(
@@ -371,6 +376,9 @@ def _evaluate_topic_plan(
         }
         if required:
             actual["required_terms_present"] = valid
+            actual["missing_required_terms"] = [
+                term for term in required if term.casefold() not in combined
+            ]
             return (
                 valid,
                 actual,

@@ -147,9 +147,15 @@ storage, and execution action.
 - [x] Run every evaluation case repeatedly with fixed model settings. Record the
   model version, prompt version, test version, expected result, actual result,
   and resource use.
-- [ ] Make and record a model-selection decision only after the complete workflow
-  evaluation passes. The existing cookie-preference result alone is not enough
-  to enable live research capabilities.
+- [x] Select `qwen3:1.7b` for the bounded research workflow after it passed all
+  20 complete-workflow evaluation cases in five repeated attempts. Fourteen of
+  15 topic plans passed on the first response; the remaining response omitted
+  the website perspective and passed after the one permitted correction. Keep
+  prompt and response validation, one bounded correction, and fail-closed
+  handling as required parts of the selected system. This decision prioritizes
+  useful local research on modest hardware without requiring a paid cloud model.
+  It clears the model-evaluation gate but does not by itself enable live research
+  capabilities.
 
 #### Implementation
 
@@ -217,6 +223,14 @@ truthfulness or replace browser safety protections.
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
+
+- **Topic-plan feedback** — add optional thumbs-up and thumbs-down feedback to
+  the operator's topic-plan view. For negative feedback, record a simple reason
+  such as a missing subject, irrelevant topic, overlapping topics, weak search
+  query, or unsuitable topic count, with optional comments. Associate feedback
+  with the research task, plan, model artifact, and prompt version so recurring
+  failures can become new offline evaluation cases. Do not automatically train
+  or change the model from an individual response.
 
 - **Trust-policy management** — design a separately authorized workflow for
   changing local trust-policy rules, potentially through a purpose-built MCP

@@ -92,24 +92,45 @@ cookie-preference test:
 python -m app.agent_evaluations --suite research --model qwen3:1.7b
 ```
 
-The `agentic-research-workflow-evaluation-v3` suite distinguishes model checks
+The `agentic-research-workflow-evaluation-v4` suite distinguishes model checks
 from application checks. Model checks cover topic planning, exact relevance
 decisions, hostile webpage instructions, a targeted search for missing
 evidence, and a source-grounded final report. Application checks cover malformed
 responses, duplicate sources, eligible and blocked evidence, evidence awaiting
 human review, the two-round search limit, and unsupported report citations.
 
+Topic planning uses three different operator questions: a broad website-and-agent
+question, a two-measure comparison, and a question with two related research
+concepts. Before returning its first plan, the model is instructed to compare the
+plan with the original question. If a structurally valid plan omits a required
+concept, the evaluation permits one correction and names only the concepts that
+were actually omitted. The report retains the original response, the missing
+concepts, and the corrected response so first-pass reliability remains visible.
+
 The suite supplies fixed examples and calls no live search, extraction, MCP,
 browser, database, credential, or website tool. It writes a JSON report that
 names the workflow stage, identifies whether the model or application owned the
-check, and shows the expected and actual result. Passing this first version
-requires every case to pass on every configured attempt. Topic planning,
-missing-topic search, and final reporting use thinking mode; exact relevance
-decisions do not. All calls use temperature zero and seed 7. The report records
+check, and shows the expected and actual result. Passing requires every case to
+pass on every configured attempt. Topic planning, relevance decisions,
+missing-topic search, and final reporting use thinking mode. All calls use
+temperature zero and seed 7. The report records
 the installed model digest and size when Ollama provides them, the prompt and
 test versions, expected and actual results, thinking setting, token counts, and
-Ollama timing measurements. The final model-selection decision remains a
-separate roadmap step.
+Ollama timing measurements.
+
+### Research model selection
+
+ADR 0016 selects `qwen3:1.7b` for the bounded research workflow. In the recorded
+five-attempt v4 evaluation, all 20 cases passed every attempt. Fourteen of the 15
+topic plans passed on the first response. One response omitted the website
+perspective and passed after the single targeted correction. The JSON schema,
+application validation, one-correction limit, and fail-closed result are part of
+the selected system and must not be removed while relying on this result.
+
+This selection keeps local research practical on modest hardware and avoids
+making a paid cloud model a prerequisite. It clears the model-evaluation gate;
+it does not grant the model live capabilities or bypass the remaining
+orchestration and integration work.
 
 ## Roles
 

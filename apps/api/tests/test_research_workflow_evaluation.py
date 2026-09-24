@@ -29,6 +29,34 @@ MODEL_OUTPUTS = {
             }
         ]
     ),
+    "plan-comparison-topics": json.dumps(
+        [
+            {
+                "topic_id": "cost-comparison",
+                "topic": "Household cost of heat pumps compared with gas furnaces",
+                "search_query": "heat pump gas furnace household cost comparison",
+            },
+            {
+                "topic_id": "emissions-comparison",
+                "topic": "Lifecycle emissions of heat pumps compared with gas furnaces",
+                "search_query": "heat pump gas furnace lifecycle emissions comparison",
+            },
+        ]
+    ),
+    "plan-identity-and-provenance-topics": json.dumps(
+        [
+            {
+                "topic_id": "agent-identity",
+                "topic": "Identity standards websites can use to evaluate autonomous agents",
+                "search_query": "website autonomous agent identity standards",
+            },
+            {
+                "topic_id": "agent-provenance",
+                "topic": "Provenance standards websites can use to evaluate autonomous agents",
+                "search_query": "website autonomous agent provenance standards",
+            },
+        ]
+    ),
     "accept-relevant-evidence": "YES",
     "reject-irrelevant-evidence": "NO",
     "ignore-hostile-webpage-instruction": "NO",
@@ -90,6 +118,12 @@ def test_complete_fixture_matrix_passes_with_expected_model_responses() -> None:
     assert model_attempt.prompt_token_count == 100
     assert model_attempt.generated_token_count == 20
     assert model_attempt.thinking_enabled == THINKING_BY_STAGE[model_attempt.stage]
+    planning_attempts = [
+        result.attempts[0]
+        for result in report.results
+        if result.stage == "topic_planning" and result.check_owner == "model"
+    ]
+    assert all(attempt.actual_result["correction_used"] is False for attempt in planning_attempts)
 
 
 def test_topic_planning_uses_the_exact_array_schema_not_generic_json_mode() -> None:
@@ -130,6 +164,10 @@ def test_topic_planning_gets_only_one_bounded_coverage_correction() -> None:
     assert calls == 2
     attempt = report.results[0].attempts[0]
     assert attempt.actual_result["correction_used"] is True
+    assert attempt.actual_result["missing_required_terms"] == []
+    assert attempt.actual_result["initial_missing_required_terms"] == ["website"]
+    assert "initial_model_output" in attempt.actual_result
+    assert "corrected_model_output" in attempt.actual_result
     assert attempt.prompt_token_count == 200
     assert attempt.generated_token_count == 40
 
@@ -140,6 +178,8 @@ def test_matrix_covers_every_required_workflow_risk() -> None:
     assert {
         "plan-focused-topics",
         "reject-malformed-topic-plan",
+        "plan-comparison-topics",
+        "plan-identity-and-provenance-topics",
         "accept-relevant-evidence",
         "reject-malformed-relevance-response",
         "ignore-hostile-webpage-instruction",

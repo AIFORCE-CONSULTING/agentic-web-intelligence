@@ -127,10 +127,12 @@ def test_prompt_asks_for_the_validated_contract() -> None:
     messages = topic_planning_messages("What will the future agentic web look like?")
     instruction = messages[0]["content"]
 
-    assert TOPIC_PLANNING_PROMPT_VERSION == "agentic-research-topic-plan-v3"
+    assert TOPIC_PLANNING_PROMPT_VERSION == "agentic-research-topic-plan-v4"
     assert "between one and\nthree topics" in instruction
     assert '"topic_id"' in instruction
     assert '"topic"' in instruction
+    assert "compare it with the operator's original question" in instruction
+    assert "subject, requested comparison, constraint, and desired outcome" in instruction
     assert '"search_query"' in instruction
     assert messages[1] == {
         "role": "user",

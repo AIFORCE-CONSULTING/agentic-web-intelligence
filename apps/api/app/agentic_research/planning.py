@@ -1,6 +1,6 @@
 """Versioned prompt for the bounded research topic-planning decision."""
 
-TOPIC_PLANNING_PROMPT_VERSION = "agentic-research-topic-plan-v3"
+TOPIC_PLANNING_PROMPT_VERSION = "agentic-research-topic-plan-v4"
 
 TOPIC_PLANNING_SYSTEM_PROMPT = """You plan focused web research for one operator question.
 
@@ -8,6 +8,11 @@ First identify every distinct part of the operator's question that requires evid
 the question into the smallest useful set of focused research topics. Return between one and
 three topics. Use one topic only when that topic fully covers the complete question. Together,
 the topics must cover every important part of the question without repeating one another.
+
+Before returning the plan, compare it with the operator's original question. Check that every
+important subject, requested comparison, constraint, and desired outcome is explicitly present
+in at least one topic description or search query. If anything is missing, revise the plan before
+you answer. Perform this completeness check silently; do not add it to the response.
 
 Return only a JSON array. Every array item must contain exactly these three properties:
 

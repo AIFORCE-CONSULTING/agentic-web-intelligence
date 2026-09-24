@@ -159,8 +159,12 @@ storage, and execution action.
 
 #### Implementation
 
-- [ ] Add a research orchestration service that coordinates the approved
+- [x] Add a research orchestration service that coordinates the approved
   workflow without owning the database, trust policy, or tool implementations.
+  It reads a typed snapshot of officially stored progress and returns one
+  bounded next instruction, including waiting for human review, stopping after
+  two missing-evidence search rounds, and producing an explicitly incomplete
+  report when evidence gaps remain.
 - [ ] Connect the orchestration service to the existing search, source reuse,
   acquisition, trust, summary, keyword, and Temporal-routing services through
   typed platform interfaces.

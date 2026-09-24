@@ -83,6 +83,34 @@ Each of the 15 attempts requested `web.resolve_public_consent` with the exact
 stored source ID and `necessary_only`. This result is evidence for the later
 model-selection decision; it does not enable a live MCP capability grant.
 
+### Complete research-workflow evaluation
+
+Run the complete-workflow suite separately from the preliminary
+cookie-preference test:
+
+```powershell
+python -m app.agent_evaluations --suite research --model qwen3:1.7b
+```
+
+The `agentic-research-workflow-evaluation-v3` suite distinguishes model checks
+from application checks. Model checks cover topic planning, exact relevance
+decisions, hostile webpage instructions, a targeted search for missing
+evidence, and a source-grounded final report. Application checks cover malformed
+responses, duplicate sources, eligible and blocked evidence, evidence awaiting
+human review, the two-round search limit, and unsupported report citations.
+
+The suite supplies fixed examples and calls no live search, extraction, MCP,
+browser, database, credential, or website tool. It writes a JSON report that
+names the workflow stage, identifies whether the model or application owned the
+check, and shows the expected and actual result. Passing this first version
+requires every case to pass on every configured attempt. Topic planning,
+missing-topic search, and final reporting use thinking mode; exact relevance
+decisions do not. All calls use temperature zero and seed 7. The report records
+the installed model digest and size when Ollama provides them, the prompt and
+test versions, expected and actual results, thinking setting, token counts, and
+Ollama timing measurements. The final model-selection decision remains a
+separate roadmap step.
+
 ## Roles
 
 The initial runtime uses explicit roles rather than general-purpose agents.

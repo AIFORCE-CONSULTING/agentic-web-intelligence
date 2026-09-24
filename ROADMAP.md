@@ -140,11 +140,11 @@ storage, and execution action.
   restart cannot erase them. Existing application components continue to reuse
   evidence, prevent duplicate sources, apply the trust policy, save records, and
   retain the history of accepted and denied requests.
-- [ ] Build a versioned offline evaluation for the complete workflow. Cover topic
+- [x] Build a versioned offline evaluation for the complete workflow. Cover topic
   planning, relevance decisions, duplicate sources, eligible, blocked, and
   review-required evidence, malformed model responses, hostile webpage
   instructions, missing-topic searches, loop limits, and final-report grounding.
-- [ ] Run every evaluation case repeatedly with fixed model settings. Record the
+- [x] Run every evaluation case repeatedly with fixed model settings. Record the
   model version, prompt version, test version, expected result, actual result,
   and resource use.
 - [ ] Make and record a model-selection decision only after the complete workflow

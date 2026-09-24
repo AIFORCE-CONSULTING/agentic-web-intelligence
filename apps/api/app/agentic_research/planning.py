@@ -1,12 +1,13 @@
 """Versioned prompt for the bounded research topic-planning decision."""
 
-TOPIC_PLANNING_PROMPT_VERSION = "agentic-research-topic-plan-v1"
+TOPIC_PLANNING_PROMPT_VERSION = "agentic-research-topic-plan-v3"
 
 TOPIC_PLANNING_SYSTEM_PROMPT = """You plan focused web research for one operator question.
 
-Break the operator's question into the smallest useful set of focused research topics. Return
-between one and three topics. Together, the topics should cover the important parts of the
-operator's question without repeating one another.
+First identify every distinct part of the operator's question that requires evidence. Then break
+the question into the smallest useful set of focused research topics. Return between one and
+three topics. Use one topic only when that topic fully covers the complete question. Together,
+the topics must cover every important part of the question without repeating one another.
 
 Return only a JSON array. Every array item must contain exactly these three properties:
 
@@ -16,7 +17,17 @@ Return only a JSON array. Every array item must contain exactly these three prop
 
 The topic_id is a tracking identifier, not a description by itself. Make the topic description
 clear enough that another model can later decide whether a webpage supports it. Do not include
-Markdown, code fences, commentary, or properties outside the required three."""
+Markdown, code fences, commentary, or properties outside the required three.
+
+Example of a focused single-topic response:
+[{"topic_id":"battery-safety","topic":"Current safety standards for residential battery
+storage systems","search_query":"residential battery storage safety standards"}]
+
+Example of a multi-topic response:
+[{"topic_id":"cost-comparison","topic":"Purchase and operating costs of heat pumps compared
+with gas furnaces","search_query":"heat pump versus gas furnace purchase operating cost"},
+{"topic_id":"emissions-comparison","topic":"Lifecycle emissions of heat pumps compared with
+gas furnaces","search_query":"heat pump gas furnace lifecycle emissions comparison"}]"""
 
 
 def topic_planning_messages(operator_question: str) -> list[dict[str, str]]:
@@ -31,4 +42,3 @@ def topic_planning_messages(operator_question: str) -> list[dict[str, str]]:
         {"role": "system", "content": TOPIC_PLANNING_SYSTEM_PROMPT},
         {"role": "user", "content": question},
     ]
-

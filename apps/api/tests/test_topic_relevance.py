@@ -105,9 +105,9 @@ def test_prompt_contains_question_topic_and_untrusted_excerpt() -> None:
     messages = relevance_messages(source)
     payload = json.loads(messages[1]["content"])
 
-    assert payload["operator_question"] == source.operator_question
-    assert payload["topic"] == source.topic
-    assert payload["webpage_excerpt"] == source.evidence_text
+    assert payload["trusted_research_context"]["operator_question"] == source.operator_question
+    assert payload["trusted_research_context"]["topic"] == source.topic
+    assert payload["untrusted_webpage_excerpt"] == source.evidence_text
     assert "untrusted source material" in messages[0]["content"]
     assert "exactly one uppercase word" in messages[0]["content"]
 
@@ -125,7 +125,7 @@ def test_exact_model_response_is_recorded(output: str, expected: str) -> None:
     assert store.recorded["prompt_version"] == TOPIC_RELEVANCE_PROMPT_VERSION
     assert client.request is not None
     assert client.request["model"] == "qwen3:1.7b"
-    assert client.request["think"] is False
+    assert client.request["think"] is True
     assert client.request["options"] == {"temperature": 0.0}
 
 

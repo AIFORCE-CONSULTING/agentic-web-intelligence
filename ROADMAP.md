@@ -67,13 +67,10 @@ summaries and page-level keywords.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7
+## Phase 7 (complete)
 
-### Refactoring
+#### Refactoring
 
-- [ ] Use the existing keyword groups to generate a cross-source synthesis for
-  each shared keyword. Each synthesis identifies what the linked source
-  summaries have in common, where they differ, and their relevant caveats.
 - [x] Keep one canonical research run for each normalized web-search target. A
   repeated **Discover sources** action performs a fresh provider search but
   never creates a duplicate target container.
@@ -92,7 +89,41 @@ summaries and page-level keywords.
   sentence from its source summary, and source summaries record the fixed
   prompt version used to create them.
 
-### Agentic Research Workflow
+#### Local Policy-Controlled Web Trust
+
+Add a browser-agnostic control point that determines whether a captured web
+evidence version may enter the platform's evidence and AI workflows. This phase
+governs local eligibility; it does not make a universal claim about a source's
+truthfulness or replace browser safety protections.
+
+- [x] Define the source-trust boundary, authority, and enforcement rules in an ADR.
+- [x] Establish the initial, versioned local trust policy and expose it for
+  read-only operator review. The current policy deterministically evaluates
+  HTTPS, supported content types, extraction integrity, and extracted-size
+  limits. It records redirects only as retrieval diagnostics: requested
+  candidate URL, final evidence URL, and one bounded result (`no_redirect`,
+  `redirected`, `redirect_limit_exceeded`, or `unsafe_destination_blocked`).
+  Redirect metadata explains how evidence was reached but does not independently
+  allow, flag, or block it.
+- [x] Discover and automatically preflight every returned candidate before the
+  operator selects it. Persist useful evidence, trust results, and failed or
+  blocked candidate metadata so future agents can reuse the findings without
+  treating a past URL result as a permanent verdict.
+- [x] Automatically summarize eligible preflight evidence and accepted reviewed
+  evidence through platform-selected direct or Temporal execution without
+  exposing manual extraction or regeneration controls.
+- [x] Evaluate an evidence version after acquisition and before it is eligible for
+  summaries, keywords, or future evidence-grounded capabilities.
+- [x] Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
+  dispositions. Preserve raw capture for audit regardless of disposition, but
+  prevent evidence requiring review or blocked evidence from automated model
+  context.
+
+- [x] Add a review experience for evidence requiring review. A human acceptance
+  records its identity, reason, exact evidence-version scope, and optional expiry
+  independently of the UI and execution mechanism.
+
+## Phase 8 - Agentic Research Workflow
 
 Build a local research agent that can carry out a bounded web-research task.
 The operator owns the research question. The agent identifies useful research
@@ -159,129 +190,77 @@ storage, and execution action.
 
 #### Implementation
 
-The approved unified LangGraph refactor is the implementation plan for this
-group. It replaces the active inline research sequence with one cohesive
-LangGraph workflow while preserving the services and stored records that
-already work.
+The approved unified LangGraph refactor replaces the active inline research
+sequence with one cohesive workflow while preserving the services and stored
+records that already work. Implementation proceeds in this order:
 
-1. [x] **Define the unified workflow state.** The LangGraph working state now
-   carries the research run and workspace identifiers, operator question, total
-   source limit, planned topics, uncovered topics, gap-search count, workflow
-   stage, and failure information. This is temporary execution context;
+1. [x] **Define the unified workflow state and graph structure.** The LangGraph
+   working state carries the research run and workspace identifiers, operator
+   question, total source limit, planned topics, source progress, uncovered
+   topics, gap-search count, workflow stage, and failure information. The graph
+   coordinates topic planning, searches, acquisition, relevance, summaries,
+   coverage, no more than two missing-topic search rounds, final reporting, and
+   waits for human or durable work. This is temporary execution context;
    PostgreSQL remains the official business and audit record.
-2. [x] **Build the unified LangGraph workflow.** Coordinate topic planning,
-   topic searches, the task-wide source limit, duplicate skipping, governed
-   evidence acquisition, trust evaluation, topic relevance, summaries and
-   keywords, topic coverage, no more than two missing-topic search rounds, and
-   a grounded final report. The graph structure and bounded coverage routing are
-   complete. Typed production nodes now connect topic planning, search,
-   acquisition and trust preflight, relevance, summaries, coverage, bounded gap
-   searches, and final report storage. Activating the graph from the research
-   API remains a later implementation step.
-3. [x] **Reuse the existing platform services.** The graph coordinates the
-   governed search and extraction boundary, `ResearchStore`, candidate
-   preflight, evidence trust and review, topic planning and relevance, summary
-   and keyword generation, topic-coverage storage, and Temporal scheduling. It
-   must not copy their business rules or create replacement stores.
-4. [ ] **Preserve the existing user trigger.** Research continues to start when
-   the operator enters a question, chooses the total source count, and clicks
-   **Discover Sources**. Do not introduce another start button or a separate
-   agent interface.
-5. [ ] **Simplify the active research API route.** `POST /v1/research/runs`
+2. [x] **Connect existing services through typed graph nodes.** The production
+   nodes use the established owners for topic planning, governed search and
+   extraction, duplicate-safe source storage, candidate preflight, evidence
+   trust and review, strict topic relevance, summary and keyword generation,
+   topic coverage, direct or Temporal routing, bounded gap searches, and final
+   report storage. The graph coordinates these services without copying their
+   rules or creating replacement stores.
+3. [ ] **Add end-to-end integration tests.** Prove that topic and task-wide
+   source limits hold; known URLs are skipped; direct and Temporal-backed work
+   succeeds; blocked and review-required evidence stays outside automated model
+   context; malformed relevance decisions fail safely; gap searches stop after
+   two rounds; retries do not duplicate records; and final reports use only
+   eligible, relevant stored evidence.
+4. [ ] **Connect the existing Discover Sources action to LangGraph.** Preserve
+   the current operator workflow: enter a question, choose the total source
+   count, and click **Discover Sources**. Refactor `POST /v1/research/runs` so it
    authenticates and validates the request, finds or creates the research record
-   for the question, starts the unified LangGraph workflow, and returns stored
-   research status. The route no longer owns the detailed research sequence.
-6. [ ] **Keep Temporal for durable work.** LangGraph defines the research
-   sequence. Temporal automatically supplies recovery and retries when platform
-   thresholds require durable execution. Preserve the active
-   `CandidatePreflightWorkflow` and `EvidenceSummaryWorkflow`; neither the model
-   nor the operator chooses whether Temporal is used.
-7. [ ] **Fold in and retire the standalone agentic router.** Move its typed
-   stages, bounded transitions, human-review wait, two-round gap-search limit,
-   and incomplete-report behavior into LangGraph. Transfer its useful tests,
-   then remove it as a separate workflow path. Keep the offline model evaluation
+   for the question, starts the unified graph, and returns stored status. The
+   route must no longer own the detailed research sequence, and no additional
+   start button or agent interface is introduced.
+5. [ ] **Verify existing records, UI polling, and durable continuation.** Existing
+   research records must remain readable. The UI must continue to display stored
+   progress while Temporal completes qualifying work. LangGraph defines the
+   sequence; Temporal automatically supplies recovery and retries when platform
+   thresholds require them. Preserve `CandidatePreflightWorkflow` and
+   `EvidenceSummaryWorkflow`; neither the model nor the operator chooses the
+   execution mechanism.
+6. [ ] **Remove the standalone plain-Python agentic router.** Its typed stages,
+   bounded transitions, human-review wait, gap-search limit, and incomplete
+   report behavior now belong to LangGraph. Transfer any remaining useful tests
+   before deleting the second workflow path. Keep the offline model evaluation
    as an independent test suite.
-8. [ ] **Retire the unused earlier runtime workflow.** After confirming that
-   stored runtime records remain readable, remove the old deterministic planner,
-   first-result executor, reviewer cycle, unused scheduling boundary and
-   activities, and `GovernedRuntimeWorkflow` registration. Do not remove the
-   active candidate-preflight or evidence-summary Temporal workflows.
-9. [ ] **Decide the Admin Durable Work view separately.** Preserve read-only
-   visibility of historical runtime records during this refactor. Repurposing
-   the view for unified research progress, or removing it, requires a separate
-   operator-interface decision.
-10. [ ] **Verify the complete workflow.** Integration tests must prove that the
-    Discover Sources action starts the graph; topic and source limits hold;
-    known URLs are skipped; direct and Temporal-backed work succeeds; blocked
-    and review-required evidence stays outside automated model context; strict
-    relevance decisions fail safely; gap searches stop after two rounds;
-    retries do not duplicate records; reports use only eligible, relevant stored
-    evidence; and existing research records remain readable.
-
-Implementation proceeds in this order:
-
-1. [x] Add the unified LangGraph state and graph structure.
-2. [x] Connect existing services through typed graph nodes. The production nodes
-   use the established service owners for topic planning, governed search,
-   duplicate-safe source storage, direct or Temporal preflight, trust-gated
-   relevance, summaries, topic coverage, bounded gap searches, and final report
-   storage.
-3. [ ] Add end-to-end integration tests.
-4. [ ] Change the active research API route to call the graph.
-5. [ ] Verify existing research records and UI polling.
-6. [ ] Remove the standalone plain-Python router.
-7. [ ] Retire the unused old runtime and Temporal workflow.
-8. [ ] Update the remaining documentation and mark this implementation complete.
-
-### Local Policy-Controlled Web Trust
-
-Add a browser-agnostic control point that determines whether a captured web
-evidence version may enter the platform's evidence and AI workflows. This phase
-governs local eligibility; it does not make a universal claim about a source's
-truthfulness or replace browser safety protections.
-
-- [x] Define the source-trust boundary, authority, and enforcement rules in an ADR.
-- [x] Establish the initial, versioned local trust policy and expose it for
-  read-only operator review. The current policy deterministically evaluates
-  HTTPS, supported content types, extraction integrity, and extracted-size
-  limits. It records redirects only as retrieval diagnostics: requested
-  candidate URL, final evidence URL, and one bounded result (`no_redirect`,
-  `redirected`, `redirect_limit_exceeded`, or `unsafe_destination_blocked`).
-  Redirect metadata explains how evidence was reached but does not independently
-  allow, flag, or block it.
-- [x] Discover and automatically preflight every returned candidate before the
-  operator selects it. Persist useful evidence, trust results, and failed or
-  blocked candidate metadata so future agents can reuse the findings without
-  treating a past URL result as a permanent verdict.
-- [x] Automatically summarize eligible preflight evidence and accepted reviewed
-  evidence through platform-selected direct or Temporal execution without
-  exposing manual extraction or regeneration controls.
-- [x] Evaluate an evidence version after acquisition and before it is eligible for
-  summaries, keywords, or future evidence-grounded capabilities.
-- [x] Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
-  dispositions. Preserve raw capture for audit regardless of disposition, but
-  prevent evidence requiring review or blocked evidence from automated model
-  context.
-
-#### Open work
-
-- [x] Add a review experience for evidence requiring review. A human acceptance
-  records its identity, reason, exact evidence-version scope, and optional expiry
-  independently of the UI and execution mechanism.
-- [ ] Re-evaluate evidence after refresh or an applicable policy change. The
-  platform uses direct execution for one ordinary evaluation and automatically
-  uses its mandatory Temporal infrastructure when workload, retry, or review
-  thresholds require durable execution.
-- [ ] Validate C2PA provenance for supported file assets while recording ordinary
-  HTML as a distinct case, not as invalid solely because it has no asset-level
-  provenance manifest.
-- [ ] Validate policy enforcement, policy changes, refresh, overrides, workspace
-  isolation, prompt-injection resistance, and direct-versus-durable routing.
+7. [ ] **Retire the unused earlier runtime and Temporal workflow.** After
+   confirming historical runtime records remain readable, remove the old
+   deterministic planner, first-result executor, reviewer cycle, unused
+   scheduling boundary and activities, and `GovernedRuntimeWorkflow`
+   registration. Do not remove the active preflight or summary workflows.
+   Preserve the Admin **Durable Work** view as read-only historical visibility;
+   repurposing or removing it requires a separate operator-interface decision.
+8. [ ] **Update the remaining documentation and close the refactor.** Document
+   the final caller, workflow ownership, durable continuation, stored records,
+   and retired code, then mark this implementation complete.
 
 ## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
+
+- **Trust-policy re-evaluation after refresh or policy change** — re-evaluate
+  evidence when governed refresh functionality or an applicable policy change
+  exists. Use direct execution for one ordinary evaluation and mandatory
+  Temporal infrastructure when workload, retry, or review thresholds require
+  durable execution.
+- **C2PA provenance validation** — validate C2PA provenance for supported file
+  assets while recording ordinary HTML as a distinct case, not as invalid solely
+  because it has no asset-level provenance manifest.
+- **Expanded trust-policy validation** — validate policy enforcement, policy
+  changes, refresh, overrides, workspace isolation, prompt-injection resistance,
+  and direct-versus-durable routing.
 
 - **Topic-plan feedback** — add optional thumbs-up and thumbs-down feedback to
   the operator's topic-plan view. For negative feedback, record a simple reason

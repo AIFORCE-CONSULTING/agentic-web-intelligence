@@ -209,7 +209,7 @@ records that already work. Implementation proceeds in this order:
    topic coverage, direct or Temporal routing, bounded gap searches, and final
    report storage. The graph coordinates these services without copying their
    rules or creating replacement stores.
-3. [ ] **Add end-to-end integration tests.** Prove that topic and task-wide
+3. [x] **Add end-to-end integration tests.** Prove that topic and task-wide
    source limits hold; known URLs are skipped; direct and Temporal-backed work
    succeeds; blocked and review-required evidence stays outside automated model
    context; malformed relevance decisions fail safely; gap searches stop after

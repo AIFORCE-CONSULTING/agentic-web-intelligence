@@ -40,6 +40,7 @@ class ResearchWorkflowState(TypedDict, total=False):
     stage: ResearchStage
     topics: list[ResearchTopic]
     new_source_urls: list[str]
+    discovered_source_count: int
     source_topics: list[TopicSourceAssociation]
     relevant_sources: list[TopicSourceAssociation]
     uncovered_topic_ids: list[str]

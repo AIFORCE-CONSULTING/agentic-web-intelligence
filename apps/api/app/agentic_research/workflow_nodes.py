@@ -92,6 +92,7 @@ def topic_search_node(
         return {
             "stage": "sources_discovered",
             "new_source_urls": [source.url for source in stored],
+            "discovered_source_count": len(stored),
             "source_topics": associations,
         }
 
@@ -216,6 +217,15 @@ def missing_topic_search_node(
         )
         if control_state is None:
             return {"gap_search_rounds": 2, "new_source_urls": []}
+        remaining_capacity = max(
+            0,
+            state["source_limit"] - state.get("discovered_source_count", 0),
+        )
+        if remaining_capacity == 0:
+            return {
+                "gap_search_rounds": control_state.gap_search_rounds,
+                "new_source_urls": [],
+            }
         topic_id = state["uncovered_topic_ids"][0]
         topic = next(item for item in state["topics"] if item.topic_id == topic_id)
         prior_queries = [item.search_query for item in state["topics"]]
@@ -224,18 +234,18 @@ def missing_topic_search_node(
         )
         decision = await control.consider_request(
             state["workspace_id"], state["run_id"], topic_id, "web.search",
-            {"query": query, "max_results": state["source_limit"]}, {"web.search"},
+            {"query": query, "max_results": remaining_capacity}, {"web.search"},
             purpose="gap",
         )
         if decision.decision != "accepted":
             return {"gap_search_rounds": control_state.gap_search_rounds, "new_source_urls": []}
-        response = await search(query, state["source_limit"])
+        response = await search(query, remaining_capacity)
         candidates = [
             SourceCandidate(rank=index, **result.model_dump())
             for index, result in enumerate(response.results, start=1)
         ]
         stored = await research_store.save_new_sources(
-            state["run_id"], candidates, state["source_limit"]
+            state["run_id"], candidates, remaining_capacity
         )
         associations = [
             TopicSourceAssociation(topic_id=topic_id, source_url=item.url, result_rank=item.rank)
@@ -247,6 +257,7 @@ def missing_topic_search_node(
         return {
             "gap_search_rounds": control_state.gap_search_rounds,
             "new_source_urls": [item.url for item in stored],
+            "discovered_source_count": state.get("discovered_source_count", 0) + len(stored),
             "source_topics": associations,
         }
 

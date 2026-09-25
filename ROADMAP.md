@@ -159,26 +159,76 @@ storage, and execution action.
 
 #### Implementation
 
-- [ ] Extend the existing LangGraph agent runtime with the approved topic-driven
-  research stages. Preserve `RuntimeService` as the single owner of run
-  authority, capability grants, state transitions, retry boundaries, human
-  gates, and runtime audit history. Reconcile the unconnected plain-Python
-  router from commit `257344d` before implementation; do not operate it as a
-  second orchestration path.
-- [ ] Connect the new LangGraph research nodes to the existing search, source
-  reuse, acquisition, trust, summary, keyword, and Temporal-routing services
-  through typed interfaces. Move callers from the earlier fixed executor only
-  after documenting stored-run compatibility and the conditions for retiring
-  that executor.
-- [ ] Add deterministic topic-coverage tracking. When a planned topic has no
-  qualifying evidence, the model may propose one targeted search query. Platform
-  code limits the entire research task to two additional gap-search rounds.
-- [ ] Generate a Markdown research report from stored source summaries and source
-  references. Require the report to address every planned topic and identify any
-  topic for which the stored evidence remains insufficient.
-- [ ] Add an operator view showing the research question, planned topics, sources
-  considered, trust and relevance results, remaining evidence gaps, gap searches,
-  and final report.
+The approved unified LangGraph refactor is the implementation plan for this
+group. It replaces the active inline research sequence with one cohesive
+LangGraph workflow while preserving the services and stored records that
+already work.
+
+1. [x] **Define the unified workflow state.** The LangGraph working state now
+   carries the research run and workspace identifiers, operator question, total
+   source limit, planned topics, uncovered topics, gap-search count, workflow
+   stage, and failure information. This is temporary execution context;
+   PostgreSQL remains the official business and audit record.
+2. [ ] **Build the unified LangGraph workflow.** Coordinate topic planning,
+   topic searches, the task-wide source limit, duplicate skipping, governed
+   evidence acquisition, trust evaluation, topic relevance, summaries and
+   keywords, topic coverage, no more than two missing-topic search rounds, and
+   a grounded final report. The graph structure and bounded coverage routing are
+   complete. Connection to production services is in progress: the production
+   topic-planning service and its graph node are complete, while the remaining
+   nodes are not yet connected.
+3. [ ] **Reuse the existing platform services.** The graph must coordinate the
+   governed search and extraction boundary, `ResearchStore`, candidate
+   preflight, evidence trust and review, topic planning and relevance, summary
+   and keyword generation, topic-coverage storage, and Temporal scheduling. It
+   must not copy their business rules or create replacement stores.
+4. [ ] **Preserve the existing user trigger.** Research continues to start when
+   the operator enters a question, chooses the total source count, and clicks
+   **Discover Sources**. Do not introduce another start button or a separate
+   agent interface.
+5. [ ] **Simplify the active research API route.** `POST /v1/research/runs`
+   authenticates and validates the request, finds or creates the research record
+   for the question, starts the unified LangGraph workflow, and returns stored
+   research status. The route no longer owns the detailed research sequence.
+6. [ ] **Keep Temporal for durable work.** LangGraph defines the research
+   sequence. Temporal automatically supplies recovery and retries when platform
+   thresholds require durable execution. Preserve the active
+   `CandidatePreflightWorkflow` and `EvidenceSummaryWorkflow`; neither the model
+   nor the operator chooses whether Temporal is used.
+7. [ ] **Fold in and retire the standalone agentic router.** Move its typed
+   stages, bounded transitions, human-review wait, two-round gap-search limit,
+   and incomplete-report behavior into LangGraph. Transfer its useful tests,
+   then remove it as a separate workflow path. Keep the offline model evaluation
+   as an independent test suite.
+8. [ ] **Retire the unused earlier runtime workflow.** After confirming that
+   stored runtime records remain readable, remove the old deterministic planner,
+   first-result executor, reviewer cycle, unused scheduling boundary and
+   activities, and `GovernedRuntimeWorkflow` registration. Do not remove the
+   active candidate-preflight or evidence-summary Temporal workflows.
+9. [ ] **Decide the Admin Durable Work view separately.** Preserve read-only
+   visibility of historical runtime records during this refactor. Repurposing
+   the view for unified research progress, or removing it, requires a separate
+   operator-interface decision.
+10. [ ] **Verify the complete workflow.** Integration tests must prove that the
+    Discover Sources action starts the graph; topic and source limits hold;
+    known URLs are skipped; direct and Temporal-backed work succeeds; blocked
+    and review-required evidence stays outside automated model context; strict
+    relevance decisions fail safely; gap searches stop after two rounds;
+    retries do not duplicate records; reports use only eligible, relevant stored
+    evidence; and existing research records remain readable.
+
+Implementation proceeds in this order:
+
+1. [x] Add the unified LangGraph state and graph structure.
+2. [ ] Connect existing services through typed graph nodes. **In progress:** the
+   production topic-planning service is connected and validated; search,
+   acquisition, trust, relevance, summaries, coverage, and reporting remain.
+3. [ ] Add end-to-end integration tests.
+4. [ ] Change the active research API route to call the graph.
+5. [ ] Verify existing research records and UI polling.
+6. [ ] Remove the standalone plain-Python router.
+7. [ ] Retire the unused old runtime and Temporal workflow.
+8. [ ] Update the remaining documentation and mark this implementation complete.
 
 ### Local Policy-Controlled Web Trust
 

@@ -7,6 +7,7 @@ from uuid import UUID
 from langgraph.graph import END, START, StateGraph
 
 from app.agentic_research.contracts import ResearchTopic
+from app.agentic_research.topic_planning import TopicPlanningService
 
 MAX_GAP_SEARCH_ROUNDS = 2
 
@@ -42,6 +43,20 @@ class ResearchWorkflowState(TypedDict, total=False):
 
 
 ResearchNode = Callable[[ResearchWorkflowState], Awaitable[ResearchWorkflowState]]
+
+
+def topic_planning_node(service: TopicPlanningService) -> ResearchNode:
+    """Adapt the existing planning service to one LangGraph stage."""
+
+    async def plan_topics(state: ResearchWorkflowState) -> ResearchWorkflowState:
+        plan = await service.plan(
+            state["workspace_id"],
+            state["run_id"],
+            state["question"],
+        )
+        return {"topics": plan.root, "stage": "topics_planned"}
+
+    return plan_topics
 
 
 class ResearchWorkflowNodes:

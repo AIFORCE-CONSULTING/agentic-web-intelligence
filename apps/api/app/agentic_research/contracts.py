@@ -124,6 +124,33 @@ class TopicCoverage(BaseModel):
     evidence: list[TopicCoverageEvidence] = Field(default_factory=list)
 
 
+class TopicSourceAssociation(BaseModel):
+    """A stored explanation of which topic search produced a candidate URL."""
+
+    topic_id: str
+    source_url: str
+    result_rank: int = Field(ge=1, le=50)
+
+
+class ResearchReportSource(BaseModel):
+    """One qualified stored summary supplied to final report generation."""
+
+    topic_id: str
+    topic: str
+    source_url: str
+    summary: str
+
+
+class ResearchReport(BaseModel):
+    """The newest grounded report stored for one research run."""
+
+    run_id: UUID
+    markdown: str
+    model_name: str
+    prompt_version: str
+    created_at: datetime
+
+
 class ResearchControlState(BaseModel):
     """Stored limits controlled by the platform for one research task."""
 

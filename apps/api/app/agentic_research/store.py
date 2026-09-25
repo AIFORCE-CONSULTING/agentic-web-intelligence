@@ -10,6 +10,8 @@ from app.agentic_research.contracts import (
     CapabilityRequestDecision,
     RelevanceDecision,
     ResearchControlState,
+    ResearchReport,
+    ResearchReportSource,
     TopicCoverage,
     TopicCoverageAssessment,
     TopicCoverageEvidence,
@@ -17,6 +19,7 @@ from app.agentic_research.contracts import (
     TopicPlan,
     TopicRelevanceInput,
     TopicRelevanceRecord,
+    TopicSourceAssociation,
     assess_topic_coverage,
 )
 
@@ -96,6 +99,23 @@ CREATE TABLE IF NOT EXISTS agentic_research_capability_audits (
     decision TEXT NOT NULL CHECK (decision IN ('accepted', 'denied')),
     reason TEXT NOT NULL,
     arguments JSONB NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agentic_research_discovered_sources (
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    topic_record_id UUID NOT NULL REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    result_rank INTEGER NOT NULL CHECK (result_rank BETWEEN 1 AND 50),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (run_id, topic_record_id, source_url)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_reports (
+    id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    markdown TEXT NOT NULL,
+    model_name TEXT NOT NULL,
+    prompt_version TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS agentic_research_topics_workspace_run_idx
@@ -424,6 +444,99 @@ class AgenticResearchStore:
             )
         if result == "INSERT 0 0":
             raise KeyError(topic_id)
+
+    async def record_discovered_sources(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        associations: list[TopicSourceAssociation],
+    ) -> None:
+        """Persist the topic search that introduced each newly stored source."""
+
+        if not associations:
+            return
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            for association in associations:
+                await connection.execute(
+                    """INSERT INTO agentic_research_discovered_sources
+                       (run_id, topic_record_id, source_url, result_rank)
+                       SELECT topic.run_id, topic.id, $4, $5
+                       FROM agentic_research_topics AS topic
+                       WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                         AND topic.topic_id = $3
+                       ON CONFLICT (run_id, topic_record_id, source_url) DO NOTHING""",
+                    workspace_id,
+                    run_id,
+                    association.topic_id,
+                    association.source_url,
+                    association.result_rank,
+                )
+
+    async def list_discovered_sources(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> list[TopicSourceAssociation]:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT topic.topic_id, discovered.source_url, discovered.result_rank
+                   FROM agentic_research_discovered_sources AS discovered
+                   JOIN agentic_research_topics AS topic ON topic.id = discovered.topic_record_id
+                   WHERE topic.workspace_id = $1 AND discovered.run_id = $2
+                   ORDER BY topic.position, discovered.result_rank""",
+                workspace_id,
+                run_id,
+            )
+        return [TopicSourceAssociation(**dict(row)) for row in rows]
+
+    async def report_sources(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> list[ResearchReportSource]:
+        """Load only summaries that currently qualify as topic evidence."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT topic.topic_id, topic.topic, coverage.source_url,
+                          artifact.summary
+                   FROM agentic_topic_coverage_evidence AS coverage
+                   JOIN agentic_research_topics AS topic ON topic.id = coverage.topic_record_id
+                   JOIN evidence_summary_artifacts AS artifact
+                     ON artifact.id = coverage.summary_artifact_id
+                   WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                   ORDER BY topic.position, coverage.qualified_at""",
+                workspace_id,
+                run_id,
+            )
+        return [ResearchReportSource(**dict(row)) for row in rows]
+
+    async def save_report(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        markdown: str,
+        model_name: str,
+        prompt_version: str,
+    ) -> ResearchReport:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """INSERT INTO agentic_research_reports
+                   (id, workspace_id, run_id, markdown, model_name, prompt_version)
+                   SELECT $3, runs.workspace_id, runs.id, $4, $5, $6
+                   FROM research_runs AS runs
+                   WHERE runs.workspace_id = $1 AND runs.id = $2
+                   RETURNING run_id, markdown, model_name, prompt_version, created_at""",
+                workspace_id,
+                run_id,
+                uuid4(),
+                markdown,
+                model_name,
+                prompt_version,
+            )
+        if row is None:
+            raise KeyError(run_id)
+        return ResearchReport(**dict(row))
 
     async def record_relevance_decision(
         self,

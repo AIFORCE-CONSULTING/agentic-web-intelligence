@@ -6,7 +6,7 @@ from uuid import UUID
 
 from langgraph.graph import END, START, StateGraph
 
-from app.agentic_research.contracts import ResearchTopic
+from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningService
 
 MAX_GAP_SEARCH_ROUNDS = 2
@@ -16,8 +16,10 @@ ResearchStage = Literal[
     "topics_planned",
     "sources_discovered",
     "evidence_acquired",
+    "awaiting_preflight",
     "relevance_decided",
     "summaries_stored",
+    "awaiting_summaries",
     "coverage_complete",
     "coverage_incomplete",
     "awaiting_review",
@@ -37,6 +39,9 @@ class ResearchWorkflowState(TypedDict, total=False):
     source_limit: int
     stage: ResearchStage
     topics: list[ResearchTopic]
+    new_source_urls: list[str]
+    source_topics: list[TopicSourceAssociation]
+    relevant_sources: list[TopicSourceAssociation]
     uncovered_topic_ids: list[str]
     gap_search_rounds: int
     failure_reason: str
@@ -98,11 +103,34 @@ def _route_after_coverage(
     return "generate_final_report"
 
 
+def _route_after_acquisition(
+    state: ResearchWorkflowState,
+) -> Literal["evaluate_relevance", "wait_for_durable_work"]:
+    return (
+        "wait_for_durable_work"
+        if state.get("stage") == "awaiting_preflight"
+        else "evaluate_relevance"
+    )
+
+
+def _route_after_summaries(
+    state: ResearchWorkflowState,
+) -> Literal["assess_topic_coverage", "wait_for_durable_work"]:
+    return (
+        "wait_for_durable_work"
+        if state.get("stage") == "awaiting_summaries"
+        else "assess_topic_coverage"
+    )
+
+
 def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     """Build the single topic-driven research graph without executing it."""
 
     async def wait_for_review(state: ResearchWorkflowState) -> ResearchWorkflowState:
         return {"stage": "awaiting_review"}
+
+    async def wait_for_durable_work(state: ResearchWorkflowState) -> ResearchWorkflowState:
+        return {}
 
     graph = StateGraph(ResearchWorkflowState)
     graph.add_node("plan_topics", nodes.plan_topics)
@@ -115,13 +143,28 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     graph.add_node("generate_final_report", nodes.generate_final_report)
     graph.add_node("complete_research", nodes.complete_research)
     graph.add_node("wait_for_review", wait_for_review)
+    graph.add_node("wait_for_durable_work", wait_for_durable_work)
 
     graph.add_edge(START, "plan_topics")
     graph.add_edge("plan_topics", "search_topics")
     graph.add_edge("search_topics", "acquire_evidence")
-    graph.add_edge("acquire_evidence", "evaluate_relevance")
+    graph.add_conditional_edges(
+        "acquire_evidence",
+        _route_after_acquisition,
+        {
+            "evaluate_relevance": "evaluate_relevance",
+            "wait_for_durable_work": "wait_for_durable_work",
+        },
+    )
     graph.add_edge("evaluate_relevance", "summarize_evidence")
-    graph.add_edge("summarize_evidence", "assess_topic_coverage")
+    graph.add_conditional_edges(
+        "summarize_evidence",
+        _route_after_summaries,
+        {
+            "assess_topic_coverage": "assess_topic_coverage",
+            "wait_for_durable_work": "wait_for_durable_work",
+        },
+    )
     graph.add_conditional_edges(
         "assess_topic_coverage",
         _route_after_coverage,
@@ -135,4 +178,5 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     graph.add_edge("generate_final_report", "complete_research")
     graph.add_edge("complete_research", END)
     graph.add_edge("wait_for_review", END)
+    graph.add_edge("wait_for_durable_work", END)
     return graph

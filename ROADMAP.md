@@ -169,15 +169,16 @@ already work.
    source limit, planned topics, uncovered topics, gap-search count, workflow
    stage, and failure information. This is temporary execution context;
    PostgreSQL remains the official business and audit record.
-2. [ ] **Build the unified LangGraph workflow.** Coordinate topic planning,
+2. [x] **Build the unified LangGraph workflow.** Coordinate topic planning,
    topic searches, the task-wide source limit, duplicate skipping, governed
    evidence acquisition, trust evaluation, topic relevance, summaries and
    keywords, topic coverage, no more than two missing-topic search rounds, and
    a grounded final report. The graph structure and bounded coverage routing are
-   complete. Connection to production services is in progress: the production
-   topic-planning service and its graph node are complete, while the remaining
-   nodes are not yet connected.
-3. [ ] **Reuse the existing platform services.** The graph must coordinate the
+   complete. Typed production nodes now connect topic planning, search,
+   acquisition and trust preflight, relevance, summaries, coverage, bounded gap
+   searches, and final report storage. Activating the graph from the research
+   API remains a later implementation step.
+3. [x] **Reuse the existing platform services.** The graph coordinates the
    governed search and extraction boundary, `ResearchStore`, candidate
    preflight, evidence trust and review, topic planning and relevance, summary
    and keyword generation, topic-coverage storage, and Temporal scheduling. It
@@ -220,9 +221,11 @@ already work.
 Implementation proceeds in this order:
 
 1. [x] Add the unified LangGraph state and graph structure.
-2. [ ] Connect existing services through typed graph nodes. **In progress:** the
-   production topic-planning service is connected and validated; search,
-   acquisition, trust, relevance, summaries, coverage, and reporting remain.
+2. [x] Connect existing services through typed graph nodes. The production nodes
+   use the established service owners for topic planning, governed search,
+   duplicate-safe source storage, direct or Temporal preflight, trust-gated
+   relevance, summaries, topic coverage, bounded gap searches, and final report
+   storage.
 3. [ ] Add end-to-end integration tests.
 4. [ ] Change the active research API route to call the graph.
 5. [ ] Verify existing research records and UI polling.

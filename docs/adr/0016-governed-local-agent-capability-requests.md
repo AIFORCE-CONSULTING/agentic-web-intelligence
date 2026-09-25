@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026-09-22
 - Model selection recorded: 2026-09-24
+- Canonical orchestration clarified: 2026-09-24
 
 ## Context
 
@@ -41,6 +42,33 @@ research workflow. The authenticated operator owns the research question. The
 model may propose focused topics and approved research actions. Trusted platform
 code validates each proposal, performs allowed work, stores the official state,
 and decides how execution is scheduled.
+
+### Canonical orchestration
+
+The existing LangGraph runtime governed by ADR 0005 is the platform's one
+application and agent orchestration path. This research workflow extends that
+runtime; it does not create a second orchestration service or state machine.
+`RuntimeService` continues to own run authority, capability grants, allowed
+state transitions, retry boundaries, human gates, and runtime audit events.
+
+The topic-planning, relevance, coverage, gap-search, and final-report stages in
+this ADR will become typed LangGraph nodes in the existing runtime. Deterministic
+Python code inside those nodes validates model responses, enforces counters and
+limits, and calls the existing research services. Python helpers may calculate
+a next action, but they are not an independent workflow engine or source of
+runtime state.
+
+The existing deterministic executor currently searches the complete goal and
+extracts only the first result. It is an earlier bounded implementation, not a
+second permanent research workflow. Before the topic-driven workflow becomes
+live, its API and Temporal-worker callers must be moved to the expanded
+LangGraph workflow. The old executor may be removed only after those callers,
+stored-run compatibility, tests, and documentation have been addressed.
+
+LangGraph carries bounded execution context. PostgreSQL remains the official
+record described below. Temporal remains the mandatory durable-execution system
+when platform thresholds require recovery or retry. These three responsibilities
+must not be combined into a competing store or workflow path.
 
 ### Trigger and ownership
 

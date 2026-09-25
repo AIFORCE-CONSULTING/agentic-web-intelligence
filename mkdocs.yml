@@ -66,6 +66,7 @@ nav:
       - Dependency management: dependency-management.md
   - Architecture:
       - Platform architecture: architecture.md
+      - Architecture constitution: architecture-constitution.md
       - Architecture diagrams: diagrams/index.md
       - Repository organization: repositories.md
       - Decisions (ADRs): decisions.md

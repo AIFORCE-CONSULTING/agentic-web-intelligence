@@ -159,15 +159,17 @@ storage, and execution action.
 
 #### Implementation
 
-- [x] Add a research orchestration service that coordinates the approved
-  workflow without owning the database, trust policy, or tool implementations.
-  It reads a typed snapshot of officially stored progress and returns one
-  bounded next instruction, including waiting for human review, stopping after
-  two missing-evidence search rounds, and producing an explicitly incomplete
-  report when evidence gaps remain.
-- [ ] Connect the orchestration service to the existing search, source reuse,
-  acquisition, trust, summary, keyword, and Temporal-routing services through
-  typed platform interfaces.
+- [ ] Extend the existing LangGraph agent runtime with the approved topic-driven
+  research stages. Preserve `RuntimeService` as the single owner of run
+  authority, capability grants, state transitions, retry boundaries, human
+  gates, and runtime audit history. Reconcile the unconnected plain-Python
+  router from commit `257344d` before implementation; do not operate it as a
+  second orchestration path.
+- [ ] Connect the new LangGraph research nodes to the existing search, source
+  reuse, acquisition, trust, summary, keyword, and Temporal-routing services
+  through typed interfaces. Move callers from the earlier fixed executor only
+  after documenting stored-run compatibility and the conditions for retiring
+  that executor.
 - [ ] Add deterministic topic-coverage tracking. When a planned topic has no
   qualifying evidence, the model may propose one targeted search query. Platform
   code limits the entire research task to two additional gap-search rounds.

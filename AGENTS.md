@@ -4,8 +4,32 @@
 
 Before implementing a change that introduces or changes a user action, runtime
 workflow, background worker, human approval, durable execution, or external
-side effect, present a concise design alignment checkpoint to the user and
-wait for explicit approval before editing code.
+side effect, first complete an architecture reconciliation, then present a
+design alignment checkpoint to the user and wait for explicit approval before
+editing code.
+
+### Architecture reconciliation
+
+Inspect the repository before proposing a design. The reconciliation must cite
+the relevant existing code and ADRs and explain:
+
+1. which services, routes, workers, workflows, stores, frameworks, and external
+   boundaries already address any part of the proposed responsibility;
+2. which component owns each responsibility today and which component will own
+   it after the change;
+3. what will be reused unchanged, extended, adapted, replaced, or retired;
+4. whether the proposal would introduce another source of truth, state machine,
+   orchestration path, policy implementation, store, or execution mechanism;
+5. how the proposal follows the platform's selected frameworks, including
+   LangGraph for application orchestration and Temporal for durable execution;
+   and
+6. how callers and stored state move when existing code is superseded, including
+   when the old path can be removed.
+
+Do not add a parallel implementation merely because a roadmap item is phrased
+as "add" or "build." Extend the canonical owner unless the user explicitly
+approves replacement after reviewing the reconciliation. Any departure from a
+selected framework or any new source of architectural authority requires an ADR.
 
 The checkpoint must explain:
 
@@ -20,3 +44,6 @@ The checkpoint must explain:
 Use an ADR when the approved decision creates or changes a lasting architectural
 boundary. A pull request verifies the agreed design; it is not the first design
 review gate.
+
+Follow the repository's [architecture constitution](docs/architecture-constitution.md)
+for every design and implementation decision.

@@ -33,6 +33,9 @@
 
 - **Canonical owner:** Identify the existing owner of every responsibility this
   change touches and cite the relevant code and ADRs.
+- **State and decision ownership:** Complete the mandatory matrix below for
+  every business decision and workflow state. Name the exact canonical record
+  and field, not only the database or service.
 - **No parallel authority:** Confirm the plan does not add a competing workflow,
   state machine, policy authority, store, or execution path.
 - **Selected foundations:** Explain how LangGraph coordinates the workflow, how
@@ -45,6 +48,24 @@
 - **Operational checkpoint:** State the trigger, authority owner, canonical
   state, direct-or-durable rule, human-decision record, and explicit exclusions.
 - **Approval:** Record user design approval before runtime or workflow changes.
+
+The Constitution Check FAILS while any matrix row, allowed transition,
+continuation rule, dependency-failure outcome, or conflict-resolution rule is
+unknown. Do not defer these architecture decisions into implementation tasks.
+
+### State and Decision Ownership Matrix
+
+| State or decision | Business question | Canonical record and field | Authorized writer | Readers | Derived copies | Allowed transitions | Conflict resolution |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| [Name] | [What official question does this answer?] | [Exact persisted record and field] | [Single component] | [Consumers] | [Checkpoints, histories, caches, or views] | [Complete start, waiting, terminal, and failure transitions] | [Which value wins and how disagreement is repaired or surfaced] |
+
+For workflows, also state:
+
+- which canonical value the user interface displays;
+- which canonical value authorization evaluates;
+- how interrupted work resumes without treating a checkpoint as business truth;
+- how retries and concurrent requests avoid duplicate or invalid transitions;
+- how unavailable dependencies change official status and who records it.
 
 ## Project Structure
 

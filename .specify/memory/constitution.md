@@ -1,13 +1,17 @@
 <!--
 Sync Impact Report
-- Version change: initial Specify template -> 1.1.0
-- Existing principles incorporated: canonical ownership, extend before creating,
-  selected frameworks, platform authorization, and complete retirement.
-- Added principle: specifications preserve architecture.
-- Added sections: Required Specification and Design Workflow; Quality Gates.
-- Templates updated: plan-template.md, spec-template.md, tasks-template.md.
-- Runtime guidance updated: AGENTS.md and the published constitution page.
-- Deferred items: none.
+- Version change: 1.1.0 -> 1.2.0
+- Modified principle: One owner for each responsibility -> One owner for each
+  responsibility, business decision, and workflow state.
+- Expanded sections: Required Specification and Design Workflow; Quality Gates;
+  Governance.
+- Templates updated: .specify/templates/plan-template.md,
+  .specify/templates/spec-template.md, .specify/templates/tasks-template.md.
+- Runtime guidance updated: AGENTS.md.
+- Published constitution page: docs/architecture-constitution.md includes this
+  canonical file and requires no duplicate edit.
+- Deferred follow-up: the active 001-consolidate-research-architecture feature
+  artifacts must be revised against the new ownership matrix before implementation.
 -->
 # Agentic Web Intelligence Constitution
 
@@ -18,12 +22,29 @@ an isolated request for new code.
 
 ## Core Principles
 
-### I. One owner for each responsibility
+### I. One owner for each responsibility, decision, and state
 
 Every platform responsibility MUST have one canonical owner. A change MUST
 identify that owner before implementation. New code may extend or adapt the
 owner, but MUST NOT create a second source of authority for the same
 responsibility.
+
+Naming a component is not enough. Every durable or externally visible business
+decision and workflow state MUST identify:
+
+- its business meaning and the question it answers;
+- the specific canonical record and field that holds the official answer;
+- the single component authorized to write it;
+- the components permitted to read it;
+- any checkpoints, caches, histories, or other derived copies;
+- the complete allowed state transitions and their guards; and
+- the rule used to resolve stale, conflicting, or concurrently written values.
+
+If two records can answer the same business question, one MUST be declared
+authoritative and the other MUST be explicitly classified as derived or
+operational. A LangGraph checkpoint is an execution bookmark, and Temporal
+history describes durable execution; neither becomes official business state
+unless this constitution is amended to assign that responsibility explicitly.
 
 | Responsibility | Canonical owner |
 | --- | --- |
@@ -115,10 +136,13 @@ Work governed by Principle VI follows this sequence:
 1. **Specify:** Write and review `spec.md` in business language. Resolve material
    ambiguity before implementation planning.
 2. **Reconcile:** Inspect current code and ADRs. Identify existing owners,
-   callers, stores, workflows, workers, and external boundaries.
+   callers, stores, workflows, workers, and external boundaries. Complete a
+   State and Decision Ownership Matrix for every business decision and workflow
+   state touched by the change.
 3. **Plan:** Write `plan.md` showing what is reused, extended, migrated, retired,
    or explicitly excluded. Complete the Constitution Check before research and
-   re-check it after design.
+   re-check it after design. The plan MUST NOT pass while an ownership row,
+   workflow transition, or conflict-resolution rule remains unresolved.
 4. **Approve architecture:** Present the architecture reconciliation and the
    operational checkpoint required by `AGENTS.md`. Runtime or workflow code MUST
    NOT change before explicit approval.
@@ -134,11 +158,36 @@ The architecture diagram, glossary, ADRs, and roadmap are inputs to this
 process. Specify artifacts do not override accepted ADRs or canonical ownership
 boundaries.
 
+Every qualifying plan MUST contain this matrix with concrete values:
+
+| Required field | Required answer |
+| --- | --- |
+| State or decision | The named state or decision being governed |
+| Business question | The question for which this is the official answer |
+| Canonical record | The exact persisted record and field, not merely a database name |
+| Authorized writer | The one component permitted to change the official answer |
+| Readers | Components that may consume the official answer |
+| Derived copies | Checkpoints, histories, caches, or views that repeat it |
+| Allowed transitions | Complete starting, waiting, terminal, and failure transitions |
+| Conflict resolution | Which value wins and how disagreement is repaired or surfaced |
+
+For workflows, the plan MUST also state which canonical value the user
+interface displays, which value authorization evaluates, how interrupted work
+resumes, and how retries and concurrent requests avoid invalid or duplicate
+transitions. Broad answers such as "PostgreSQL owns state" do not satisfy this
+requirement.
+
 ## Quality Gates
 
 - Every plan MUST identify the trigger, authority owner, canonical state,
   direct-or-durable execution rule, human-decision record, and excluded callers
   or capabilities.
+- Every business decision and workflow state MUST have one canonical record,
+  one authorized writer, complete transitions, and an explicit reconciliation
+  rule for every derived copy.
+- A Constitution Check MUST fail while material ownership, transition,
+  continuation, dependency-failure, or conflict-resolution questions remain
+  open. Such questions MUST NOT be disguised as implementation tasks.
 - Authority and workflow changes MUST include default-deny, wrong-workspace,
   wrong-run, invalid-state, malformed-input, and retry/idempotency tests as
   applicable.
@@ -164,8 +213,9 @@ dependent Specify templates and runtime guidance, and semantic versioning:
 - PATCH for clarifications that do not alter obligations.
 
 Every specification, implementation plan, task list, architecture review, and
-code review MUST verify compliance. Any approved exception MUST be documented in
-the plan's Complexity Tracking table with the rejected simpler alternative and
-a retirement or review condition.
+code review MUST verify compliance. Later analysis supplements these gates; it
+does not excuse an incomplete specification or plan. Any approved exception
+MUST be documented in the plan's Complexity Tracking table with the rejected
+simpler alternative and a retirement or review condition.
 
-**Version**: 1.1.0 | **Ratified**: 2026-09-24 | **Last Amended**: 2026-09-26
+**Version**: 1.2.0 | **Ratified**: 2026-09-24 | **Last Amended**: 2026-09-26

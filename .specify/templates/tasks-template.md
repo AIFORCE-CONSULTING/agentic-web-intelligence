@@ -14,6 +14,11 @@ tests even when the feature specification does not request tests explicitly.
 
 **Organization**: Tasks are grouped by user story to enable independent implementation and testing of each story.
 
+**Architecture readiness**: Tasks implement architecture decisions already
+resolved in the approved specification and plan. They MUST NOT be used as a
+place to postpone ownership, state-transition, continuation,
+dependency-failure, or conflict-resolution decisions.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)
@@ -71,7 +76,7 @@ Examples of foundational tasks (adjust based on your project):
 - [ ] T008 Configure error handling and logging infrastructure
 - [ ] T009 Setup environment configuration management
 - [ ] T010 Reconcile existing owners, callers, stores, workflows, workers, and ADRs
-- [ ] T011 Record the approved architecture and operational design checkpoint
+- [ ] T011 Verify the approved State and Decision Ownership Matrix names one canonical record, one writer, all readers and derived copies, complete transitions, and conflict resolution for each affected state or decision; then record the architecture and operational design checkpoint
 
 **Checkpoint**: Foundation ready - user story implementation can now begin in parallel
 

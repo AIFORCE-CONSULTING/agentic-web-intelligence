@@ -12,6 +12,14 @@
 - Q: Must historical data be retained through the refactor? → A: No. The
   refactor may start with a clean data set when that is simpler or safer;
   representative historical data may be retained as test fixtures when useful.
+- Q: Which record tells the operator what is happening? → A:
+  `research_runs.status` is the official operator-facing workflow status. The
+  unified research workflow is the only component allowed to advance it,
+  through `ResearchStore`.
+- Q: Must the old RuntimeService workflow records or Durable work API remain
+  backward compatible? → A: No. They contain local test data and may be removed
+  during the documented clean start. Only new consolidated research work needs
+  to appear after the refactor.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -45,6 +53,11 @@ parallel research run.
    platform moves that work to durable execution, **Then** the interface
    continues to show stored progress and the same research workflow resumes at
    the correct stage after the durable work completes.
+4. **Given** consolidated research that uses Temporal-backed acquisition or
+   summarization, **When** an authorized operator opens the existing Admin
+   **Durable work** section, **Then** the operator can see the associated
+   research question, durable operation, stored status, update time, and safe
+   failure information without consulting the Temporal interface.
 
 ---
 
@@ -178,6 +191,8 @@ shown, and every retired path is identified.
 - Historical records refer to a workflow or policy version that is no longer
   active.
 - Two requests attempt to start or resume the same research work concurrently.
+- PostgreSQL, Temporal, the configured search or extraction provider, or the
+  approved local model becomes unavailable before or during research.
 
 ## Requirements *(mandatory)*
 
@@ -242,14 +257,114 @@ shown, and every retired path is identified.
   have moved or been preserved.
 - **FR-023**: After retirement, no active route, service, worker, or user action
   may start an obsolete workflow or use a competing authority path.
-- **FR-024**: The existing durable-work view MUST continue to show records
-  created by the consolidated architecture. Displaying records from retired
-  local workflows is optional when those records are deliberately removed as
-  part of a clean start.
+- **FR-024**: The Admin **Durable work** section MUST display only
+  workspace-owned acquisition and summarization work created by the
+  consolidated research workflow. A replacement read-only research endpoint
+  may read the existing candidate-preflight and evidence-summary records through
+  their owning stores; it MUST NOT copy them into a new store or derive
+  business status from Temporal history. Each visible item MUST identify its
+  research question, research run, operation type, direct-or-Temporal route,
+  stored operation status, update time, and safe failure information. The old
+  `/v1/runtime/runs` durable-work API, its controls, and its local test records
+  require no backward compatibility and MUST be removed through the documented
+  clean start and retirement work.
 - **FR-025**: Architecture diagrams, the glossary, decision records, runtime
   documentation, and the roadmap MUST be updated to identify the one active
   workflow, authority, trust, human-review, durable-execution, and canonical
   state boundaries.
+- **FR-026**: `research_runs.status` MUST be the sole official answer to the
+  business question, "What stage or outcome has this research reached?" The
+  operator interface and `RuntimeService` MUST read this value rather than
+  deriving research status from a LangGraph checkpoint, runtime assignment, or
+  Temporal execution.
+- **FR-027**: Only the unified research workflow may advance
+  `research_runs.status`, and it MUST do so through a guarded `ResearchStore`
+  transition. Routes, `RuntimeService`, Temporal workflows and activities,
+  workers, MCP tools, and model output MUST NOT write research status.
+- **FR-028**: The official research statuses MUST be `planning`, `discovering`,
+  `acquiring`, `awaiting_review`, `evaluating_relevance`, `summarizing`,
+  `assessing_coverage`, `reporting`, `completed`, and `failed`. Each stored
+  transition MUST include the prior status, new status, workflow version,
+  transition identity, and time.
+- **FR-029**: The only normal forward transitions MUST be `planning` to
+  `discovering`; `discovering` to `acquiring`, `evaluating_relevance`, or
+  `assessing_coverage`; `acquiring` to `awaiting_review`,
+  `evaluating_relevance`, or `assessing_coverage`; `awaiting_review` to
+  `evaluating_relevance` or `assessing_coverage`; `evaluating_relevance` to
+  `summarizing` or `assessing_coverage`; `summarizing` to
+  `assessing_coverage`; `assessing_coverage` to `discovering` when a permitted
+  missing-topic round remains, otherwise to `reporting`; `reporting` to
+  `completed`; and any non-terminal status to `failed`.
+- **FR-030**: A failed run may be retried only from its separately stored
+  `failed_stage`. The unified workflow MUST revalidate current records and may
+  transition from `failed` only to that stage. `completed` is terminal. A
+  review-required source MUST be excluded while other usable sources continue;
+  `awaiting_review` is used only when no other workflow work can proceed and a
+  human decision could change the outcome.
+- **FR-031**: Every research status update MUST use the expected current status
+  and `status_version`. Repeated transition identities MUST return the already
+  recorded outcome. A stale or competing update MUST make no change, record a
+  conflict audit, reload official state, and either continue from that state or
+  fail safely.
+- **FR-032**: A LangGraph checkpoint MUST be treated only as an execution
+  bookmark. On resume, the workflow MUST reload `research_runs.status` and
+  reconstruct bounded execution context from official stores. A stale
+  checkpoint MUST NOT roll back or advance official status.
+- **FR-033**: Temporal status and history MUST describe only the durable work
+  item. Temporal completion may request continuation after its result is
+  stored, but only the resumed unified workflow may advance research status.
+  Duplicate, late, or mismatched completions MUST be recorded and ignored.
+- **FR-034**: LangGraph checkpoint infrastructure MUST be initialized before
+  the research API reports ready. Checkpoints MUST use the research-task ID and
+  a versioned unified-workflow namespace. They MUST remain available while a
+  run is active, waiting, or failed and MUST be deleted through the official
+  checkpointer API after terminal completion or deliberate research deletion.
+  Cleanup failure MUST be audited and retried without changing the official
+  research outcome. An incompatible graph version MUST use a new namespace and
+  MUST NOT silently resume an older checkpoint.
+- **FR-035**: Required dependency failures MUST produce typed, stable failure
+  codes and safe operator messages. The platform MUST NOT silently substitute
+  an in-memory store, direct provider call, cloud model, alternate extraction
+  path, or direct execution for an unavailable governed dependency.
+- **FR-036**: When PostgreSQL is unavailable, the platform MUST reject new
+  starts, resumes, authorization decisions, and state-changing actions with a
+  service-unavailable response. It MUST leave the last committed research state
+  unchanged because no other component may manufacture or cache an official
+  replacement. After recovery, the platform reloads official records before
+  retrying.
+- **FR-037**: Temporal is mandatory platform infrastructure. Failed Temporal
+  readiness MUST prevent new research starts. If Temporal becomes unavailable
+  while qualifying durable work is being scheduled or resumed, the durable
+  execution boundary MUST return a typed retryable failure; the unified
+  workflow records `failed`, the current stage as `failed_stage`, and
+  `temporal_unavailable` after Temporal's own bounded retries are exhausted.
+  The platform MUST NOT reroute qualifying work to direct execution.
+- **FR-038**: The governed MCP host MUST distinguish provider unavailability
+  from an unreachable individual source. Search unavailability records
+  `search_unavailable` at `discovering`; extraction-system unavailability
+  records `extraction_unavailable` at `acquiring` after existing bounded retry
+  limits are exhausted. A provider outage MUST NOT mark each source as bad.
+- **FR-039**: Local-model unavailability during planning, relevance,
+  summarization, coverage, or reporting MUST return a typed failure owned by
+  the applicable model-facing service. After existing bounded retries are
+  exhausted, the unified workflow records `model_unavailable` and the current
+  stage. It MUST NOT use a cloud model or treat missing output as a valid model
+  decision.
+- **FR-040**: An explicit retry through the existing **Discover Sources** action
+  may resume a dependency-failed run only after readiness succeeds. The unified
+  workflow reloads official state and resumes only from `failed_stage`; retries
+  MUST preserve existing evidence and remain idempotent.
+- **FR-041**: Dependency failure records and operator responses MUST identify
+  the dependency class, stable failure code, failed stage, retryability, and
+  occurrence time without exposing credentials, connection strings, raw model
+  output, or provider secrets.
+- **FR-042**: Every governed MCP call proposed by the research agent MUST create
+  an execution audit linked to the exact stored authorization decision that
+  permitted it. The audit MUST identify the workspace, research task, runtime
+  assignment, runtime step, authorization decision, request, tool, bounded
+  resource, outcome, and time. Agent-triggered execution MUST fail closed when
+  this correlation is missing or inconsistent. Audit facts MUST exclude
+  credentials, secrets, raw webpage content, and unredacted model output.
 
 ### Authority and Safety Boundaries
 
@@ -264,18 +379,33 @@ shown, and every retired path is identified.
   modify limits or policy, approve evidence, write arbitrary records, access
   credentials, choose execution infrastructure, or directly control the
   network, database, browser, or operating system.
-- **Canonical record**: Research state, assignments, capability decisions,
+- **Canonical record**: `research_runs.status` is the official operator-facing
+  research stage and outcome. Runtime assignments and authorization decisions,
   trust evaluations, human decisions, evidence, summaries, topic coverage,
-  reports, and audit history must survive process restarts in the platform's
-  official stored record.
+  reports, and audit history remain official within their own business domains.
+  LangGraph checkpoints and Temporal histories are not research status.
+- **Operator-visible states**: The interface displays the stored research
+  status and its plain-language meaning. It may display source and durable-work
+  details alongside it, but those details cannot replace or contradict the
+  official status.
+- **Decision authority**: The unified workflow advances research status;
+  `RuntimeService` only permits or denies proposed actions after reading that
+  status and the stored assignment. Trust and human-review owners retain their
+  separate decisions.
+- **Conflict outcome**: A stale checkpoint, duplicate continuation, concurrent
+  start, or version mismatch cannot overwrite official status. The platform
+  keeps the current research record, records the disagreement, reloads official
+  state, and safely resumes or reports failure.
 - **Excluded behavior**: This feature does not add new research controls, new
   agent capabilities, editable trust rules, generalized browser control,
   cookie-preference handling, or a replacement authorization product.
 
 ### Key Entities
 
-- **Research Task**: The operator's question, requested source limit, current
-  progress, and final outcome.
+- **Research Task**: The operator's question, requested source limit, official
+  workflow status, status version, failed stage when applicable, current
+  progress, stable failure code and safe failure explanation when applicable,
+  retryability, and final outcome.
 - **Agent Assignment**: The stored identity, role, granted capabilities, active
   state, and relationship to one research task.
 - **Capability Request**: A bounded proposal to perform one action for a named
@@ -291,7 +421,8 @@ shown, and every retired path is identified.
 - **Durable Work Item**: A long-running operation tied to the research task and
   the stage that must resume after completion.
 - **Workflow Progress**: Temporary coordination context whose important
-  business outcomes are reflected in canonical stored records.
+  business outcomes are reflected in canonical stored records. It is an
+  execution bookmark, not an alternative workflow status.
 
 ## Success Criteria *(mandatory)*
 
@@ -323,6 +454,22 @@ shown, and every retired path is identified.
 - **SC-009**: The final architecture diagram, glossary, decision records,
   runtime documentation, and roadmap identify one owner for every governed
   responsibility and match the paths exercised by end-to-end tests.
+- **SC-010**: In every start, retry, concurrent-resume, stale-checkpoint, and
+  duplicate-Temporal-completion test, `research_runs.status` and its transition
+  audit remain the single consistent operator-facing result; no other component
+  overwrites or contradicts it.
+- **SC-011**: In 100% of dependency-unavailable integration cases, the owning
+  boundary returns the specified typed failure, no unapproved fallback runs,
+  safe failure details are stored when PostgreSQL is available, and the same
+  research task resumes idempotently from its failed stage after recovery.
+- **SC-012**: In direct and Temporal-backed integration cases, every
+  consolidated durable-work record is visible only to an authorized operator
+  in its workspace through the existing Admin section, agrees with its owning
+  store, and exposes no raw Temporal history or retired-workflow control.
+- **SC-013**: In 100% of governed MCP integration cases, the execution audit
+  links to one previously stored authorization decision for the same workspace,
+  research task, runtime assignment, runtime step, request, tool, and resource;
+  mismatched or missing correlation prevents execution.
 
 ## Assumptions
 

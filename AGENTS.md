@@ -26,6 +26,12 @@ the relevant existing code and ADRs and explain:
 6. how callers and stored state move when existing code is superseded, including
    when the old path can be removed.
 
+For every durable or operator-visible business decision and workflow state, the
+reconciliation must also identify the exact canonical record and field, its one
+authorized writer, every reader, any derived checkpoint/history/cache, the
+complete allowed transitions, and the rule for resolving stale or conflicting
+values. Naming only a database or service is insufficient.
+
 Do not add a parallel implementation merely because a roadmap item is phrased
 as "add" or "build." Extend the canonical owner unless the user explicitly
 approves replacement after reviewing the reconciliation. Any departure from a
@@ -41,6 +47,11 @@ The checkpoint must explain:
    execution mechanism; and
 6. which callers or capabilities are explicitly excluded.
 
+The checkpoint must include the State and Decision Ownership Matrix required by
+the constitution. It cannot be approved while ownership, transitions,
+continuation behavior, dependency-failure outcomes, or conflict resolution are
+left for implementation tasks to decide.
+
 Use an ADR when the approved decision creates or changes a lasting architectural
 boundary. A pull request verifies the agreed design; it is not the first design
 review gate.
@@ -52,7 +63,9 @@ for every design and implementation decision.
 For significant feature, workflow, authority, durable-execution, human-approval,
 or external-effect changes, use the Specify workflow in `.agents/skills/`.
 Treat `.specify/memory/constitution.md` as the canonical project constitution.
-Read `.specify/feature.json` and the selected feature's current specification,
-plan, and tasks before implementation. Specify artifacts supplement rather than
+The active architecture-consolidation plan is
+`specs/001-consolidate-research-architecture/plan.md`. Read
+`.specify/feature.json` and the selected feature's current specification, plan,
+and tasks before implementation. Specify artifacts supplement rather than
 replace the architecture reconciliation and approval required above.
 <!-- SPECKIT END -->

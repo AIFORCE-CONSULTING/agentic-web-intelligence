@@ -101,6 +101,12 @@
 - **Human-only decisions**: [Approvals or overrides an agent must never perform]
 - **Agent limitations**: [Capabilities and data explicitly unavailable to the model]
 - **Canonical record**: [Business decisions and evidence that must survive execution]
+- **Operator-visible states**: [Plain-language meaning of each active, waiting,
+  failed, and completed state the operator may see]
+- **Decision authority**: [Which outcomes are proposed by a model, decided by
+  platform rules, or reserved for a human]
+- **Conflict outcome**: [What the operator experiences if execution records
+  disagree or a dependency becomes unavailable]
 - **Excluded behavior**: [Actions, callers, and side effects outside this feature]
 
 ### Key Entities *(include if feature involves data)*

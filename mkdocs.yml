@@ -66,6 +66,9 @@ nav:
       - Dependency management: dependency-management.md
   - Architecture:
       - Platform architecture: architecture.md
+      - Current platform architecture: current-platform-architecture.md
+      - Architecture diagram glossary: architecture-glossary.md
+      - Cerbos and RuntimeService evaluation: cerbos-runtime-service-evaluation.md
       - Architecture constitution: architecture-constitution.md
       - Architecture diagrams: diagrams/index.md
       - Repository organization: repositories.md

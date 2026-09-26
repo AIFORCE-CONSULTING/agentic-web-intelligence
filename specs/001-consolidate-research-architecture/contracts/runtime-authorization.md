@@ -25,12 +25,17 @@ authority-policy version, bounded redacted facts, decision identity, and time.
 6. Transactionally enforce query, source, attempt, retry, and gap limits.
 7. Read bounded trust/human facts only when required; never duplicate policy.
 8. Persist the decision.
-9. Pass the stored authorization decision identity and its bounded correlation
+9. Immediately before provider invocation, reload or atomically verify the
+   current workspace, research task and status version, assignment, step,
+   request, action/tool, resource, and applicable limits. A changed fact makes
+   the prior allow decision stale and execution fails closed with a recorded
+   denial or conflict.
+10. Pass the stored authorization decision identity and its bounded correlation
    fields to the governed MCP host.
-10. Permit MCP execution only when the host verifies that workspace, research
+11. Permit MCP execution only when the host verifies that workspace, research
     task, runtime run, runtime step, request, action/tool, and resource match the
     stored allow decision.
-11. Persist the MCP execution audit with those identities and the normalized
+12. Persist the MCP execution audit with those identities and the normalized
     outcome.
 
 Anything unknown, missing, inactive, out of scope, malformed, or exhausted is

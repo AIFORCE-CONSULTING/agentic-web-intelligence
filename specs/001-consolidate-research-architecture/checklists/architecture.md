@@ -11,38 +11,38 @@ design decisions. It does not test the implementation.
 
 ## Requirement Completeness
 
-- [ ] CHK001 Are requirements defined for every stage from the operator's
+- [x] CHK001 Are requirements defined for every stage from the operator's
   existing start action through final report completion? [Completeness, Spec
   §FR-001–FR-003]
 - [x] CHK002 Are canonical owners documented for operator entry, workflow
   coordination, agent authority, web tools, trust, human review, summaries,
   durable execution, and stored state? [Completeness, Plan §Constitution Check]
-- [ ] CHK003 Are requirements included for both initial research and the two
+- [x] CHK003 Are requirements included for both initial research and the two
   permitted missing-topic search rounds? [Completeness, Spec §FR-018]
-- [ ] CHK004 Are requirements defined for direct work, durable work, human-review
+- [x] CHK004 Are requirements defined for direct work, durable work, human-review
   waits, restart recovery, and final completion? [Completeness, Spec §FR-015–FR-016]
 - [x] CHK005 Are the records that remain authoritative versus temporary
   execution context explicitly distinguished? [Completeness, Spec §Authority
   and Safety Boundaries; Plan §Selected foundations]
-- [ ] CHK006 Are all components planned for reuse, extension, migration, or
+- [x] CHK006 Are all components planned for reuse, extension, migration, or
   retirement named with an explicit treatment? [Completeness, Plan §Canonical
   owners; Plan §Implementation Sequence]
 
 ## Requirement Clarity
 
-- [ ] CHK007 Is “one governed research workflow” defined precisely enough to
+- [x] CHK007 Is “one governed research workflow” defined precisely enough to
   exclude the inline route sequence, plain-Python router, older graph, and
   obsolete durable runtime path? [Clarity, Spec §FR-002–FR-003; Plan §Summary]
 - [x] CHK008 Is the distinction between workflow coordination and authority
   decisions clear and consistently stated? [Clarity, Spec §FR-004–FR-005; Plan
   §Selected foundations]
-- [ ] CHK009 Is the operator's **Discover Sources** action clearly defined as
+- [x] CHK009 Is the operator's **Discover Sources** action clearly defined as
   authorization to start only the fixed read-only plan, rather than a general
   capability grant? [Clarity, Plan §Operational checkpoint]
-- [ ] CHK010 Are “canonical stored authority,” “bounded request facts,” and
+- [x] CHK010 Are “canonical stored authority,” “bounded request facts,” and
   “safe human-readable explanation” defined sufficiently for objective review?
   [Clarity, Spec §FR-004, §FR-008–FR-010; Contract §Runtime Authorization]
-- [ ] CHK011 Are direct-versus-durable selection requirements clear about the
+- [x] CHK011 Are direct-versus-durable selection requirements clear about the
   responsible owner, decision inputs, and actors prohibited from selecting the
   mechanism? [Clarity, Spec §FR-015; Plan §Operational checkpoint]
 - [x] CHK012 Is the difference between LangGraph checkpoints and official
@@ -55,47 +55,47 @@ design decisions. It does not test the implementation.
 - [x] CHK013 Do the specification, plan, data model, and contracts consistently
   name RuntimeService as the sole agent-authorization owner? [Consistency, Spec
   §FR-004–FR-011; Plan §Canonical owners]
-- [ ] CHK014 Do all artifacts consistently require agent-visible web actions to
+- [x] CHK014 Do all artifacts consistently require agent-visible web actions to
   pass through the existing governed MCP boundary? [Consistency, Plan §Selected
   foundations; Research §Invoke web capabilities]
-- [ ] CHK015 Are trust eligibility and topic relevance consistently treated as
+- [x] CHK015 Are trust eligibility and topic relevance consistently treated as
   separate decisions owned by different established services? [Consistency,
   Spec §FR-012–FR-014; Plan §Canonical owners]
-- [ ] CHK016 Are human evidence decisions consistently independent of LangGraph,
+- [x] CHK016 Are human evidence decisions consistently independent of LangGraph,
   Temporal, and model output across all artifacts? [Consistency, Spec §FR-013;
   Contract §Workflow Continuation]
-- [ ] CHK017 Does the selective clean-start decision align across the
+- [x] CHK017 Does the selective clean-start decision align across the
   clarification, requirements, data model, success criteria, and retirement
   plan? [Consistency, Spec §Clarifications, §FR-021; Data Model §Historical data]
-- [ ] CHK018 Are source, attempt, retry, and gap-search limits described
+- [x] CHK018 Are source, attempt, retry, and gap-search limits described
   consistently wherever authority, persistence, and tests are discussed?
   [Consistency, Spec §FR-007, §FR-018; Contract §Runtime Authorization]
 
 ## Authority and Security Coverage
 
-- [ ] CHK019 Are default-deny requirements stated for unknown actions, missing
+- [x] CHK019 Are default-deny requirements stated for unknown actions, missing
   records, inactive states, wrong workspaces, wrong tasks, invalid stages,
   undiscovered sources, malformed context, and exhausted limits? [Coverage,
   Spec §User Story 2; Contract §Runtime Authorization]
-- [ ] CHK020 Are the exact facts that must be reloaded from official stores
+- [x] CHK020 Are the exact facts that must be reloaded from official stores
   distinguished from facts that a caller or model may supply? [Coverage, Spec
   §FR-004–FR-006; Contract §Request]
-- [ ] CHK021 Are requirements explicit that both allowed and denied decisions
+- [x] CHK021 Are requirements explicit that both allowed and denied decisions
   are recorded before an allowed action can execute? [Clarity, Spec
   §FR-008–FR-009]
-- [ ] CHK022 Are forbidden data classes for authorization and checkpoint records
+- [x] CHK022 Are forbidden data classes for authorization and checkpoint records
   complete, including credentials, secrets, raw webpage content, and
   model-asserted grants? [Coverage, Spec §FR-010; Data Model §LangGraph Thread]
-- [ ] CHK023 Are human-only decisions and the model's prohibited capabilities
+- [x] CHK023 Are human-only decisions and the model's prohibited capabilities
   exhaustively identified for this feature's scope? [Coverage, Spec §Authority
   and Safety Boundaries]
-- [ ] CHK024 Is policy versioning defined for both current decisions and future
+- [x] CHK024 Is policy versioning defined for both current decisions and future
   rule changes without relying on source-control history? [Completeness, Spec
   §FR-011; Data Model §Authorization Decision]
 
 ## Scenario and Recovery Coverage
 
-- [ ] CHK025 Are requirements defined for a capability request that becomes
+- [x] CHK025 Are requirements defined for a capability request that becomes
   invalid between authorization and execution because task or step state
   changed? [Coverage, Spec §Edge Cases]
 - [x] CHK026 Are concurrent start, resume, and completion scenarios addressed
@@ -105,10 +105,10 @@ design decisions. It does not test the implementation.
   duplicate completion, stale checkpoint, mismatched workspace, failed work,
   and process restart? [Coverage, Contract §Workflow Continuation; resolved by
   the canonical status/version continuation contract]
-- [ ] CHK028 Are human-review continuation requirements defined for acceptance,
+- [x] CHK028 Are human-review continuation requirements defined for acceptance,
   rejection, expiry, wrong evidence version, and repeated decisions? [Coverage,
   Spec §User Story 3, §Edge Cases]
-- [ ] CHK029 Is the required outcome specified when no eligible and relevant
+- [x] CHK029 Is the required outcome specified when no eligible and relevant
   evidence exists for a final report? [Coverage, Spec §Edge Cases, §FR-019]
 - [x] CHK030 Are malformed planning and relevance outputs assigned explicit
   failure outcomes that cannot be confused with approval or completion?
@@ -116,44 +116,44 @@ design decisions. It does not test the implementation.
 
 ## Migration and Retirement Quality
 
-- [ ] CHK031 Does every retired component have a documented caller-migration
+- [x] CHK031 Does every retired component have a documented caller-migration
   condition, test-transfer condition, and removal condition? [Completeness,
   Spec §FR-022–FR-023; Plan §Retire overlap]
-- [ ] CHK032 Is the boundary between retained product data and resettable local
+- [x] CHK032 Is the boundary between retained product data and resettable local
   execution history specific by record group? [Clarity, Spec §FR-021;
   Data Model §Historical data]
 - [x] CHK033 Are the requirements clear about which Admin and operator read
   experiences remain available after obsolete local history is removed?
   [Clarity, resolved by Spec §FR-024, Plan §Durable-work operator view, and
   Contract §Existing Durable-Work API]
-- [ ] CHK034 Is “zero active callers” defined broadly enough to cover routes,
+- [x] CHK034 Is “zero active callers” defined broadly enough to cover routes,
   application startup wiring, services, workers, workflow registration, tests,
   and documentation examples? [Completeness, Spec §SC-008; Plan §Retire overlap]
-- [ ] CHK035 Are temporary coexistence conditions bounded so migration cannot
+- [x] CHK035 Are temporary coexistence conditions bounded so migration cannot
   leave two active authority or orchestration paths indefinitely? [Coverage,
   Constitution Principle V; Plan §Migration and retirement]
 
 ## Acceptance Criteria Quality
 
-- [ ] CHK036 Can each success criterion be evaluated without interpreting
+- [x] CHK036 Can each success criterion be evaluated without interpreting
   subjective terms such as “correct,” “safe,” or “useful”? [Measurability, Spec
   §SC-001–SC-013]
-- [ ] CHK037 Do the success criteria cover authority, trust exclusion, durable
+- [x] CHK037 Do the success criteria cover authority, trust exclusion, durable
   resume, idempotency, historical-data treatment, caller retirement, and
   documentation alignment? [Completeness, Spec §SC-001–SC-013]
-- [ ] CHK038 Are the 100% criteria scoped to named matrices and integration
+- [x] CHK038 Are the 100% criteria scoped to named matrices and integration
   scenarios so their denominators are unambiguous? [Clarity, Spec §SC-001–SC-005]
-- [ ] CHK039 Is architecture-documentation agreement defined against the
+- [x] CHK039 Is architecture-documentation agreement defined against the
   exercised end-to-end path rather than against intended design alone?
   [Measurability, Spec §SC-009]
 
 ## Dependencies and Assumptions
 
-- [ ] CHK040 Are the required behaviors of the existing identity, MCP, trust,
+- [x] CHK040 Are the required behaviors of the existing identity, MCP, trust,
   review, summary, database, local-model, and durable-execution boundaries
   documented as dependencies rather than silently assumed? [Dependency, Plan
   §Canonical owners]
-- [ ] CHK041 Is the assumption that the existing source-limit choices, polling
+- [x] CHK041 Is the assumption that the existing source-limit choices, polling
   experience, and API shape remain unchanged consistent with all planned
   workflow-state additions? [Assumption, Spec §Assumptions; Contract §Research
   API]
@@ -168,13 +168,13 @@ design decisions. It does not test the implementation.
 
 ## Documentation and Traceability
 
-- [ ] CHK044 Does every functional requirement map to at least one user story,
+- [x] CHK044 Does every functional requirement map to at least one user story,
   measurable outcome, contract, or design decision? [Traceability, Spec
   §FR-001–FR-042]
-- [ ] CHK045 Are ADR 0016, the architecture diagram, glossary, runtime
+- [x] CHK045 Are ADR 0016, the architecture diagram, glossary, runtime
   documentation, and roadmap each assigned a specific post-implementation
   update responsibility? [Completeness, Spec §FR-025; Plan §Verify and document]
-- [ ] CHK046 Are references to retired components clearly labeled as migration
+- [x] CHK046 Are references to retired components clearly labeled as migration
   context so future readers do not mistake them for approved target
   architecture? [Clarity, Plan §Project Structure]
 - [x] CHK047 Is explicit user architecture approval identified as a gate before
@@ -223,3 +223,11 @@ design decisions. It does not test the implementation.
   Checked CHK033 records the completed G1 durable-work-view coverage design.
   Checked CHK030 records the completed S1 malformed-output checklist review.
   Checked CHK054 records the completed I1 MCP audit-correlation design.
+- The full checklist was reviewed against `spec.md`, `plan.md`, `tasks.md`,
+  `data-model.md`, `research.md`, and all four contracts on 2026-09-26.
+  CHK025, CHK028, CHK029, CHK034, CHK038, and CHK044 required source-document
+  clarification before closure: stale authorization is rechecked before tool
+  execution; unresolved, repeated, expired, and mismatched human decisions are
+  defined; the no-usable-evidence outcome is grounded; the zero-caller audit
+  scope and success-criteria denominators are explicit; and every functional
+  requirement range has traceability.

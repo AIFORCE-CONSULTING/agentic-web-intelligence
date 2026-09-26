@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-consolidate-research-architecture`  
 **Created**: 2026-09-26  
-**Status**: Draft  
+**Status**: Approved
 **Input**: User description: "Review roadmap Phase 7.5 Refactoring and specify how to remove the architecture bloat introduced with the agentic research workflow, using the current-state and target-state architecture diagrams and architecture glossary."
 
 ## Clarifications
@@ -221,7 +221,12 @@ shown, and every retired path is identified.
   a stable reason, a safe human-readable explanation, the applicable authority
   policy version, and bounded request facts.
 - **FR-009**: Allowed and denied authorization decisions MUST be durably recorded
-  before an allowed action is sent for execution.
+  before an allowed action is sent for execution. Immediately before provider
+  invocation, the governed MCP boundary MUST verify that the stored allow
+  decision still matches the current workspace, research task, status version,
+  assignment, step, request, tool, resource, and applicable limits. If any of
+  those facts changed after authorization, execution MUST stop and the platform
+  MUST record a denial or conflict rather than use the stale permission.
 - **FR-010**: Authorization records MUST exclude credentials, secrets, and raw
   webpage content.
 - **FR-011**: Changes to roles, grants, human gates, or authorization conditions
@@ -231,7 +236,10 @@ shown, and every retired path is identified.
   authority layer.
 - **FR-013**: Human evidence acceptance MUST continue to be recorded with the
   human identity, reason, exact evidence-version scope, and optional expiry, and
-  MUST be enforced independently of workflow execution.
+  MUST be enforced independently of workflow execution. Declining or leaving a
+  review unresolved MUST create no permission for automated use. Repeating the
+  same decision MUST be idempotent, and an expired decision or a decision for a
+  different evidence version MUST leave that evidence excluded.
 - **FR-014**: Blocked and unaccepted review-required evidence MUST remain outside
   planning, relevance, summarization, keyword, coverage, and reporting model
   context.
@@ -245,7 +253,10 @@ shown, and every retired path is identified.
 - **FR-018**: The missing-topic search process MUST stop after no more than two
   additional rounds.
 - **FR-019**: Final reports MUST use only stored evidence that is both eligible
-  for automated use and relevant to an approved research topic.
+  for automated use and relevant to an approved research topic. If the two
+  permitted missing-topic rounds end without any such evidence, the workflow
+  MUST store a completed, grounded report stating that no usable evidence was
+  found; it MUST NOT invent findings or treat excluded evidence as support.
 - **FR-020**: Malformed model outputs MUST fail safely and MUST NOT be silently
   interpreted as approval, relevance, or successful completion.
 - **FR-021**: The implementation plan MUST explicitly choose, by record type,
@@ -366,6 +377,18 @@ shown, and every retired path is identified.
   this correlation is missing or inconsistent. Audit facts MUST exclude
   credentials, secrets, raw webpage content, and unredacted model output.
 
+### Requirement Traceability
+
+| Requirement range | Primary scenario | Measured or contracted by |
+| --- | --- | --- |
+| FR-001–FR-003, FR-015–FR-020 | User Story 1 | SC-001, SC-005–SC-006; Research API and Workflow Continuation contracts |
+| FR-004–FR-011, FR-042 | User Story 2 | SC-002–SC-003, SC-013; Runtime Authorization contract |
+| FR-012–FR-014 | User Story 3 | SC-004; Research API and Workflow Continuation contracts |
+| FR-021–FR-024 | User Story 4 | SC-007–SC-008, SC-012; Durable-Work API contract and clean-start design |
+| FR-025 | User Story 5 | SC-009; architecture documentation tasks |
+| FR-026–FR-034 | User Stories 1 and 4 | SC-005–SC-006, SC-010; state-ownership matrix, transition table, and Workflow Continuation contract |
+| FR-035–FR-041 | User Stories 1 and 2 | SC-011; dependency-unavailable design and API contracts |
+
 ### Authority and Safety Boundaries
 
 - **Authorized actors**: An authenticated operator may start research and make
@@ -428,6 +451,11 @@ shown, and every retired path is identified.
 
 ### Measurable Outcomes
 
+Percentages below apply to every case enumerated by the corresponding
+acceptance scenarios, authorization matrix, dependency matrix, and integration
+tasks in this feature package. Passing a sample while omitting a required case
+does not satisfy the criterion.
+
 - **SC-001**: In 100% of integration scenarios, selecting **Discover Sources**
   starts or resumes exactly one governed research workflow and creates no
   competing run for the same request.
@@ -450,7 +478,10 @@ shown, and every retired path is identified.
   readable or that the approved clean-start procedure removes them without
   leaving active callers or partial state.
 - **SC-008**: A repository-wide caller audit finds zero active callers of the
-  retired workflow and overlapping authority paths.
+  retired workflow and overlapping authority paths across API routes,
+  application startup wiring, service construction, worker registration,
+  workflow registration, production imports, tests, and documentation
+  examples.
 - **SC-009**: The final architecture diagram, glossary, decision records,
   runtime documentation, and roadmap identify one owner for every governed
   responsibility and match the paths exercised by end-to-end tests.

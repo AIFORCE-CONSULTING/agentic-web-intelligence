@@ -118,6 +118,13 @@ class ResearchRun(BaseModel):
     id: UUID
     question: str
     status: str
+    status_version: int = Field(default=0, ge=0)
+    failed_stage: str | None = None
+    workflow_version: str = "unified-research:v1"
+    failure_code: str | None = None
+    failure_explanation: str | None = None
+    retryable: bool = False
+    failed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     sources: list[SourceCandidate] = Field(default_factory=list)
@@ -131,6 +138,12 @@ class ResearchRunSummary(BaseModel):
     id: UUID
     question: str
     status: str
+    status_version: int = Field(default=0, ge=0)
+    failed_stage: str | None = None
+    failure_code: str | None = None
+    failure_explanation: str | None = None
+    retryable: bool = False
+    failed_at: datetime | None = None
     created_at: datetime
     updated_at: datetime
     source_count: int = Field(ge=0)
@@ -148,10 +161,31 @@ class McpToolAuditEvent(BaseModel):
 
     id: UUID
     request_id: str | None = None
+    research_run_id: UUID | None = None
+    runtime_run_id: UUID | None = None
+    runtime_step_id: UUID | None = None
+    authorization_decision_id: UUID | None = None
+    resource_type: str | None = None
+    resource_id: str | None = None
     tool_name: str
     outcome: Literal["succeeded", "failed", "denied"]
     occurred_at: datetime
     details: dict[str, object] = Field(default_factory=dict)
+
+
+class ResearchStatusTransition(BaseModel):
+    """Append-only result of one guarded official research-status change."""
+
+    id: UUID
+    research_run_id: UUID
+    prior_status: str
+    next_status: str
+    prior_status_version: int = Field(ge=0)
+    next_status_version: int = Field(ge=1)
+    workflow_version: str
+    transition_id: UUID
+    reason: str
+    occurred_at: datetime
 
 
 class McpToolAuditList(BaseModel):

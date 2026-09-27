@@ -9,6 +9,9 @@ import pytest
 from pydantic import ValidationError
 
 from app.agent_runtime.contracts import (
+    AUTHORITY_POLICY_VERSION,
+    AuthorizationDecision,
+    CapabilityRequest,
     PlanStepProposal,
     RuntimeEvent,
     RuntimeHandoffRequest,
@@ -28,6 +31,9 @@ from app.agent_runtime.store import (
     RuntimeHandoffError,
     RuntimeStore,
     RuntimeTransitionError,
+)
+from app.agent_runtime.store import (
+    SCHEMA as RUNTIME_SCHEMA,
 )
 from app.agent_runtime.workflow import (
     run_deterministic_executor,
@@ -49,6 +55,146 @@ def test_runtime_request_rejects_agent_supplied_role_or_capability() -> None:
                 "allowed_capabilities": ["web.extract"],
             }
         )
+
+
+def test_capability_request_rejects_caller_supplied_authority() -> None:
+    with pytest.raises(ValidationError):
+        CapabilityRequest.model_validate(
+            {
+                "workspace_id": str(uuid4()),
+                "runtime_run_id": str(uuid4()),
+                "runtime_step_id": str(uuid4()),
+                "research_run_id": str(uuid4()),
+                "research_status": "discovering",
+                "research_status_version": 1,
+                "action": "web.search",
+                "resource_type": "research_query",
+                "resource_id": "query-1",
+                "arguments": {"query": "agentic web"},
+                "request_id": str(uuid4()),
+                "purpose": "Find relevant sources",
+                "allowed_capabilities": ["web.search"],
+            }
+        )
+
+
+def test_runtime_schema_owns_research_authority_and_limit_records() -> None:
+    assert AUTHORITY_POLICY_VERSION == "research-authority:v1"
+    for table in (
+        "agent_runtime_authorization_decisions",
+        "agent_runtime_query_reservations",
+        "agent_runtime_source_attempts",
+        "agent_runtime_gap_rounds",
+        "agent_runtime_discovered_sources",
+    ):
+        assert table in RUNTIME_SCHEMA
+    assert "research_run_id UUID" in RUNTIME_SCHEMA
+    assert "CREATE UNIQUE INDEX IF NOT EXISTS agent_runtime_runs_research_run_id_idx" in (
+        RUNTIME_SCHEMA
+    )
+
+
+def test_authorization_decision_contract_captures_policy_and_canonical_version() -> None:
+    decision = AuthorizationDecision(
+        id=uuid4(),
+        workspace_id=uuid4(),
+        runtime_run_id=uuid4(),
+        runtime_step_id=uuid4(),
+        research_run_id=uuid4(),
+        action="web.extract",
+        resource_type="source",
+        resource_id="https://example.com/article",
+        decision="deny",
+        reason_code="source_not_discovered",
+        explanation="The source is not part of this research task.",
+        authority_policy_version=AUTHORITY_POLICY_VERSION,
+        request_id=uuid4(),
+        research_status_version=2,
+        created_at=datetime.now(UTC),
+    )
+
+    assert decision.decision == "deny"
+    assert decision.authority_policy_version == AUTHORITY_POLICY_VERSION
+
+
+class FakeReservationConnection:
+    def __init__(self, *, fetchvals: list[object] | None = None, round_count: int = 1) -> None:
+        self.fetchvals = list(fetchvals or [])
+        self.round_count = round_count
+        self.executions: list[tuple[str, tuple[object, ...]]] = []
+
+    def transaction(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def fetchval(self, query: str, *arguments: object):
+        self.executions.append((query, arguments))
+        return self.fetchvals.pop(0) if self.fetchvals else None
+
+    async def fetchrow(self, query: str, *arguments: object):
+        self.executions.append((query, arguments))
+        return {"round_count": self.round_count}
+
+    async def execute(self, query: str, *arguments: object) -> str:
+        self.executions.append((query, arguments))
+        return "INSERT 1"
+
+
+class FakeReservationPool:
+    def __init__(self, connection: FakeReservationConnection) -> None:
+        self.connection = connection
+
+    def acquire(self) -> FakeReservationConnection:
+        return self.connection
+
+
+def reservation_store(connection: FakeReservationConnection) -> RuntimeStore:
+    store = RuntimeStore("postgresql://test")
+    store._pool = FakeReservationPool(connection)  # type: ignore[assignment]
+    return store
+
+
+def test_query_reservation_normalizes_and_deduplicates_in_postgres() -> None:
+    connection = FakeReservationConnection(fetchvals=[1])
+
+    reserved = asyncio.run(
+        reservation_store(connection).reserve_query(
+            uuid4(), "topic-a", "  Agentic   WEB trust  ", "initial"
+        )
+    )
+
+    assert reserved is True
+    assert connection.executions[0][1][1] == "agentic web trust"
+    assert "ON CONFLICT" in connection.executions[0][0]
+
+
+def test_source_attempt_limit_is_enforced_before_increment() -> None:
+    connection = FakeReservationConnection(fetchvals=[3])
+
+    reserved = asyncio.run(
+        reservation_store(connection).reserve_source_attempt(
+            uuid4(), "topic-a", "https://example.com", limit=3
+        )
+    )
+
+    assert reserved is False
+    assert len(connection.executions) == 1
+
+
+def test_gap_round_limit_stops_after_two_stored_rounds() -> None:
+    connection = FakeReservationConnection(fetchvals=[2])
+
+    round_number = asyncio.run(
+        reservation_store(connection).begin_gap_round(uuid4())
+    )
+
+    assert round_number is None
+    assert len(connection.executions) == 1
 
 
 def test_handoff_request_rejects_forged_role_and_capability() -> None:

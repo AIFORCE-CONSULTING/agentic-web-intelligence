@@ -30,10 +30,169 @@ from app.web_research.extractor import WebExtractor
 from app.web_research.mcp_host import MCP_PROTOCOL_VERSION
 from app.web_research.policy import validate_public_destination
 from app.web_research.search import SearxngSearchProvider
+from app.web_research.store import (
+    RESEARCH_STATUS_TRANSITIONS,
+    ResearchStatusTransitionError,
+    ResearchStore,
+)
+from app.web_research.store import (
+    SCHEMA as RESEARCH_SCHEMA,
+)
 
 
 async def permit_public_destination(_: str) -> None:
     """Avoid external DNS in unit tests whose focus is extraction behavior."""
+
+
+def test_research_status_contract_has_one_complete_guarded_transition_table() -> None:
+    assert RESEARCH_STATUS_TRANSITIONS == {
+        "planning": frozenset({"discovering", "failed"}),
+        "discovering": frozenset(
+            {"acquiring", "evaluating_relevance", "assessing_coverage", "failed"}
+        ),
+        "acquiring": frozenset(
+            {"awaiting_review", "evaluating_relevance", "assessing_coverage", "failed"}
+        ),
+        "awaiting_review": frozenset(
+            {"evaluating_relevance", "assessing_coverage", "failed"}
+        ),
+        "evaluating_relevance": frozenset(
+            {"summarizing", "assessing_coverage", "failed"}
+        ),
+        "summarizing": frozenset({"assessing_coverage", "failed"}),
+        "assessing_coverage": frozenset({"discovering", "reporting", "failed"}),
+        "reporting": frozenset({"completed", "failed"}),
+        "completed": frozenset(),
+        "failed": frozenset(
+            {
+                "planning",
+                "discovering",
+                "acquiring",
+                "awaiting_review",
+                "evaluating_relevance",
+                "summarizing",
+                "assessing_coverage",
+                "reporting",
+            }
+        ),
+    }
+    assert "research_status_transitions" in RESEARCH_SCHEMA
+    assert "status_version" in RESEARCH_SCHEMA
+    assert "failed_stage" in RESEARCH_SCHEMA
+    assert "failure_explanation" in RESEARCH_SCHEMA
+
+
+def test_mcp_audit_schema_requires_complete_agent_correlation_fields() -> None:
+    for field in (
+        "research_run_id",
+        "runtime_run_id",
+        "runtime_step_id",
+        "authorization_decision_id",
+        "request_id",
+        "resource_type",
+        "resource_id",
+    ):
+        assert field in RESEARCH_SCHEMA
+
+
+class FakeResearchTransitionConnection:
+    def __init__(self, prior: dict, existing_transition: bool = False) -> None:
+        self.prior = prior
+        self.existing_transition = existing_transition
+        self.executions: list[tuple[str, tuple]] = []
+
+    def transaction(self):
+        return self
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_: object) -> None:
+        return None
+
+    async def fetchrow(self, *_: object):
+        return self.prior
+
+    async def fetchval(self, *_: object):
+        return self.existing_transition
+
+    async def execute(self, query: str, *arguments: object) -> str:
+        self.executions.append((query, arguments))
+        return "INSERT 1"
+
+
+class FakeResearchTransitionPool:
+    def __init__(self, connection: FakeResearchTransitionConnection) -> None:
+        self.connection = connection
+
+    def acquire(self) -> FakeResearchTransitionConnection:
+        return self.connection
+
+
+def transition_store(connection: FakeResearchTransitionConnection) -> ResearchStore:
+    store = ResearchStore("postgresql://test")
+    store._pool = FakeResearchTransitionPool(connection)  # type: ignore[assignment]
+    return store
+
+
+def test_stale_research_transition_records_conflict_without_status_write() -> None:
+    connection = FakeResearchTransitionConnection(
+        {
+            "status": "discovering",
+            "status_version": 3,
+            "failed_stage": None,
+            "workflow_version": "unified-research:v1",
+        }
+    )
+
+    changed = asyncio.run(
+        transition_store(connection).transition_status(
+            uuid4(), "planning", 2, "discovering", uuid4(), "start discovery"
+        )
+    )
+
+    assert changed is False
+    assert any("research_audit_events" in query for query, _ in connection.executions)
+    assert not any("UPDATE research_runs" in query for query, _ in connection.executions)
+
+
+def test_transition_identity_is_idempotent_before_status_validation() -> None:
+    connection = FakeResearchTransitionConnection(
+        {
+            "status": "discovering",
+            "status_version": 3,
+            "failed_stage": None,
+            "workflow_version": "unified-research:v1",
+        },
+        existing_transition=True,
+    )
+
+    changed = asyncio.run(
+        transition_store(connection).transition_status(
+            uuid4(), "planning", 2, "discovering", uuid4(), "repeat"
+        )
+    )
+
+    assert changed is True
+    assert connection.executions == []
+
+
+def test_failed_research_may_resume_only_at_its_recorded_stage() -> None:
+    connection = FakeResearchTransitionConnection(
+        {
+            "status": "failed",
+            "status_version": 4,
+            "failed_stage": "acquiring",
+            "workflow_version": "unified-research:v1",
+        }
+    )
+
+    with pytest.raises(ResearchStatusTransitionError, match="stored failed stage"):
+        asyncio.run(
+            transition_store(connection).transition_status(
+                uuid4(), "failed", 4, "discovering", uuid4(), "retry"
+            )
+        )
 
 
 def authenticated_app(app, role: str = "operator"):
@@ -93,7 +252,12 @@ def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.Monke
             "status": "unconfigured",
             "detail": "No internal search provider is configured.",
         },
-    ]
+        {
+            "name": "Research workflow checkpoints",
+            "status": "unavailable",
+            "detail": "Research checkpoint persistence is not started.",
+        },
+        ]
 
 
 def test_mcp_host_advertises_only_governed_read_only_tools() -> None:

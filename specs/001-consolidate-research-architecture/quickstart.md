@@ -26,3 +26,40 @@ Expected result: one Discover action starts one governed, resumable workflow;
 RuntimeService records authority, MCP executes allowed web tools, trust/review
 stay independent, Temporal resumes LangGraph, and PostgreSQL supplies the
 operator-visible record.
+
+## Selective local clean start
+
+The project does not preserve obsolete runtime-control records, old graph
+execution history, or obsolete Temporal runtime histories. Evidence, trust,
+review, summaries, topics, relevance, coverage, and reports remain product data
+and must not be removed by this procedure.
+
+1. Stop the API and Temporal worker so no process can write a checkpoint while
+   cleanup is running.
+2. From `apps/api`, run the bounded command below repeatedly until it prints
+   `0`:
+
+   ```powershell
+   python -m app.agent_runtime.research_workflow delete-obsolete-threads --limit 100
+   ```
+
+   The command enumerates checkpoints with the official saver's `alist()` API,
+   collects distinct thread identifiers, deletes each through
+   `adelete_thread()`, and calls the saver's idempotent `setup()` afterward. It
+   never issues application-authored SQL against LangGraph's tables.
+3. Clear obsolete local Temporal runtime histories only through the documented
+   local Temporal administration/reset procedure. Do not translate that history
+   into research status.
+4. Start the API. Startup initializes `unified-research:v1` and retries the
+   oldest 100 completed research threads that lack a successful checkpoint
+   cleanup record.
+5. Check `/health/services`. A remaining terminal-cleanup backlog must appear as
+   degraded readiness. Process another bounded batch with:
+
+   ```powershell
+   python -m app.agent_runtime.research_workflow retry-terminal-cleanup --limit 100
+   ```
+
+The research row remains the official operator-facing status throughout this
+process. Checkpoint deletion cannot complete, fail, reopen, or otherwise alter a
+research task.

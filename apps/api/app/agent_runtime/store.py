@@ -8,7 +8,9 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.agent_runtime.contracts import (
+    AUTHORITY_POLICY_VERSION,
     ApprovedPlanStep,
+    AuthorizationDecision,
     RuntimeEvent,
     RuntimeHandoff,
     RuntimeMemory,
@@ -23,6 +25,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runtime_runs (
     id UUID PRIMARY KEY,
     workspace_id UUID,
+    research_run_id UUID,
+    authority_policy_version TEXT NOT NULL DEFAULT 'research-authority:v1',
     goal TEXT NOT NULL,
     status TEXT NOT NULL CHECK (status IN (
         'requested', 'planning', 'awaiting_approval', 'executing', 'reviewing',
@@ -70,6 +74,52 @@ CREATE TABLE IF NOT EXISTS agent_runtime_memories (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     expires_at TIMESTAMPTZ NOT NULL
 );
+CREATE TABLE IF NOT EXISTS agent_runtime_authorization_decisions (
+    id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL,
+    runtime_run_id UUID NOT NULL REFERENCES agent_runtime_runs(id) ON DELETE CASCADE,
+    runtime_step_id UUID NOT NULL REFERENCES agent_runtime_steps(id) ON DELETE CASCADE,
+    research_run_id UUID NOT NULL,
+    action TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id TEXT NOT NULL,
+    decision TEXT NOT NULL CHECK (decision IN ('allow', 'deny')),
+    reason_code TEXT NOT NULL,
+    explanation TEXT NOT NULL,
+    authority_policy_version TEXT NOT NULL,
+    request_facts JSONB NOT NULL DEFAULT '{}'::jsonb,
+    request_id UUID NOT NULL,
+    research_status_version INTEGER NOT NULL CHECK (research_status_version >= 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_runtime_query_reservations (
+    research_run_id UUID NOT NULL,
+    normalized_query TEXT NOT NULL,
+    topic_id TEXT NOT NULL,
+    purpose TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (research_run_id, normalized_query)
+);
+CREATE TABLE IF NOT EXISTS agent_runtime_source_attempts (
+    research_run_id UUID NOT NULL,
+    topic_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (research_run_id, topic_id, source_url)
+);
+CREATE TABLE IF NOT EXISTS agent_runtime_gap_rounds (
+    research_run_id UUID PRIMARY KEY,
+    round_count INTEGER NOT NULL DEFAULT 0 CHECK (round_count BETWEEN 0 AND 2),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS agent_runtime_discovered_sources (
+    research_run_id UUID NOT NULL,
+    topic_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (research_run_id, topic_id, source_url)
+);
 CREATE INDEX IF NOT EXISTS agent_runtime_runs_updated_at_idx
     ON agent_runtime_runs(updated_at DESC);
 CREATE INDEX IF NOT EXISTS agent_runtime_steps_run_id_idx
@@ -81,6 +131,13 @@ CREATE INDEX IF NOT EXISTS agent_runtime_events_run_id_idx
 CREATE INDEX IF NOT EXISTS agent_runtime_memories_run_id_idx
     ON agent_runtime_memories(run_id, expires_at);
 ALTER TABLE agent_runtime_runs ADD COLUMN IF NOT EXISTS workspace_id UUID;
+ALTER TABLE agent_runtime_runs ADD COLUMN IF NOT EXISTS research_run_id UUID;
+ALTER TABLE agent_runtime_runs ADD COLUMN IF NOT EXISTS authority_policy_version TEXT NOT NULL
+    DEFAULT 'research-authority:v1';
+CREATE UNIQUE INDEX IF NOT EXISTS agent_runtime_runs_research_run_id_idx
+    ON agent_runtime_runs(research_run_id) WHERE research_run_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS agent_runtime_authorization_request_idx
+    ON agent_runtime_authorization_decisions(request_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS agent_runtime_runs_workspace_updated_at_idx
     ON agent_runtime_runs(workspace_id, updated_at DESC);
 """
@@ -147,7 +204,9 @@ class RuntimeStore:
                 ) from error
         return self._pool
 
-    async def create_run(self, goal: str, workspace_id: UUID) -> RuntimeRun:
+    async def create_run(
+        self, goal: str, workspace_id: UUID, research_run_id: UUID | None = None
+    ) -> RuntimeRun:
         """Create a requested run and its fixed, server-assigned planner step."""
 
         pool = await self._connection_pool()
@@ -155,10 +214,13 @@ class RuntimeStore:
         planner_step_id = uuid4()
         async with pool.acquire() as connection, connection.transaction():
             await connection.execute(
-                """INSERT INTO agent_runtime_runs (id, workspace_id, goal, status)
-                VALUES ($1, $2, $3, 'requested')""",
+                """INSERT INTO agent_runtime_runs
+                (id, workspace_id, research_run_id, authority_policy_version, goal, status)
+                VALUES ($1, $2, $3, $4, $5, 'requested')""",
                 run_id,
                 workspace_id,
+                research_run_id,
+                AUTHORITY_POLICY_VERSION,
                 goal,
             )
             await connection.execute(
@@ -534,6 +596,139 @@ class RuntimeStore:
         async with pool.acquire() as connection:
             await self._append_event(connection, run_id, event_type, details)
 
+    async def record_authorization_decision(
+        self, decision: AuthorizationDecision
+    ) -> AuthorizationDecision:
+        """Persist an allow or denial before any governed tool invocation."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """INSERT INTO agent_runtime_authorization_decisions
+                   (id, workspace_id, runtime_run_id, runtime_step_id, research_run_id,
+                    action, resource_type, resource_id, decision, reason_code,
+                    explanation, authority_policy_version, request_facts, request_id,
+                    research_status_version, created_at)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12,
+                           $13::jsonb, $14, $15, $16)
+                   RETURNING *""",
+                decision.id,
+                decision.workspace_id,
+                decision.runtime_run_id,
+                decision.runtime_step_id,
+                decision.research_run_id,
+                decision.action,
+                decision.resource_type,
+                decision.resource_id,
+                decision.decision,
+                decision.reason_code,
+                decision.explanation,
+                decision.authority_policy_version,
+                json.dumps(self._redact(decision.request_facts)),
+                decision.request_id,
+                decision.research_status_version,
+                decision.created_at,
+            )
+        values = dict(row)
+        values["request_facts"] = self._json_object(values["request_facts"])
+        return AuthorizationDecision(**values)
+
+    async def reserve_query(
+        self, research_run_id: UUID, topic_id: str, query: str, purpose: str
+    ) -> bool:
+        """Reserve one normalized query once for a research task."""
+
+        normalized_query = " ".join(query.casefold().split())
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            inserted = await connection.fetchval(
+                """INSERT INTO agent_runtime_query_reservations
+                   (research_run_id, normalized_query, topic_id, purpose)
+                   VALUES ($1, $2, $3, $4)
+                   ON CONFLICT (research_run_id, normalized_query) DO NOTHING
+                   RETURNING 1""",
+                research_run_id,
+                normalized_query,
+                topic_id,
+                purpose,
+            )
+        return bool(inserted)
+
+    async def reserve_source_attempt(
+        self,
+        research_run_id: UUID,
+        topic_id: str,
+        source_url: str,
+        *,
+        limit: int = 3,
+    ) -> bool:
+        """Increment one source attempt transactionally while under its limit."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            count = await connection.fetchval(
+                """SELECT attempt_count FROM agent_runtime_source_attempts
+                   WHERE research_run_id = $1 AND topic_id = $2 AND source_url = $3
+                   FOR UPDATE""",
+                research_run_id,
+                topic_id,
+                source_url,
+            )
+            if count is not None and count >= limit:
+                return False
+            await connection.execute(
+                """INSERT INTO agent_runtime_source_attempts
+                   (research_run_id, topic_id, source_url, attempt_count)
+                   VALUES ($1, $2, $3, 1)
+                   ON CONFLICT (research_run_id, topic_id, source_url) DO UPDATE
+                   SET attempt_count = agent_runtime_source_attempts.attempt_count + 1,
+                       updated_at = now()""",
+                research_run_id,
+                topic_id,
+                source_url,
+            )
+        return True
+
+    async def begin_gap_round(self, research_run_id: UUID) -> int | None:
+        """Reserve one of the two permitted missing-topic search rounds."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            current = await connection.fetchval(
+                "SELECT round_count FROM agent_runtime_gap_rounds "
+                "WHERE research_run_id = $1 FOR UPDATE",
+                research_run_id,
+            )
+            if current is not None and current >= 2:
+                return None
+            row = await connection.fetchrow(
+                """INSERT INTO agent_runtime_gap_rounds (research_run_id, round_count)
+                   VALUES ($1, 1)
+                   ON CONFLICT (research_run_id) DO UPDATE
+                   SET round_count = agent_runtime_gap_rounds.round_count + 1,
+                       updated_at = now()
+                   RETURNING round_count""",
+                research_run_id,
+            )
+        return int(row["round_count"])
+
+    async def record_discovered_source(
+        self, research_run_id: UUID, topic_id: str, source_url: str
+    ) -> None:
+        """Record source scope used by later authorization decisions."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO agent_runtime_discovered_sources
+                   (research_run_id, topic_id, source_url)
+                   VALUES ($1, $2, $3)
+                   ON CONFLICT DO NOTHING""",
+                research_run_id,
+                topic_id,
+                source_url,
+            )
+
     async def record_memory(
         self,
         run_id: UUID,
@@ -611,6 +806,8 @@ class RuntimeStore:
             created_at=run["created_at"],
             updated_at=run["updated_at"],
             workspace_id=run["workspace_id"],
+            research_run_id=run["research_run_id"],
+            authority_policy_version=run["authority_policy_version"],
             steps=[self._step_from_row(row) for row in steps],
             handoffs=[self._handoff_from_row(row) for row in handoffs],
             memories=[self._memory_from_row(row) for row in memories],
@@ -700,3 +897,7 @@ class RuntimeStore:
             created_at=row["created_at"],
             expires_at=row["expires_at"],
         )
+
+    @staticmethod
+    def _json_object(value: object) -> dict[str, object]:
+        return json.loads(value) if isinstance(value, str) else dict(value)

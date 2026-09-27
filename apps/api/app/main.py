@@ -1,6 +1,7 @@
 """HTTP entry point for Agentic Web Intelligence."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Literal
 
 import httpx
@@ -13,6 +14,7 @@ from app.agent_runtime.contracts import (
     RuntimeRunList,
     RuntimeStoreUnavailable,
 )
+from app.agent_runtime.research_workflow import ResearchCheckpointLifecycle
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import RuntimeStore
 from app.durable_execution.service import (
@@ -166,14 +168,31 @@ def create_app() -> FastAPI:
 
     settings = get_settings()
     settings.validate_runtime_configuration()
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        checkpoint_lifecycle = application.state.research_checkpoint_lifecycle
+        try:
+            await checkpoint_lifecycle.start()
+        except RuntimeError:
+            # Health and research entry points expose the unavailable dependency.
+            pass
+        try:
+            yield
+        finally:
+            await checkpoint_lifecycle.stop()
+
     app = FastAPI(
         title="Agentic Web Intelligence API",
         version="0.1.0",
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
+        lifespan=lifespan,
     )
     app.state.deployment_secrets = DeploymentSecrets(settings)
     app.state.research_store = ResearchStore(
         settings.database_url, app.state.deployment_secrets.redact
+    )
+    app.state.research_checkpoint_lifecycle = ResearchCheckpointLifecycle(
+        settings.database_url, app.state.research_store
     )
     app.state.runtime_store = RuntimeStore(
         settings.database_url, app.state.deployment_secrets.redact
@@ -845,7 +864,21 @@ def create_app() -> FastAPI:
                 detail="The internal search provider is available through the governed boundary.",
             )
 
-        services = await asyncio.gather(persistence_health(), discovery_health())
+        async def checkpoint_health() -> DependencyHealth:
+            status = await http_request.app.state.research_checkpoint_lifecycle.readiness()
+            return DependencyHealth(
+                name="Research workflow checkpoints",
+                status=(
+                    "ready"
+                    if status.ready
+                    else "unavailable" if settings.database_url else "unconfigured"
+                ),
+                detail=status.detail,
+            )
+
+        services = await asyncio.gather(
+            persistence_health(), discovery_health(), checkpoint_health()
+        )
         return ServiceHealthResponse(
             status=(
                 "ready" if all(service.status == "ready" for service in services) else "degraded"

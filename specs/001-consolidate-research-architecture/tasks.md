@@ -69,20 +69,20 @@ combination receives a stored denial reason.
 ### Tests for User Story 2
 
 - [ ] T015 [P] [US2] Replace object-based capability tests with stored-request authorization tests in `apps/api/tests/test_agent_runtime.py`
-- [ ] T016 [P] [US2] Add the complete role/action/research-status/workspace/task/source/limit default-deny matrix and prove RuntimeService reads but cannot write `research_runs.status` in `apps/api/tests/test_research_controls.py`
-- [ ] T017 [P] [US2] Add contract tests proving decisions exclude secrets and raw evidence, are stored before tool invocation, and require matching workspace, research, runtime, step, decision, request, tool, and resource identities in the MCP audit in `apps/api/tests/test_research_capabilities.py`
-- [ ] T018 [P] [US2] Add race tests for state changes between authorization and execution and transactional limit exhaustion in `apps/api/tests/test_research_controls.py`
+- [x] T016 [P] [US2] Add the complete role/action/research-status/workspace/task/source/limit default-deny matrix and prove RuntimeService reads but cannot write `research_runs.status` in `apps/api/tests/test_research_controls.py`
+- [x] T017 [P] [US2] Add contract tests proving decisions exclude secrets and raw evidence, are stored before tool invocation, and require matching workspace, research, runtime, step, decision, request, tool, and resource identities in the MCP audit in `apps/api/tests/test_research_capabilities.py`
+- [x] T018 [P] [US2] Add race tests for state changes between authorization and execution and transactional limit exhaustion in `apps/api/tests/test_research_controls.py`
 
 ### Implementation for User Story 2
 
-- [ ] T019 [US2] Add the versioned authority rules, permitted stages, and stable reason-code mapping in `apps/api/app/agent_runtime/policy.py`
-- [ ] T020 [US2] Extend `RuntimeService` to create or reuse one stored research assignment and server-owned researcher step in `apps/api/app/agent_runtime/service.py`
+- [x] T019 [US2] Add the versioned authority rules, permitted stages, and stable reason-code mapping in `apps/api/app/agent_runtime/policy.py`
+- [x] T020 [US2] Extend `RuntimeService` to create or reuse one stored research assignment and server-owned researcher step in `apps/api/app/agent_runtime/service.py`
 - [ ] T021 [US2] Replace `authorize_capability(RuntimeStep, capability)` with canonical-record authorization and persisted decisions in `apps/api/app/agent_runtime/service.py`
-- [ ] T022 [US2] Integrate query reservation, discovered-source scope, source/attempt/retry limits, and two-round gap limits into `RuntimeService` in `apps/api/app/agent_runtime/service.py`
+- [x] T022 [US2] Integrate query reservation, discovered-source scope, source/attempt/retry limits, and two-round gap limits into `RuntimeService` in `apps/api/app/agent_runtime/service.py`
 - [ ] T010 [US2] Remove the migrated authority/control persistence methods from `AgenticResearchStore`, retaining only topics, relevance, coverage, discovered-source associations, and reports in `apps/api/app/agentic_research/store.py`
 - [ ] T023 [US2] Refactor the model-visible capability catalog to provide schemas only and remove caller-supplied grant authority in `apps/api/app/agentic_research/capabilities.py`
-- [ ] T024 [US2] Add an in-process typed invocation method that preserves the existing registry, validation, provider selection, and normalization; verifies the stored allow decision correlation before provider invocation; and writes the fully correlated MCP execution audit in `apps/api/app/web_research/mcp_host.py`
-- [ ] T025 [US2] Update runtime and capability audit reads to expose safe policy version, reason code, and explanation fields in `apps/api/app/agent_runtime/store.py` and `apps/api/app/main.py`; do not extend the retiring runtime-run API for durable-work compatibility
+- [x] T024 [US2] Add an in-process typed invocation method that preserves the existing registry, validation, provider selection, and normalization; verifies the stored allow decision correlation before provider invocation; and writes the fully correlated MCP execution audit in `apps/api/app/web_research/mcp_host.py`
+- [x] T025 [US2] Update runtime and capability audit reads to expose safe policy version, reason code, and explanation fields in `apps/api/app/agent_runtime/store.py` and `apps/api/app/main.py`; do not extend the retiring runtime-run API for durable-work compatibility
 
 **Checkpoint**: RuntimeService is the one tested authorization boundary.
 

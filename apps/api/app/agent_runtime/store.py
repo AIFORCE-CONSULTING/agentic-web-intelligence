@@ -243,6 +243,124 @@ class RuntimeStore:
         assert run is not None
         return run
 
+    async def get_research_assignment(
+        self, workspace_id: UUID, research_run_id: UUID
+    ) -> RuntimeRun | None:
+        """Load the one runtime assignment linked to a research task."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            run_id = await connection.fetchval(
+                "SELECT id FROM agent_runtime_runs "
+                "WHERE workspace_id = $1 AND research_run_id = $2",
+                workspace_id,
+                research_run_id,
+            )
+        return await self.get_run(run_id, workspace_id) if run_id else None
+
+    async def ensure_research_assignment(
+        self, workspace_id: UUID, research_run_id: UUID, goal: str
+    ) -> RuntimeRun:
+        """Create one active, server-owned researcher assignment or reuse it."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                str(research_run_id),
+            )
+            run_id = await connection.fetchval(
+                "SELECT id FROM agent_runtime_runs WHERE research_run_id = $1",
+                research_run_id,
+            )
+            if run_id is None:
+                run_id = uuid4()
+                step_id = uuid4()
+                await connection.execute(
+                    """INSERT INTO agent_runtime_runs
+                       (id, workspace_id, research_run_id, authority_policy_version,
+                        goal, status)
+                       VALUES ($1, $2, $3, $4, $5, 'executing')""",
+                    run_id,
+                    workspace_id,
+                    research_run_id,
+                    AUTHORITY_POLICY_VERSION,
+                    goal,
+                )
+                await connection.execute(
+                    """INSERT INTO agent_runtime_steps
+                       (id, run_id, role, title, status, allowed_capabilities,
+                        idempotency_key, timeout_seconds, attempt_count)
+                       VALUES ($1, $2, 'researcher', 'Conduct governed research',
+                               'active', '["web.search", "web.extract"]'::jsonb,
+                               $3, 300, 1)""",
+                    step_id,
+                    run_id,
+                    f"researcher:{research_run_id}",
+                )
+                await self._append_event(
+                    connection,
+                    run_id,
+                    "runtime.research_assignment.created",
+                    {"research_run_id": str(research_run_id), "step_id": str(step_id)},
+                )
+        run = await self.get_run(run_id, workspace_id)
+        assert run is not None
+        return run
+
+    async def authorization_decision(
+        self, decision_id: UUID
+    ) -> AuthorizationDecision | None:
+        """Load one stored decision for execution-time correlation checks."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM agent_runtime_authorization_decisions WHERE id = $1",
+                decision_id,
+            )
+        if row is None:
+            return None
+        values = dict(row)
+        values["request_facts"] = self._json_object(values["request_facts"])
+        return AuthorizationDecision(**values)
+
+    async def list_authorization_decisions(
+        self, workspace_id: UUID, limit: int
+    ) -> list[AuthorizationDecision]:
+        """List safe, bounded decisions for one workspace."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT * FROM agent_runtime_authorization_decisions
+                   WHERE workspace_id = $1 ORDER BY created_at DESC LIMIT $2""",
+                workspace_id,
+                limit,
+            )
+        decisions: list[AuthorizationDecision] = []
+        for row in rows:
+            values = dict(row)
+            values["request_facts"] = self._json_object(values["request_facts"])
+            decisions.append(AuthorizationDecision(**values))
+        return decisions
+
+    async def source_is_discovered(
+        self, research_run_id: UUID, source_url: str
+    ) -> bool:
+        """Confirm extraction scope from the stored discovered-source set."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return bool(
+                await connection.fetchval(
+                    """SELECT 1 FROM agent_runtime_discovered_sources
+                       WHERE research_run_id = $1 AND source_url = $2""",
+                    research_run_id,
+                    source_url,
+                )
+            )
+
     async def transition_run(self, run_id: UUID, next_status: str) -> RuntimeRun | None:
         """Perform a server-validated state transition and append its audit event."""
 
@@ -713,12 +831,37 @@ class RuntimeStore:
         return int(row["round_count"])
 
     async def record_discovered_source(
-        self, research_run_id: UUID, topic_id: str, source_url: str
-    ) -> None:
-        """Record source scope used by later authorization decisions."""
+        self,
+        research_run_id: UUID,
+        topic_id: str,
+        source_url: str,
+        *,
+        source_limit: int = 50,
+    ) -> bool:
+        """Record source scope once while transactionally enforcing its limit."""
 
         pool = await self._connection_pool()
-        async with pool.acquire() as connection:
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                str(research_run_id),
+            )
+            exists = await connection.fetchval(
+                """SELECT 1 FROM agent_runtime_discovered_sources
+                   WHERE research_run_id = $1 AND topic_id = $2 AND source_url = $3""",
+                research_run_id,
+                topic_id,
+                source_url,
+            )
+            if exists:
+                return True
+            count = await connection.fetchval(
+                "SELECT COUNT(*) FROM agent_runtime_discovered_sources "
+                "WHERE research_run_id = $1",
+                research_run_id,
+            )
+            if int(count or 0) >= source_limit:
+                return False
             await connection.execute(
                 """INSERT INTO agent_runtime_discovered_sources
                    (research_run_id, topic_id, source_url)
@@ -728,6 +871,7 @@ class RuntimeStore:
                 topic_id,
                 source_url,
             )
+        return True
 
     async def record_memory(
         self,

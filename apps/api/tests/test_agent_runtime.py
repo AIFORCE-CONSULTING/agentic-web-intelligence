@@ -197,6 +197,26 @@ def test_gap_round_limit_stops_after_two_stored_rounds() -> None:
     assert len(connection.executions) == 1
 
 
+def test_discovered_source_limit_is_enforced_transactionally() -> None:
+    connection = FakeReservationConnection(fetchvals=[None, 50])
+
+    recorded = asyncio.run(
+        reservation_store(connection).record_discovered_source(
+            uuid4(),
+            "agent-identity",
+            "https://example.com/evidence",
+            source_limit=50,
+        )
+    )
+
+    assert recorded is False
+    assert "pg_advisory_xact_lock" in connection.executions[0][0]
+    assert not any(
+        "INSERT INTO agent_runtime_discovered_sources" in query
+        for query, _ in connection.executions
+    )
+
+
 def test_handoff_request_rejects_forged_role_and_capability() -> None:
     with pytest.raises(ValidationError):
         RuntimeHandoffRequest.model_validate(

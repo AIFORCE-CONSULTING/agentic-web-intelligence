@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
 from app.agent_runtime.contracts import (
+    AuthorizationDecisionList,
     RuntimeRun,
     RuntimeRunList,
     RuntimeStoreUnavailable,
@@ -197,7 +198,9 @@ def create_app() -> FastAPI:
     app.state.runtime_store = RuntimeStore(
         settings.database_url, app.state.deployment_secrets.redact
     )
-    app.state.runtime_service = RuntimeService(app.state.runtime_store)
+    app.state.runtime_service = RuntimeService(
+        app.state.runtime_store, app.state.research_store
+    )
     app.state.temporal_runtime = TemporalRuntimeBoundary(
         settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
     )
@@ -1136,6 +1139,26 @@ def create_app() -> FastAPI:
             )
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/authorization-decisions",
+        response_model=AuthorizationDecisionList,
+        tags=["research"],
+    )
+    async def list_research_authorization_decisions(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> AuthorizationDecisionList:
+        """Expose safe allow and denial reasons without raw evidence or secrets."""
+
+        user = await require_workspace_permission(http_request, "security.audit.read")
+        store: RuntimeStore = http_request.app.state.runtime_store
+        try:
+            decisions = await store.list_authorization_decisions(
+                user.workspace_id, limit
+            )
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return AuthorizationDecisionList(decisions=decisions)
 
     @app.get("/v1/audit/security", response_model=SecurityAuditEventList, tags=["audit"])
     async def list_security_audit(

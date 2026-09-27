@@ -1,9 +1,18 @@
-"""Server-only orchestration service that turns bounded proposals into authority."""
+"""Platform authority service that turns bounded proposals into stored decisions."""
 
+from datetime import UTC, datetime
+from typing import Protocol
 from uuid import UUID, uuid4
 
+from pydantic import ValidationError
+
 from app.agent_runtime.contracts import (
+    AUTHORITY_POLICY_VERSION,
     ApprovedPlanStep,
+    AuthorizationDecision,
+    AuthorizationDecisionReason,
+    CapabilityRequest,
+    McpExecutionCorrelation,
     PlanStepProposal,
     ReviewDecision,
     RuntimeHandoff,
@@ -11,14 +20,23 @@ from app.agent_runtime.contracts import (
     RuntimeStep,
 )
 from app.agent_runtime.policy import (
+    ACTION_RESEARCH_STAGES,
     ALLOWED_HANDOFFS,
     MAX_OPERATOR_REVISION_APPROVALS,
     MAX_RESEARCH_ATTEMPTS,
     MAX_RESEARCH_STEPS,
     ROLE_CAPABILITIES,
     ROLE_TIMEOUT_SECONDS,
+    authorization_explanation,
 )
 from app.agent_runtime.store import RuntimeHandoffError, RuntimeStore
+from app.web_research.contracts import ExtractRequest, ResearchRun, SearchRequest
+
+
+class ResearchAuthorityReader(Protocol):
+    """Read official research status without granting RuntimeService write access."""
+
+    async def get_run(self, workspace_id: UUID, run_id: UUID) -> ResearchRun | None: ...
 
 
 class RuntimePlanError(ValueError):
@@ -31,8 +49,211 @@ class RuntimeService:
     This class is intentionally not registered as an HTTP route or MCP tool.
     """
 
-    def __init__(self, store: RuntimeStore) -> None:
+    def __init__(
+        self,
+        store: RuntimeStore,
+        research_reader: ResearchAuthorityReader | None = None,
+    ) -> None:
         self._store = store
+        self._research_reader = research_reader
+
+    async def ensure_research_assignment(
+        self, workspace_id: UUID, research_run_id: UUID, goal: str
+    ) -> RuntimeRun:
+        """Create or reuse the one server-owned assignment for a research task."""
+
+        return await self._store.ensure_research_assignment(
+            workspace_id, research_run_id, goal
+        )
+
+    async def authorize_request(
+        self, request: CapabilityRequest
+    ) -> AuthorizationDecision:
+        """Reload canonical facts, enforce limits, and persist allow or deny."""
+
+        if self._research_reader is None:
+            raise RuntimePlanError("Research authority persistence is not configured.")
+        runtime = await self._store.get_run(request.runtime_run_id)
+        research = await self._research_reader.get_run(
+            request.workspace_id, request.research_run_id
+        )
+        reason: AuthorizationDecisionReason = "allowed"
+        step = None
+        normalized_query = ""
+        try:
+            if request.action == "web.search":
+                normalized_query = SearchRequest.model_validate(
+                    request.arguments, extra="forbid"
+                ).query
+            else:
+                extraction = ExtractRequest.model_validate(
+                    request.arguments, extra="forbid"
+                )
+                if extraction.url != request.resource_id:
+                    raise ValueError("Extraction resource mismatch")
+        except ValidationError:
+            reason = "malformed_context"
+        except ValueError:
+            reason = "resource_out_of_scope"
+        if reason != "allowed":
+            pass
+        elif runtime is None or runtime.status != "executing":
+            reason = "run_inactive"
+        elif runtime.workspace_id != request.workspace_id:
+            reason = "wrong_workspace"
+        elif runtime.research_run_id != request.research_run_id:
+            reason = "wrong_research_task"
+        else:
+            step = next(
+                (item for item in runtime.steps if item.id == request.runtime_step_id),
+                None,
+            )
+            if step is None or step.status != "active" or step.role != "researcher":
+                reason = "step_inactive"
+            elif request.action not in step.allowed_capabilities:
+                reason = "capability_not_granted"
+            elif research is None:
+                reason = "wrong_research_task"
+            elif (
+                research.status != request.research_status
+                or research.status_version != request.research_status_version
+            ):
+                reason = "stale_authorization"
+            elif research.status not in ACTION_RESEARCH_STAGES[request.action]:
+                reason = "invalid_stage"
+            elif request.action == "web.extract" and not await self._store.source_is_discovered(
+                request.research_run_id, request.resource_id
+            ):
+                reason = "source_not_discovered"
+            elif request.action == "web.search" and not await self._store.reserve_query(
+                request.research_run_id,
+                request.topic_id,
+                normalized_query,
+                request.purpose,
+            ):
+                reason = "retry_limit_exhausted"
+            elif request.action == "web.extract" and not await self._store.reserve_source_attempt(
+                request.research_run_id,
+                request.topic_id,
+                request.resource_id,
+            ):
+                reason = "attempt_limit_exhausted"
+
+        decision = AuthorizationDecision(
+            id=uuid4(),
+            workspace_id=request.workspace_id,
+            runtime_run_id=request.runtime_run_id,
+            runtime_step_id=request.runtime_step_id,
+            research_run_id=request.research_run_id,
+            action=request.action,
+            resource_type=request.resource_type,
+            resource_id=request.resource_id,
+            decision="allow" if reason == "allowed" else "deny",
+            reason_code=reason,
+            explanation=authorization_explanation(reason),
+            authority_policy_version=AUTHORITY_POLICY_VERSION,
+            request_facts={
+                "argument_names": sorted(request.arguments),
+                "purpose": request.purpose,
+            },
+            request_id=request.request_id,
+            research_status_version=(
+                research.status_version if research else request.research_status_version
+            ),
+            created_at=datetime.now(UTC),
+        )
+        return await self._store.record_authorization_decision(decision)
+
+    async def register_discovered_source(
+        self,
+        research_run_id: UUID,
+        topic_id: str,
+        source_url: str,
+        source_limit: int,
+    ) -> bool:
+        """Place a source in extraction scope without exceeding the task limit."""
+
+        return await self._store.record_discovered_source(
+            research_run_id,
+            topic_id,
+            source_url,
+            source_limit=source_limit,
+        )
+
+    async def begin_gap_search_round(self, research_run_id: UUID) -> int | None:
+        """Reserve one of the two stored missing-topic search rounds."""
+
+        return await self._store.begin_gap_round(research_run_id)
+
+    async def verify_execution(
+        self, correlation: McpExecutionCorrelation
+    ) -> AuthorizationDecision:
+        """Recheck a stored allow decision immediately before provider execution."""
+
+        decision = await self._store.authorization_decision(
+            correlation.authorization_decision_id
+        )
+        expected = (
+            correlation.workspace_id,
+            correlation.research_run_id,
+            correlation.runtime_run_id,
+            correlation.runtime_step_id,
+            correlation.request_id,
+            correlation.tool_name,
+            correlation.resource_type,
+            correlation.resource_id,
+        )
+        actual = (
+            decision.workspace_id,
+            decision.research_run_id,
+            decision.runtime_run_id,
+            decision.runtime_step_id,
+            decision.request_id,
+            decision.action,
+            decision.resource_type,
+            decision.resource_id,
+        ) if decision else None
+        if decision is None or decision.decision != "allow" or actual != expected:
+            raise RuntimePlanError("No matching stored allow decision exists.")
+        if self._research_reader is None:
+            raise RuntimePlanError("Research authority persistence is not configured.")
+        runtime = await self._store.get_run(
+            correlation.runtime_run_id, correlation.workspace_id
+        )
+        research = await self._research_reader.get_run(
+            correlation.workspace_id, correlation.research_run_id
+        )
+        step = next(
+            (
+                item
+                for item in runtime.steps
+                if item.id == correlation.runtime_step_id
+            ),
+            None,
+        ) if runtime else None
+        if (
+            runtime is None
+            or runtime.status != "executing"
+            or runtime.research_run_id != correlation.research_run_id
+            or step is None
+            or step.status != "active"
+            or correlation.tool_name not in step.allowed_capabilities
+            or research is None
+            or research.status_version != decision.research_status_version
+            or research.status not in ACTION_RESEARCH_STAGES[correlation.tool_name]
+        ):
+            stale = decision.model_copy(
+                update={
+                    "id": uuid4(),
+                    "decision": "deny",
+                    "reason_code": "stale_authorization",
+                    "explanation": authorization_explanation("stale_authorization"),
+                    "created_at": datetime.now(UTC),
+                }
+            )
+            await self._store.record_authorization_decision(stale)
+            raise RuntimePlanError(stale.explanation)
+        return decision
 
     async def start_run(self, goal: str, workspace_id: UUID) -> RuntimeRun:
         """Create a server-owned planner assignment and begin the planning phase."""

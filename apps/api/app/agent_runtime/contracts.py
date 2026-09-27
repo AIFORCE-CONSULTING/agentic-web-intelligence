@@ -75,6 +75,7 @@ class CapabilityRequest(BaseModel):
     research_run_id: UUID
     research_status: ResearchStage
     research_status_version: int = Field(ge=0)
+    topic_id: str = Field(min_length=1, max_length=128)
     action: RuntimeCapability
     resource_type: Literal["research_query", "source"]
     resource_id: str = Field(min_length=1, max_length=2_048)
@@ -104,6 +105,12 @@ class AuthorizationDecision(BaseModel):
     request_id: UUID
     research_status_version: int = Field(ge=0)
     created_at: datetime
+
+
+class AuthorizationDecisionList(BaseModel):
+    """Bounded, safe authority decisions for workspace audit review."""
+
+    decisions: list[AuthorizationDecision]
 
 
 class McpExecutionCorrelation(BaseModel):

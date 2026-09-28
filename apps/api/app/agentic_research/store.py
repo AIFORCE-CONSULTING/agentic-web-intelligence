@@ -200,6 +200,18 @@ class AgenticResearchStore:
                 ) from error
         return self._pool
 
+    async def remove_obsolete_control_tables(self) -> None:
+        """Remove superseded control tables after RuntimeService became authoritative."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                """DROP TABLE IF EXISTS agentic_research_capability_audits;
+                   DROP TABLE IF EXISTS agentic_research_source_attempts;
+                   DROP TABLE IF EXISTS agentic_research_search_requests;
+                   DROP TABLE IF EXISTS agentic_research_control_state;"""
+            )
+
     async def save_topic_plan(
         self,
         workspace_id: UUID,

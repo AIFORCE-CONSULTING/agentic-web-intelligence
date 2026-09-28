@@ -211,6 +211,25 @@ def test_discovered_source_limit_is_enforced_transactionally() -> None:
     )
 
 
+def test_clean_start_deletes_only_unlinked_legacy_runtime_rows() -> None:
+    class CleanupConnection(FakeReservationConnection):
+        async def fetch(self, query: str, *arguments: object):
+            self.executions.append((query, arguments))
+            return [{"id": uuid4()}, {"id": uuid4()}]
+
+    connection = CleanupConnection()
+
+    deleted = asyncio.run(
+        reservation_store(connection).delete_obsolete_workflow_records(limit=25)
+    )
+
+    assert deleted == 2
+    query, arguments = connection.executions[0]
+    assert "WHERE research_run_id IS NULL" in query
+    assert "DELETE FROM agent_runtime_runs" in query
+    assert arguments == (25,)
+
+
 def test_handoff_request_rejects_forged_role_and_capability() -> None:
     with pytest.raises(ValidationError):
         RuntimeHandoffRequest.model_validate(

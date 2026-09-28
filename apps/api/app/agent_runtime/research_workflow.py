@@ -945,19 +945,46 @@ async def _run_checkpoint_maintenance(action: str, limit: int) -> int:
         await lifecycle.stop()
 
 
+async def _run_obsolete_state_cleanup(limit: int) -> int:
+    """Remove only state owned by the retired standalone workflow."""
+
+    from app.agent_runtime.store import RuntimeStore
+    from app.agentic_research.store import AgenticResearchStore
+
+    settings = get_settings()
+    runtime_store = RuntimeStore(settings.database_url)
+    agentic_store = AgenticResearchStore(settings.database_url)
+    try:
+        deleted = await runtime_store.delete_obsolete_workflow_records(limit)
+        await agentic_store.remove_obsolete_control_tables()
+        return deleted
+    finally:
+        await runtime_store.close()
+        await agentic_store.close()
+
+
 def checkpoint_maintenance_main() -> None:
     """Provide a bounded operator command without direct checkpoint-table SQL."""
 
     parser = argparse.ArgumentParser(description="Maintain research graph checkpoints.")
     parser.add_argument(
         "action",
-        choices=("retry-terminal-cleanup", "delete-obsolete-threads"),
+        choices=(
+            "retry-terminal-cleanup",
+            "delete-obsolete-threads",
+            "delete-obsolete-runtime-records",
+        ),
     )
     parser.add_argument("--limit", type=int, default=100)
     arguments = parser.parse_args()
     if not 1 <= arguments.limit <= 1000:
         parser.error("--limit must be between 1 and 1000")
-    result = asyncio.run(_run_checkpoint_maintenance(arguments.action, arguments.limit))
+    if arguments.action == "delete-obsolete-runtime-records":
+        result = asyncio.run(_run_obsolete_state_cleanup(arguments.limit))
+    else:
+        result = asyncio.run(
+            _run_checkpoint_maintenance(arguments.action, arguments.limit)
+        )
     print(result)
 
 

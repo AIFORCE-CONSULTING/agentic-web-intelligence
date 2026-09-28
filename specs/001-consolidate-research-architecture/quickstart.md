@@ -36,8 +36,22 @@ and must not be removed by this procedure.
 
 1. Stop the API and Temporal worker so no process can write a checkpoint while
    cleanup is running.
-2. From `apps/api`, run the bounded command below repeatedly until it prints
-   `0`:
+2. From `apps/api`, remove legacy standalone RuntimeService records in bounded
+   batches. Repeat the command until it prints `0`:
+
+   ```powershell
+   python -m app.agent_runtime.research_workflow delete-obsolete-runtime-records --limit 100
+   ```
+
+   This deletes only `agent_runtime_runs` rows whose `research_run_id` is null.
+   Child steps, events, memories, and handoffs are removed by their existing
+   foreign-key cascades. RuntimeService assignments linked to a research record
+   are retained. The command also removes the four superseded
+   `agentic_research_*` control, request, attempt, and capability-audit tables;
+   their authority and limit responsibilities now belong to RuntimeService.
+   Evidence-domain tables are not part of this operation.
+3. Delete local graph bookmarks in bounded batches. Repeat until the command
+   prints `0`:
 
    ```powershell
    python -m app.agent_runtime.research_workflow delete-obsolete-threads --limit 100
@@ -47,13 +61,22 @@ and must not be removed by this procedure.
    collects distinct thread identifiers, deletes each through
    `adelete_thread()`, and calls the saver's idempotent `setup()` afterward. It
    never issues application-authored SQL against LangGraph's tables.
-3. Clear obsolete local Temporal runtime histories only through the documented
-   local Temporal administration/reset procedure. Do not translate that history
-   into research status.
-4. Start the API. Startup initializes `unified-research:v1` and retries the
+4. Delete histories for the retired Temporal workflow through Temporal's own
+   administration API. The query is deliberately restricted to the removed
+   workflow type:
+
+   ```powershell
+   docker compose exec -T temporal sh -lc 'temporal workflow delete --address "$(hostname -i):7233" --query '\''WorkflowType="GovernedRuntimeWorkflow"'\'' --reason "Retired consolidated runtime workflow" --yes'
+   ```
+
+   A response reporting no matching executions is a successful no-op. Do not
+   delete candidate-preflight or evidence-summary workflow histories, and do
+   not translate Temporal history into research status.
+5. Start the API and durable worker. Startup initializes
+   `unified-research:v1` and retries the
    oldest 100 completed research threads that lack a successful checkpoint
    cleanup record.
-5. Check `/health/services`. A remaining terminal-cleanup backlog must appear as
+6. Check `/health/services`. A remaining terminal-cleanup backlog must appear as
    degraded readiness. Process another bounded batch with:
 
    ```powershell

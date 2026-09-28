@@ -308,6 +308,29 @@ class RuntimeStore:
         assert run is not None
         return run
 
+    async def delete_obsolete_workflow_records(self, limit: int = 100) -> int:
+        """Delete a bounded batch of legacy runs that are not research assignments."""
+
+        if not 1 <= limit <= 1000:
+            raise ValueError("limit must be between 1 and 1000")
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            rows = await connection.fetch(
+                """WITH obsolete AS (
+                       SELECT id FROM agent_runtime_runs
+                       WHERE research_run_id IS NULL
+                       ORDER BY created_at
+                       LIMIT $1
+                       FOR UPDATE SKIP LOCKED
+                   )
+                   DELETE FROM agent_runtime_runs AS runs
+                   USING obsolete
+                   WHERE runs.id = obsolete.id
+                   RETURNING runs.id""",
+                limit,
+            )
+        return len(rows)
+
     async def authorization_decision(
         self, decision_id: UUID
     ) -> AuthorizationDecision | None:

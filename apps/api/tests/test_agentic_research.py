@@ -1,5 +1,6 @@
 """Tests for the first bounded agentic research planning contract."""
 
+import asyncio
 import json
 from datetime import UTC, datetime
 from uuid import uuid4
@@ -226,3 +227,40 @@ def test_topic_without_qualifying_evidence_is_uncovered() -> None:
 
     assert coverage[0].status == "uncovered"
     assert coverage[0].evidence == []
+def test_clean_start_removes_only_superseded_agentic_control_tables() -> None:
+    executions: list[str] = []
+
+    class Connection:
+        def transaction(self):
+            return self
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *_: object) -> None:
+            return None
+
+        async def execute(self, query: str) -> str:
+            executions.append(query)
+            return "DROP TABLE"
+
+    class Pool:
+        def acquire(self) -> Connection:
+            return Connection()
+
+    store = AgenticResearchStore("postgresql://test")
+    store._pool = Pool()  # type: ignore[assignment]
+
+    asyncio.run(store.remove_obsolete_control_tables())
+
+    cleanup = executions[0]
+    for table in (
+        "agentic_research_control_state",
+        "agentic_research_search_requests",
+        "agentic_research_source_attempts",
+        "agentic_research_capability_audits",
+    ):
+        assert f"DROP TABLE IF EXISTS {table}" in cleanup
+    assert "agentic_research_topics" not in cleanup
+    assert "agentic_topic_relevance_decisions" not in cleanup
+    assert "agentic_topic_coverage_evidence" not in cleanup

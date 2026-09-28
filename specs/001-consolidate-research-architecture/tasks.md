@@ -175,8 +175,8 @@ while retained data remains usable and the documented clean start succeeds.
 - [x] T052 [US4] Remove `ResearchOrchestrationService` after routing coverage is present in the canonical graph and delete `apps/api/app/agentic_research/orchestration.py`
 - [x] T053 [US4] Remove obsolete deterministic planning, first-result execution, reviewer-cycle, and scheduling functions from `apps/api/app/agent_runtime/workflow.py`
 - [x] T054 [US4] Remove `GovernedRuntimeWorkflow`, its scheduling boundary, worker registration, obsolete tests, application startup dependencies, and the old `/v1/runtime/runs` list, detail, approval, attention, and durable-cancellation routes from `apps/api/app/durable_execution/workflows.py`, `apps/api/app/durable_execution/service.py`, `apps/api/app/durable_execution/worker.py`, `apps/api/app/main.py`, `apps/api/tests/test_durable_execution.py`, and superseded runtime-route tests after the replacement research durable-work endpoints and UI are verified
-- [ ] T055 [US4] Apply and document the selected clean start, deleting obsolete RuntimeService workflow and durable test records while preserving only useful evidence-domain fixtures, in `specs/001-consolidate-research-architecture/quickstart.md` and the existing store schema setup paths
-- [ ] T056 [US4] Run the repository-wide caller audit and record retired and retained components in `specs/001-consolidate-research-architecture/retirement-report.md`
+- [x] T055 [US4] Apply and document the selected clean start, deleting obsolete RuntimeService workflow and durable test records while preserving only useful evidence-domain fixtures, in `specs/001-consolidate-research-architecture/quickstart.md` and the existing store schema setup paths
+- [x] T056 [US4] Run the repository-wide caller audit and record retired and retained components in `specs/001-consolidate-research-architecture/retirement-report.md`
 
 **Checkpoint**: No duplicate authority or orchestration path remains active.
 

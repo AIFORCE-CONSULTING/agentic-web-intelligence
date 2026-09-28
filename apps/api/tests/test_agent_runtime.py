@@ -15,7 +15,6 @@ from app.agent_runtime.contracts import (
     PlanStepProposal,
     RuntimeEvent,
     RuntimeHandoffRequest,
-    RuntimeMemory,
     RuntimeRun,
     RuntimeRunRequest,
     RuntimeStep,
@@ -34,11 +33,6 @@ from app.agent_runtime.store import (
 )
 from app.agent_runtime.store import (
     SCHEMA as RUNTIME_SCHEMA,
-)
-from app.agent_runtime.workflow import (
-    run_deterministic_executor,
-    run_deterministic_planner,
-    run_deterministic_reviewer,
 )
 from app.main import create_app
 from app.settings import Settings
@@ -282,7 +276,7 @@ def test_runtime_store_decodes_postgres_json_fields() -> None:
     assert memory.content == {"url": "https://example.com", "content_hash": "sha256:test"}
 
 
-def test_runtime_control_plane_has_no_public_run_creation_route(
+def test_retired_runtime_control_plane_has_no_public_routes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
@@ -298,7 +292,7 @@ def test_runtime_control_plane_has_no_public_run_creation_route(
 
     response = asyncio.run(request())
 
-    assert response.status_code == 405
+    assert response.status_code == 404
 
 
 def test_runtime_step_authority_is_typed_and_server_owned() -> None:
@@ -511,314 +505,6 @@ def test_runtime_service_escalates_an_ambiguous_durable_outcome_without_retrying
         )
     ]
     assert store.transitions == [(run_id, "needs_attention")]
-
-
-def test_deterministic_planner_materializes_only_the_fixed_plan() -> None:
-    run_id = uuid4()
-    now = datetime.now(UTC)
-
-    class FakeService:
-        def __init__(self) -> None:
-            self.proposals: list[PlanStepProposal] = []
-
-        async def start_run(self, goal: str, _: object) -> RuntimeRun:
-            return RuntimeRun(
-                id=run_id,
-                goal=goal,
-                status="planning",
-                created_at=now,
-                updated_at=now,
-            )
-
-        async def approve_plan(self, _: object, proposals: list[PlanStepProposal]) -> RuntimeRun:
-            self.proposals = proposals
-            return RuntimeRun(
-                id=run_id,
-                goal="Research a topic",
-                status="awaiting_approval",
-                created_at=now,
-                updated_at=now,
-            )
-
-    service = FakeService()
-    planned = asyncio.run(run_deterministic_planner(service, "Research a topic", uuid4()))
-
-    assert planned.status == "awaiting_approval"
-    assert [(proposal.role, proposal.title) for proposal in service.proposals] == [
-        ("researcher", "Gather governed evidence for: Research a topic"),
-        ("reviewer", "Review evidence completeness and provenance"),
-    ]
-
-
-def test_deterministic_executor_uses_only_the_stored_researcher_capabilities() -> None:
-    run_id = uuid4()
-    step_id = uuid4()
-    now = datetime.now(UTC)
-    researcher = RuntimeStep(
-        id=step_id,
-        role="researcher",
-        title="Gather governed evidence",
-        status="pending",
-        allowed_capabilities=["web.search", "web.extract"],
-        attempt_count=0,
-        idempotency_key="researcher:test",
-        timeout_seconds=300,
-        created_at=now,
-        updated_at=now,
-    )
-    executing_run = RuntimeRun(
-        id=run_id,
-        goal="Research a topic",
-        status="executing",
-        created_at=now,
-        updated_at=now,
-        steps=[researcher],
-    )
-    reviewing_run = executing_run.model_copy(update={"status": "reviewing"})
-
-    class FakeService:
-        def __init__(self) -> None:
-            self.authorized: list[str] = []
-            self.outcomes: list[tuple[str, dict[str, object]]] = []
-            self.memories: list[tuple[str, dict[str, str]]] = []
-
-        async def begin_execution(self, _: object) -> RuntimeRun:
-            return executing_run
-
-        async def activate_researcher(self, _: object) -> RuntimeStep:
-            return researcher.model_copy(update={"status": "active", "attempt_count": 1})
-
-        async def authorize_capability(self, _: object, capability: str) -> None:
-            self.authorized.append(capability)
-
-        async def remember_research_query(self, _: object, __: object, query: str) -> None:
-            self.memories.append(("research_query", {"query": query}))
-
-        async def remember_source_reference(
-            self, _: object, __: object, url: str, content_hash: str
-        ) -> None:
-            self.memories.append(("source_reference", {"url": url, "content_hash": content_hash}))
-
-        async def record_tool_outcome(
-            self, _: object, __: object, tool_name: str, details: dict[str, object]
-        ) -> None:
-            self.outcomes.append((tool_name, details))
-
-        async def complete_research(self, _: object, __: object) -> RuntimeRun:
-            return reviewing_run
-
-        async def fail_research(self, *_: object) -> RuntimeRun:
-            raise AssertionError("The governed tool calls should succeed.")
-
-    class FakeHost:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        async def handle(self, payload: dict[str, object]) -> dict[str, object]:
-            params = payload["params"]
-            assert isinstance(params, dict)
-            tool_name = params["name"]
-            arguments = params["arguments"]
-            assert isinstance(tool_name, str)
-            assert isinstance(arguments, dict)
-            self.calls.append((tool_name, arguments))
-            if tool_name == "web.search":
-                structured: dict[str, object] = {
-                    "query": "Research a topic",
-                    "results": [
-                        {
-                            "title": "Public source",
-                            "url": "https://example.com/evidence",
-                            "snippet": "Source summary",
-                            "engine": "test",
-                        }
-                    ],
-                }
-            else:
-                structured = {
-                    "url": "https://example.com/evidence",
-                    "retrieved_at": now.isoformat(),
-                    "content_type": "text/plain",
-                    "text": "Public evidence.",
-                    "content_hash": "sha256:test",
-                    "extraction_method": "plain-text",
-                }
-            return {"result": {"structuredContent": structured}}
-
-    service = FakeService()
-    host = FakeHost()
-    completed = asyncio.run(run_deterministic_executor(service, host, str(run_id)))
-
-    assert completed.status == "reviewing"
-    assert service.authorized == ["web.search", "web.extract"]
-    assert host.calls == [
-        ("web.search", {"query": "Research a topic", "max_results": 3}),
-        ("web.extract", {"url": "https://example.com/evidence"}),
-    ]
-    assert service.outcomes == [
-        ("web.search", {"result_count": 1}),
-        ("web.extract", {"url": "https://example.com/evidence", "content_hash": "sha256:test"}),
-    ]
-    assert service.memories == [
-        ("research_query", {"query": "Research a topic"}),
-        (
-            "source_reference",
-            {"url": "https://example.com/evidence", "content_hash": "sha256:test"},
-        ),
-    ]
-
-
-def test_deterministic_reviewer_accepts_governed_provenance_without_tools() -> None:
-    run_id = uuid4()
-    researcher_id = uuid4()
-    reviewer_id = uuid4()
-    now = datetime.now(UTC)
-    run = RuntimeRun(
-        id=run_id,
-        goal="Research a topic",
-        status="reviewing",
-        created_at=now,
-        updated_at=now,
-        steps=[
-            RuntimeStep(
-                id=researcher_id,
-                role="researcher",
-                title="Gather evidence",
-                status="completed",
-                allowed_capabilities=["web.search", "web.extract"],
-                attempt_count=1,
-                idempotency_key="researcher:test",
-                timeout_seconds=300,
-                created_at=now,
-                updated_at=now,
-            ),
-            RuntimeStep(
-                id=reviewer_id,
-                role="reviewer",
-                title="Review evidence",
-                status="pending",
-                allowed_capabilities=[],
-                attempt_count=0,
-                idempotency_key="reviewer:test",
-                timeout_seconds=120,
-                created_at=now,
-                updated_at=now,
-            ),
-        ],
-        memories=[
-            RuntimeMemory(
-                id=uuid4(),
-                run_id=run_id,
-                memory_type="source_reference",
-                content={"url": "https://example.com", "content_hash": "sha256:test"},
-                source_step_id=researcher_id,
-                created_at=now,
-                expires_at=now,
-            )
-        ],
-    )
-
-    class FakeService:
-        def __init__(self) -> None:
-            self.decisions: list[str] = []
-
-        async def get_run(self, _: object) -> RuntimeRun:
-            return run
-
-        async def activate_reviewer(self, _: object) -> RuntimeStep:
-            return run.steps[1].model_copy(update={"status": "active", "attempt_count": 1})
-
-        async def record_review_decision(self, _: object, __: object, decision: object) -> None:
-            assert hasattr(decision, "outcome")
-            self.decisions.append(decision.outcome)
-
-        async def accept_review(self, _: object, __: object) -> RuntimeRun:
-            return run.model_copy(update={"status": "completed"})
-
-        async def request_research_revision(self, *_: object) -> RuntimeRun:
-            raise AssertionError("Provenance should be accepted without a revision.")
-
-        async def escalate_review(self, *_: object) -> RuntimeRun:
-            raise AssertionError("Provenance should not need attention.")
-
-    service = FakeService()
-    completed = asyncio.run(run_deterministic_reviewer(service, str(run_id)))
-
-    assert completed.status == "completed"
-    assert service.decisions == ["accepted"]
-
-
-def test_deterministic_reviewer_requests_only_a_bounded_revision() -> None:
-    run_id = uuid4()
-    researcher_id = uuid4()
-    reviewer_id = uuid4()
-    now = datetime.now(UTC)
-    run = RuntimeRun(
-        id=run_id,
-        goal="Research a topic",
-        status="reviewing",
-        created_at=now,
-        updated_at=now,
-        steps=[
-            RuntimeStep(
-                id=researcher_id,
-                role="researcher",
-                title="Gather evidence",
-                status="completed",
-                allowed_capabilities=["web.search", "web.extract"],
-                attempt_count=1,
-                idempotency_key="researcher:test",
-                timeout_seconds=300,
-                created_at=now,
-                updated_at=now,
-            ),
-            RuntimeStep(
-                id=reviewer_id,
-                role="reviewer",
-                title="Review evidence",
-                status="pending",
-                allowed_capabilities=[],
-                attempt_count=0,
-                idempotency_key="reviewer:test",
-                timeout_seconds=120,
-                created_at=now,
-                updated_at=now,
-            ),
-        ],
-    )
-
-    class FakeService:
-        def __init__(self) -> None:
-            self.feedback: list[str] = []
-
-        async def get_run(self, _: object) -> RuntimeRun:
-            return run
-
-        async def activate_reviewer(self, _: object) -> RuntimeStep:
-            return run.steps[1].model_copy(update={"status": "active", "attempt_count": 1})
-
-        async def record_review_decision(self, *_: object) -> None:
-            return None
-
-        async def request_research_revision(
-            self, _: object, __: object, ___: object, feedback: str
-        ) -> RuntimeRun:
-            self.feedback.append(feedback)
-            return run.model_copy(update={"status": "executing"})
-
-        async def accept_review(self, *_: object) -> RuntimeRun:
-            raise AssertionError("Missing provenance cannot be accepted.")
-
-        async def escalate_review(self, *_: object) -> RuntimeRun:
-            raise AssertionError("One retry remains, so the run should be revised.")
-
-    service = FakeService()
-    revised = asyncio.run(run_deterministic_reviewer(service, str(run_id)))
-
-    assert revised.status == "executing"
-    assert service.feedback == [
-        "No governed source reference was produced; repeat the approved research step."
-    ]
 
 
 def test_runtime_service_allows_only_bounded_operator_review_exceptions() -> None:

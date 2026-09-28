@@ -72,7 +72,7 @@ combination receives a stored denial reason.
 
 ### Tests for User Story 2
 
-- [ ] T015 [P] [US2] Replace object-based capability tests with stored-request authorization tests in `apps/api/tests/test_agent_runtime.py`
+- [x] T015 [P] [US2] Replace object-based capability tests with stored-request authorization tests in `apps/api/tests/test_agent_runtime.py`
 - [x] T016 [P] [US2] Add the complete role/action/research-status/workspace/task/source/limit default-deny matrix and prove RuntimeService reads but cannot write `research_runs.status` in `apps/api/tests/test_research_controls.py`
 - [x] T017 [P] [US2] Add contract tests proving decisions exclude secrets and raw evidence, are stored before tool invocation, and require matching workspace, research, runtime, step, decision, request, tool, and resource identities in the MCP audit in `apps/api/tests/test_research_capabilities.py`
 - [x] T018 [P] [US2] Add race tests for state changes between authorization and execution and transactional limit exhaustion in `apps/api/tests/test_research_controls.py`
@@ -81,10 +81,10 @@ combination receives a stored denial reason.
 
 - [x] T019 [US2] Add the versioned authority rules, permitted stages, and stable reason-code mapping in `apps/api/app/agent_runtime/policy.py`
 - [x] T020 [US2] Extend `RuntimeService` to create or reuse one stored research assignment and server-owned researcher step in `apps/api/app/agent_runtime/service.py`
-- [ ] T021 [US2] Replace `authorize_capability(RuntimeStep, capability)` with canonical-record authorization and persisted decisions in `apps/api/app/agent_runtime/service.py`
+- [x] T021 [US2] Replace `authorize_capability(RuntimeStep, capability)` with canonical-record authorization and persisted decisions in `apps/api/app/agent_runtime/service.py`
 - [x] T022 [US2] Integrate query reservation, discovered-source scope, source/attempt/retry limits, and two-round gap limits into `RuntimeService` in `apps/api/app/agent_runtime/service.py`
-- [ ] T010 [US2] Remove the migrated authority/control persistence methods from `AgenticResearchStore`, retaining only topics, relevance, coverage, discovered-source associations, and reports in `apps/api/app/agentic_research/store.py`
-- [ ] T023 [US2] Refactor the model-visible capability catalog to provide schemas only and remove caller-supplied grant authority in `apps/api/app/agentic_research/capabilities.py`
+- [x] T010 [US2] Remove the migrated authority/control persistence methods from `AgenticResearchStore`, retaining only topics, relevance, coverage, discovered-source associations, and reports in `apps/api/app/agentic_research/store.py`
+- [x] T023 [US2] Refactor the model-visible capability catalog to provide schemas only and remove caller-supplied grant authority in `apps/api/app/agentic_research/capabilities.py`
 - [x] T024 [US2] Add an in-process typed invocation method that preserves the existing registry, validation, provider selection, and normalization; verifies the stored allow decision correlation before provider invocation; and writes the fully correlated MCP execution audit in `apps/api/app/web_research/mcp_host.py`
 - [x] T025 [US2] Update runtime and capability audit reads to expose safe policy version, reason code, and explanation fields in `apps/api/app/agent_runtime/store.py` and `apps/api/app/main.py`; do not extend the retiring runtime-run API for durable-work compatibility
 
@@ -165,16 +165,16 @@ while retained data remains usable and the documented clean start succeeds.
 
 ### Tests for User Story 4
 
-- [ ] T048 [P] [US4] Transfer useful plain-Python router transition cases into canonical graph tests in `apps/api/tests/test_unified_research_workflow.py`
-- [ ] T049 [P] [US4] Transfer old first-result graph and reviewer safety cases into RuntimeService and unified integration tests in `apps/api/tests/test_agent_runtime.py` and `apps/api/tests/test_unified_research_integration.py`
-- [ ] T050 [P] [US4] Add a source-level retirement guard that fails when production code imports retired classes, registers `GovernedRuntimeWorkflow`, retains the old `/v1/runtime/runs` workflow controls, or exposes approval/cancellation controls in the consolidated Durable work section in `apps/api/tests/test_unified_research_integration.py` and `apps/web/src/App.test.tsx`
+- [x] T048 [P] [US4] Transfer useful plain-Python router transition cases into canonical graph tests in `apps/api/tests/test_unified_research_workflow.py`
+- [x] T049 [P] [US4] Transfer old first-result graph and reviewer safety cases into RuntimeService and unified integration tests in `apps/api/tests/test_agent_runtime.py` and `apps/api/tests/test_unified_research_integration.py`
+- [x] T050 [P] [US4] Add a source-level retirement guard in `apps/api/tests/test_unified_research_integration.py` that scans API production code and `apps/web/src/App.tsx`, failing when code imports retired classes, registers `GovernedRuntimeWorkflow`, retains the old `/v1/runtime/runs` workflow controls, or exposes approval/cancellation controls in the consolidated Durable work section
 
 ### Implementation for User Story 4
 
-- [ ] T051 [US4] Remove `AgenticResearchControlService` and migrate remaining imports/tests from `apps/api/app/agentic_research/control.py`
-- [ ] T052 [US4] Remove `ResearchOrchestrationService` after routing coverage is present in the canonical graph and delete `apps/api/app/agentic_research/orchestration.py`
-- [ ] T053 [US4] Remove obsolete deterministic planning, first-result execution, reviewer-cycle, and scheduling functions from `apps/api/app/agent_runtime/workflow.py`
-- [ ] T054 [US4] Remove `GovernedRuntimeWorkflow`, its scheduling boundary, worker registration, obsolete tests, application startup dependencies, and the old `/v1/runtime/runs` list, detail, approval, attention, and durable-cancellation routes from `apps/api/app/durable_execution/workflows.py`, `apps/api/app/durable_execution/service.py`, `apps/api/app/durable_execution/worker.py`, `apps/api/app/main.py`, `apps/api/tests/test_durable_execution.py`, and superseded runtime-route tests after the replacement research durable-work endpoints and UI are verified
+- [x] T051 [US4] Remove `AgenticResearchControlService` and migrate remaining imports/tests from `apps/api/app/agentic_research/control.py`
+- [x] T052 [US4] Remove `ResearchOrchestrationService` after routing coverage is present in the canonical graph and delete `apps/api/app/agentic_research/orchestration.py`
+- [x] T053 [US4] Remove obsolete deterministic planning, first-result execution, reviewer-cycle, and scheduling functions from `apps/api/app/agent_runtime/workflow.py`
+- [x] T054 [US4] Remove `GovernedRuntimeWorkflow`, its scheduling boundary, worker registration, obsolete tests, application startup dependencies, and the old `/v1/runtime/runs` list, detail, approval, attention, and durable-cancellation routes from `apps/api/app/durable_execution/workflows.py`, `apps/api/app/durable_execution/service.py`, `apps/api/app/durable_execution/worker.py`, `apps/api/app/main.py`, `apps/api/tests/test_durable_execution.py`, and superseded runtime-route tests after the replacement research durable-work endpoints and UI are verified
 - [ ] T055 [US4] Apply and document the selected clean start, deleting obsolete RuntimeService workflow and durable test records while preserving only useful evidence-domain fixtures, in `specs/001-consolidate-research-architecture/quickstart.md` and the existing store schema setup paths
 - [ ] T056 [US4] Run the repository-wide caller audit and record retired and retained components in `specs/001-consolidate-research-architecture/retirement-report.md`
 

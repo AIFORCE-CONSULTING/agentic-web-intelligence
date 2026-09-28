@@ -10,12 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from temporalio.client import Client
 
-from app.agent_runtime.contracts import (
-    AuthorizationDecisionList,
-    RuntimeRun,
-    RuntimeRunList,
-    RuntimeStoreUnavailable,
-)
+from app.agent_runtime.contracts import AuthorizationDecisionList, RuntimeStoreUnavailable
 from app.agent_runtime.research_workflow import (
     ResearchCheckpointLifecycle,
     ResearchWorkflowConflict,
@@ -23,18 +18,13 @@ from app.agent_runtime.research_workflow import (
     UnifiedResearchWorkflowEntry,
     compile_research_workflow,
 )
-from app.agent_runtime.service import RuntimePlanError, RuntimeService
+from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
-from app.durable_execution.service import (
-    DurableExecutionPolicyError,
-    DurableExecutionUnavailable,
-    TemporalRuntimeBoundary,
-)
 from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
@@ -228,9 +218,6 @@ def create_app() -> FastAPI:
     )
     app.state.runtime_service = RuntimeService(
         app.state.runtime_store, app.state.research_store
-    )
-    app.state.temporal_runtime = TemporalRuntimeBoundary(
-        settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
     )
     app.state.identity_store = IdentityStore(settings.database_url)
     app.state.security_audit_store = SecurityAuditStore(
@@ -455,14 +442,6 @@ def create_app() -> FastAPI:
         """Restrict external Project changes to authenticated human administrators or operators."""
 
         identity = await require_workspace_permission(http_request, "github.projects.manage")
-        if not isinstance(identity, AuthenticatedUser):
-            raise HTTPException(status_code=403, detail="A human operator is required.")
-        return identity
-
-    async def require_human_runtime_operator(http_request: Request) -> AuthenticatedUser:
-        """Allow durable controls only to a human administrator or operator."""
-
-        identity = await require_workspace_permission(http_request, "runtime.execute")
         if not isinstance(identity, AuthenticatedUser):
             raise HTTPException(status_code=403, detail="A human operator is required.")
         return identity
@@ -993,223 +972,6 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=403, detail="A human administrator is required.")
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return host.registry()
-
-    @app.get("/v1/runtime/runs/{run_id}", response_model=RuntimeRun, tags=["runtime"])
-    async def get_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Inspect a runtime run without exposing mutation of its authority fields."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_workspace_permission(http_request, "runtime.read")
-        store: RuntimeStore = http_request.app.state.runtime_store
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        if run is None:
-            raise HTTPException(status_code=404, detail="Runtime run was not found.")
-        return run
-
-    @app.get("/v1/runtime/runs", response_model=RuntimeRunList, tags=["runtime"])
-    async def list_runtime_runs(
-        http_request: Request, limit: int = Query(default=25, ge=1, le=50)
-    ) -> RuntimeRunList:
-        """List bounded runtime state for operator inspection."""
-
-        user = await require_workspace_permission(http_request, "runtime.read")
-        store: RuntimeStore = http_request.app.state.runtime_store
-        try:
-            return RuntimeRunList(runs=await store.list_runs(limit, user.workspace_id))
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/approval/approve",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def approve_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Record a human approval; scheduler selection remains server-side."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            approved = await service.record_human_approval(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.approval.approved",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return approved
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/approval/reject",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def reject_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Record a human rejection; no scheduler signal is involved."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            rejected = await service.reject_human_approval(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.approval.rejected",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return rejected
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/attention/approve-revision",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def approve_runtime_revision(run_id: str, http_request: Request) -> RuntimeRun:
-        """Approve one bounded exception revision; it never changes plan authority."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            revised = await service.approve_exception_revision(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.review.exception_revision.approved",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return revised
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/attention/close",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def close_runtime_attention(run_id: str, http_request: Request) -> RuntimeRun:
-        """Close one unresolved attention wait without restarting a run."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            closed = await service.close_attention_run(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.attention.closed",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return closed
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/durable-execution/cancel",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def cancel_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Cancel only a nonterminal workspace-owned run and its fixed workflow ID."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            await service.require_durable_execution_scheduled(parsed_run_id)
-            cancelled = await service.cancel_run(parsed_run_id)
-            await boundary.cancel_scheduled_run(run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.durable_execution.cancelled",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return cancelled
 
     @app.get("/v1/mcp/audit", response_model=McpToolAuditList, tags=["mcp"])
     async def list_mcp_tool_audit(

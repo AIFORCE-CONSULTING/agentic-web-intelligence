@@ -2,6 +2,7 @@
 
 import asyncio
 from datetime import UTC, datetime
+from pathlib import Path
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -366,3 +367,24 @@ def test_empty_search_result_is_not_a_provider_failure() -> None:
 
     assert result["stage"] == "completed"
     assert harness.failures == []
+
+
+def test_retired_orchestration_has_no_production_entry_point() -> None:
+    """Keep the removed workflow from returning through imports, routes, or UI controls."""
+
+    repository = Path(__file__).resolve().parents[3]
+    production_files = list((repository / "apps" / "api" / "app").rglob("*.py"))
+    production_files.append(repository / "apps" / "web" / "src" / "App.tsx")
+    production = "\n".join(path.read_text(encoding="utf-8") for path in production_files)
+
+    forbidden = (
+        "AgenticResearchControlService",
+        "ResearchOrchestrationService",
+        "GovernedRuntimeWorkflow",
+        "TemporalRuntimeBoundary",
+        "authorize_capability(",
+        '"/v1/runtime/runs',
+        "Approve revision",
+        "Cancel durable execution",
+    )
+    assert [marker for marker in forbidden if marker in production] == []

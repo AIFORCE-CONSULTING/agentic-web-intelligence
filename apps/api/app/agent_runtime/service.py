@@ -368,14 +368,6 @@ class RuntimeService:
             update={"status": "active", "attempt_count": researcher.attempt_count + 1}
         )
 
-    async def authorize_capability(self, step: RuntimeStep, capability: str) -> None:
-        """Reject an executor request unless the stored step grant permits it."""
-
-        if capability not in step.allowed_capabilities:
-            raise RuntimePlanError(
-                f"The {step.role} step is not authorized to invoke {capability}."
-            )
-
     async def complete_research(self, run_id: UUID, step_id: UUID) -> RuntimeRun:
         """Close the researcher step and move the run to the reviewer gate."""
 

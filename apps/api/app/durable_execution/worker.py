@@ -14,18 +14,12 @@ from app.agent_runtime.research_workflow import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.agent_runtime.workflow import run_deterministic_executor, run_deterministic_reviewer
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
-from app.durable_execution.contracts import (
-    DURABLE_POLICY_VERSION,
-    RuntimeExecutionEnvelope,
-    WorkflowContinuationEnvelope,
-)
-from app.durable_execution.workflows import GovernedRuntimeWorkflow
+from app.durable_execution.contracts import WorkflowContinuationEnvelope
 from app.evidence_summaries.service import (
     EvidenceSummaryAutomation,
     EvidenceSummaryService,
@@ -167,62 +161,6 @@ async def continue_unified_research(envelope: WorkflowContinuationEnvelope) -> s
         await checkpoints.stop()
 
 
-def _runtime_dependencies() -> tuple[RuntimeService, GovernedWebMcpHost]:
-    settings = get_settings()
-    settings.validate_runtime_configuration()
-    if not settings.database_url:
-        raise RuntimeError("The durable worker requires DATABASE_URL.")
-    secrets = DeploymentSecrets(settings)
-    return (
-        RuntimeService(RuntimeStore(settings.database_url, secrets.redact)),
-        GovernedWebMcpHost(deployment_secrets=secrets),
-    )
-
-
-async def _validated_run(service: RuntimeService, envelope: RuntimeExecutionEnvelope):
-    run = await service.get_run(UUID(envelope.run_id))
-    if str(run.workspace_id) != envelope.workspace_id:
-        raise RuntimeError("Durable execution envelope workspace does not match the stored run.")
-    if envelope.policy_version != DURABLE_POLICY_VERSION:
-        raise RuntimeError("Durable execution envelope policy version is not supported.")
-    return run
-
-
-@activity.defn(name="execute_approved_runtime_run")
-async def execute_approved_runtime_run(envelope: RuntimeExecutionEnvelope) -> str:
-    """Execute only the stored, approval-gated researcher step."""
-
-    service, host = _runtime_dependencies()
-    run = await _validated_run(service, envelope)
-    if run.status == "cancelled":
-        return "cancelled"
-    if run.status not in {"awaiting_approval", "executing"}:
-        raise RuntimeError("Stored run is not eligible for durable researcher execution.")
-    return (await run_deterministic_executor(service, host, envelope.run_id)).status
-
-
-@activity.defn(name="review_approved_runtime_run")
-async def review_approved_runtime_run(envelope: RuntimeExecutionEnvelope) -> str:
-    """Run the existing no-tool reviewer against the stored run only."""
-
-    service, _ = _runtime_dependencies()
-    run = await _validated_run(service, envelope)
-    if run.status == "cancelled":
-        return "cancelled"
-    if run.status != "reviewing":
-        raise RuntimeError("Stored run is not eligible for durable review.")
-    return (await run_deterministic_reviewer(service, envelope.run_id)).status
-
-
-@activity.defn(name="escalate_durable_execution")
-async def escalate_durable_execution(envelope: RuntimeExecutionEnvelope) -> str:
-    """Persist a sanitized terminal escalation after an uncertain activity result."""
-
-    service, _ = _runtime_dependencies()
-    await _validated_run(service, envelope)
-    return (await service.escalate_durable_ambiguity(UUID(envelope.run_id))).status
-
-
 @activity.defn(name="execute_evidence_summary")
 async def execute_evidence_summary(execution_id: str) -> str:
     """Execute one stored evidence-summary record, with no caller-provided text or tools."""
@@ -288,11 +226,8 @@ async def run_worker() -> None:
     worker = Worker(
         client,
         task_queue=settings.temporal_task_queue,
-        workflows=[GovernedRuntimeWorkflow, EvidenceSummaryWorkflow, CandidatePreflightWorkflow],
+        workflows=[EvidenceSummaryWorkflow, CandidatePreflightWorkflow],
         activities=[
-            execute_approved_runtime_run,
-            review_approved_runtime_run,
-            escalate_durable_execution,
             execute_evidence_summary,
             preflight_source_candidates,
             continue_unified_research,

@@ -1,21 +1,15 @@
 """Initial model-visible capabilities for governed agentic research."""
 
-from collections.abc import Iterable, Mapping
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field
 
-from app.web_research.contracts import ExtractRequest, SearchRequest
 from app.web_research.mcp_host import GovernedWebToolPolicy
 
 RESEARCH_CAPABILITY_CATALOG_VERSION = "agentic-research-capabilities-v1"
 INITIAL_RESEARCH_CAPABILITIES = ("web.search", "web.extract")
 
 ResearchCapabilityName = Literal["web.search", "web.extract"]
-
-
-class ResearchCapabilityError(ValueError):
-    """Raised when a model proposal falls outside the current research grant."""
 
 
 class ResearchCapabilityDefinition(BaseModel):
@@ -38,18 +32,8 @@ class ResearchCapabilityCatalog(BaseModel):
     capabilities: list[ResearchCapabilityDefinition] = Field(min_length=1, max_length=2)
 
 
-class ValidatedCapabilityRequest(BaseModel):
-    """A model proposal that passed catalog, grant, argument, and source checks."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    catalog_version: str
-    capability: ResearchCapabilityName
-    arguments: dict[str, Any]
-
-
 class AgentResearchCapabilityCatalog:
-    """Expose and validate the narrow initial catalog without executing tools."""
+    """Expose model-facing schemas; RuntimeService owns authorization."""
 
     def __init__(self, policy: GovernedWebToolPolicy | None = None) -> None:
         self._policy = policy or GovernedWebToolPolicy()
@@ -67,58 +51,11 @@ class AgentResearchCapabilityCatalog:
             for name in INITIAL_RESEARCH_CAPABILITIES
         }
 
-    def catalog(
-        self, granted_capabilities: Iterable[str]
-    ) -> ResearchCapabilityCatalog:
-        """Return only initial capabilities granted to the current task step."""
+    def catalog(self) -> ResearchCapabilityCatalog:
+        """Return schemas only; availability never implies permission to execute."""
 
-        granted = set(granted_capabilities)
-        capabilities = [
-            self._definitions[name]
-            for name in INITIAL_RESEARCH_CAPABILITIES
-            if name in granted
-        ]
-        if not capabilities:
-            raise ResearchCapabilityError(
-                "The current research step has no granted research capabilities."
-            )
-        return ResearchCapabilityCatalog(capabilities=capabilities)
-
-    def validate_request(
-        self,
-        capability: str,
-        arguments: Mapping[str, object],
-        granted_capabilities: Iterable[str],
-        discovered_source_urls: Iterable[str] = (),
-    ) -> ValidatedCapabilityRequest:
-        """Validate one proposal before trusted orchestration can consider execution."""
-
-        if capability not in self._definitions:
-            raise ResearchCapabilityError(
-                f"Capability '{capability}' is not in the research capability catalog."
-            )
-        if capability not in set(granted_capabilities):
-            raise ResearchCapabilityError(
-                f"Capability '{capability}' is not granted to the current research step."
-            )
-
-        try:
-            if capability == "web.search":
-                validated = SearchRequest.model_validate(arguments, extra="forbid")
-            else:
-                validated = ExtractRequest.model_validate(arguments, extra="forbid")
-        except ValidationError as error:
-            raise ResearchCapabilityError(
-                f"Capability '{capability}' received invalid arguments."
-            ) from error
-
-        normalized = validated.model_dump(mode="json")
-        if capability == "web.extract" and validated.url not in set(discovered_source_urls):
-            raise ResearchCapabilityError(
-                "Evidence may be acquired only from a source discovered for this research task."
-            )
-        return ValidatedCapabilityRequest(
-            catalog_version=RESEARCH_CAPABILITY_CATALOG_VERSION,
-            capability=capability,
-            arguments=normalized,
+        return ResearchCapabilityCatalog(
+            capabilities=[
+                self._definitions[name] for name in INITIAL_RESEARCH_CAPABILITIES
+            ]
         )

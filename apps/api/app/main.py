@@ -18,6 +18,10 @@ from app.agent_runtime.contracts import (
 from app.agent_runtime.research_workflow import ResearchCheckpointLifecycle
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.durable_execution.contracts import (
+    WorkflowContinuationContext,
+    WorkflowThreadReference,
+)
 from app.durable_execution.service import (
     DurableExecutionPolicyError,
     DurableExecutionUnavailable,
@@ -1273,7 +1277,17 @@ def create_app() -> FastAPI:
             elif new_sources:
                 try:
                     await http_request.app.state.candidate_preflight_temporal.schedule(
-                        run.id, new_urls
+                        run.id,
+                        new_urls,
+                        WorkflowContinuationContext(
+                            thread=WorkflowThreadReference(
+                                research_run_id=str(run.id),
+                                workspace_id=str(user.workspace_id),
+                                thread_id=str(run.id),
+                            ),
+                            expected_research_status=run.status,
+                            expected_status_version=run.status_version,
+                        ),
                     )
                 except CandidatePreflightUnavailable as error:
                     await store.fail_candidate_preflight(run.id, str(error))

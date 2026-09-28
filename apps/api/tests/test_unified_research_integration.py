@@ -177,7 +177,13 @@ class Harness:
             self.relevant.add((topic_id, url))
         return SimpleNamespace(decision=decision)
 
-    async def start_for_urls(self, _workspace: object, _run: object, urls: list[str]) -> object:
+    async def start_for_urls(
+        self,
+        _workspace: object,
+        _run: object,
+        urls: list[str],
+        _continuation: object | None = None,
+    ) -> object:
         self.summary_urls.extend(urls)
         return SimpleNamespace(status="completed")
 

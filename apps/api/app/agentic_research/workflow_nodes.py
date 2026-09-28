@@ -20,6 +20,10 @@ from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore
 from app.agentic_research.topic_planning import TopicPlanningService
+from app.durable_execution.contracts import (
+    WorkflowContinuationContext,
+    WorkflowThreadReference,
+)
 from app.evidence_summaries.service import EvidenceSummaryAutomation
 from app.web_research.contracts import (
     Evidence,
@@ -35,6 +39,18 @@ from app.web_trust.preflight import (
 )
 
 Search = Callable[[str, int], Awaitable[SearchResponse]]
+
+
+def _continuation_context(state: ResearchWorkflowState) -> WorkflowContinuationContext:
+    return WorkflowContinuationContext(
+        thread=WorkflowThreadReference(
+            research_run_id=str(state["run_id"]),
+            workspace_id=str(state["workspace_id"]),
+            thread_id=str(state["run_id"]),
+        ),
+        expected_research_status=state.get("canonical_status", state["stage"]),
+        expected_status_version=state.get("status_version", 0),
+    )
 
 
 class ResearchAuthority(Protocol):
@@ -244,7 +260,9 @@ def evidence_acquisition_node(
                 state["workspace_id"], state["run_id"], authority, mcp, urls
             )
             return {"stage": "evidence_acquired"}
-        await temporal.schedule(state["run_id"], urls)
+        await temporal.schedule(
+            state["run_id"], urls, _continuation_context(state)
+        )
         return {"stage": "awaiting_preflight"}
 
     return acquire
@@ -294,7 +312,10 @@ def evidence_summary_node(automation: EvidenceSummaryAutomation) -> ResearchNode
         if not urls:
             return {"stage": "summaries_stored"}
         execution = await automation.start_for_urls(
-            state["workspace_id"], state["run_id"], urls
+            state["workspace_id"],
+            state["run_id"],
+            urls,
+            _continuation_context(state),
         )
         return {
             "stage": (
@@ -423,6 +444,22 @@ def completion_node() -> ResearchNode:
     return complete
 
 
+def durable_failure_node() -> ResearchNode:
+    """Retain the typed durable failure for the graph-owned status transition."""
+
+    async def fail(state: ResearchWorkflowState) -> ResearchWorkflowState:
+        return {
+            "stage": "failed",
+            "failure_code": state.get("failure_code", "durable_work_failed"),
+            "failure_explanation": state.get(
+                "failure_explanation", "Required background processing did not complete."
+            ),
+            "retryable": state.get("retryable", True),
+        }
+
+    return fail
+
+
 def platform_research_nodes(
     *,
     topic_planning: TopicPlanningService,
@@ -454,4 +491,5 @@ def platform_research_nodes(
         ),
         generate_final_report=final_report_node(reporting),
         complete_research=completion_node(),
+        fail_durable_work=durable_failure_node(),
     )

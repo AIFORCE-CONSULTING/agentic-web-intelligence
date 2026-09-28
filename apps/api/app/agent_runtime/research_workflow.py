@@ -11,11 +11,14 @@ from uuid import NAMESPACE_URL, UUID, uuid5
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
-from langgraph.types import interrupt
+from langgraph.types import Command, interrupt
 
 from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningService
-from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
+from app.durable_execution.contracts import (
+    UNIFIED_RESEARCH_WORKFLOW_VERSION,
+    WorkflowContinuationEnvelope,
+)
 from app.settings import get_settings
 from app.web_research.contracts import ResearchRun
 from app.web_research.store import ResearchStore
@@ -47,7 +50,7 @@ class CompiledResearchGraph(Protocol):
     """Minimal async interface supplied by a compiled LangGraph."""
 
     async def ainvoke(
-        self, state: dict[str, Any], config: dict[str, Any]
+        self, state: Any, config: dict[str, Any]
     ) -> dict[str, Any]: ...
 
 
@@ -55,6 +58,101 @@ class ResearchAssignmentService(Protocol):
     async def ensure_research_assignment(
         self, workspace_id: UUID, research_run_id: UUID, goal: str
     ) -> Any: ...
+
+
+class WorkflowContinuationStore(Protocol):
+    async def get_run(self, workspace_id: UUID, run_id: UUID) -> ResearchRun | None: ...
+
+    async def claim_workflow_continuation(
+        self,
+        idempotency_key: str,
+        research_run_id: UUID,
+        execution_id: str,
+        wait_type: str,
+        outcome: str,
+    ) -> bool: ...
+
+    async def finish_workflow_continuation(
+        self, idempotency_key: str, status: str, explanation: str | None = None
+    ) -> None: ...
+
+
+class DurableResultVerifier(Protocol):
+    async def verify_result(self, envelope: WorkflowContinuationEnvelope) -> bool: ...
+
+
+class ResearchWorkflowContinuation:
+    """Validate one Temporal result and resume the same stored graph thread once."""
+
+    def __init__(
+        self,
+        store: WorkflowContinuationStore,
+        graph: CompiledResearchGraph,
+        checkpoints: "ResearchCheckpointLifecycle",
+        result_verifier: DurableResultVerifier,
+    ) -> None:
+        self._store = store
+        self._graph = graph
+        self._checkpoints = checkpoints
+        self._result_verifier = result_verifier
+
+    async def continue_after(self, envelope: WorkflowContinuationEnvelope) -> str:
+        wait = envelope.wait
+        try:
+            run_id = UUID(wait.thread.research_run_id)
+            workspace_id = UUID(wait.thread.workspace_id)
+        except ValueError as error:
+            raise ResearchWorkflowUnavailable(
+                "The durable continuation identity is invalid."
+            ) from error
+        if (
+            wait.thread.thread_id != str(run_id)
+            or wait.thread.checkpoint_namespace != UNIFIED_RESEARCH_WORKFLOW_VERSION
+        ):
+            raise ResearchWorkflowUnavailable(
+                "The durable continuation does not match the research graph."
+            )
+        run = await self._store.get_run(workspace_id, run_id)
+        if run is None:
+            raise ResearchWorkflowUnavailable(
+                "The durable continuation research record is unavailable."
+            )
+        claimed = await self._store.claim_workflow_continuation(
+            wait.idempotency_key,
+            run_id,
+            wait.execution_id,
+            wait.wait_type,
+            envelope.outcome,
+        )
+        if not claimed:
+            return "duplicate"
+        if (
+            run.status != wait.expected_research_status
+            or run.status_version != wait.expected_status_version
+        ):
+            await self._store.finish_workflow_continuation(
+                wait.idempotency_key,
+                "stale",
+                "Official research status no longer matches the durable wait.",
+            )
+            return "stale"
+        if not await self._result_verifier.verify_result(envelope):
+            await self._store.finish_workflow_continuation(
+                wait.idempotency_key,
+                "failed",
+                "The durable result record was not ready for continuation.",
+            )
+            raise ResearchWorkflowUnavailable(
+                "The durable result record is not ready for continuation."
+            )
+        await self._graph.ainvoke(
+            Command(resume={"outcome": envelope.outcome}),
+            self._checkpoints.graph_config(run_id),
+        )
+        await self._store.finish_workflow_continuation(
+            wait.idempotency_key, "completed"
+        )
+        return "completed"
 
 
 class UnifiedResearchWorkflowEntry:
@@ -360,6 +458,10 @@ class ResearchWorkflowState(TypedDict, total=False):
     uncovered_topic_ids: list[str]
     gap_search_rounds: int
     failure_reason: str
+    failure_code: str
+    failure_explanation: str
+    retryable: bool
+    failed_stage: str
     canonical_status: str
     status_version: int
 
@@ -396,6 +498,7 @@ class ResearchWorkflowNodes:
         search_missing_topic: ResearchNode,
         generate_final_report: ResearchNode,
         complete_research: ResearchNode,
+        fail_durable_work: ResearchNode,
     ) -> None:
         self.plan_topics = plan_topics
         self.search_topics = search_topics
@@ -406,6 +509,7 @@ class ResearchWorkflowNodes:
         self.search_missing_topic = search_missing_topic
         self.generate_final_report = generate_final_report
         self.complete_research = complete_research
+        self.fail_durable_work = fail_durable_work
 
 
 class CanonicalResearchWorkflowNodes:
@@ -468,6 +572,12 @@ class CanonicalResearchWorkflowNodes:
                 lambda _: "completed",
             ),
             complete_research=self._nodes.complete_research,
+            fail_durable_work=self._transitioning(
+                "fail_durable_work",
+                None,
+                self._nodes.fail_durable_work,
+                lambda _: "failed",
+            ),
         )
 
     @staticmethod
@@ -481,7 +591,7 @@ class CanonicalResearchWorkflowNodes:
     def _transitioning(
         self,
         node_name: str,
-        required_status: str,
+        required_status: str | None,
         operation: ResearchNode,
         next_status: Callable[[ResearchWorkflowState], str | None],
     ) -> ResearchNode:
@@ -489,7 +599,7 @@ class CanonicalResearchWorkflowNodes:
             before = await self._store.get_run(state["workspace_id"], state["run_id"])
             if before is None:
                 raise ResearchWorkflowUnavailable("The research record is unavailable.")
-            if before.status != required_status:
+            if required_status is not None and before.status != required_status:
                 before = await self._move_status(
                     state, before, required_status, f"{node_name}:resume"
                 )
@@ -502,7 +612,7 @@ class CanonicalResearchWorkflowNodes:
                     "status_version": before.status_version,
                 }
             after = await self._move_status(
-                state, before, requested_status, node_name
+                {**state, **update}, before, requested_status, node_name
             )
             return {
                 **update,
@@ -533,6 +643,12 @@ class CanonicalResearchWorkflowNodes:
             requested_status,
             transition_id,
             f"Unified research graph completed {transition_name}.",
+            failed_stage=(before.status if requested_status == "failed" else None),
+            failure_code=(state.get("failure_code") if requested_status == "failed" else None),
+            failure_explanation=(
+                state.get("failure_explanation") if requested_status == "failed" else None
+            ),
+            retryable=(state.get("retryable", False) if requested_status == "failed" else False),
         )
         after = await self._store.get_run(state["workspace_id"], state["run_id"])
         if after is None:
@@ -596,7 +712,7 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
 
     async def wait_for_durable_work(state: ResearchWorkflowState) -> ResearchWorkflowState:
         wait_stage = state.get("stage")
-        interrupt(
+        resume = interrupt(
             {
                 "wait_type": (
                     "candidate_preflight"
@@ -609,6 +725,14 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
                 "expected_status_version": state.get("status_version", 0),
             }
         )
+        if isinstance(resume, dict) and resume.get("outcome") == "failed":
+            return {
+                "stage": "durable_work_failed",
+                "failure_code": "durable_work_failed",
+                "failure_explanation": "Required background processing did not complete.",
+                "retryable": True,
+                "failed_stage": state.get("canonical_status", "acquiring"),
+            }
         return {
             "stage": (
                 "evidence_acquired"
@@ -627,6 +751,7 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     graph.add_node("search_missing_topic", nodes.search_missing_topic)
     graph.add_node("generate_final_report", nodes.generate_final_report)
     graph.add_node("complete_research", nodes.complete_research)
+    graph.add_node("fail_durable_work", nodes.fail_durable_work)
     graph.add_node("wait_for_review", wait_for_review)
     graph.add_node("wait_for_durable_work", wait_for_durable_work)
 
@@ -669,8 +794,10 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
         {
             "evidence_acquired": "evaluate_relevance",
             "summaries_stored": "assess_topic_coverage",
+            "durable_work_failed": "fail_durable_work",
         },
     )
+    graph.add_edge("fail_durable_work", END)
     return graph
 
 

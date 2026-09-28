@@ -8,6 +8,11 @@ from uuid import UUID, uuid4
 from temporalio.client import Client
 
 from app.agent_runtime.contracts import CapabilityRequest, McpExecutionCorrelation, RuntimeRun
+from app.durable_execution.contracts import (
+    CandidatePreflightWorkflowInput,
+    WorkflowContinuationContext,
+    WorkflowContinuationEnvelope,
+)
 from app.web_research.contracts import (
     Evidence,
     ToolPolicyError,
@@ -229,16 +234,29 @@ class CandidatePreflightTemporalBoundary:
         self._namespace = namespace
         self._task_queue = task_queue
 
-    async def schedule(self, run_id: UUID, source_urls: list[str]) -> None:
+    async def schedule(
+        self,
+        run_id: UUID,
+        source_urls: list[str],
+        continuation: WorkflowContinuationContext,
+    ) -> None:
         if not self._address:
             raise CandidatePreflightUnavailable("Durable execution is not configured.")
         request = CandidatePreflightRequest(run_id=run_id, source_urls=source_urls)
         payload = request.model_dump_json()
         batch_id = sha256(payload.encode("utf-8")).hexdigest()[:16]
+        wait = continuation.wait(batch_id, "candidate_preflight")
         client = await Client.connect(self._address, namespace=self._namespace)
         await client.start_workflow(
             CandidatePreflightWorkflow.run,
-            payload,
+            CandidatePreflightWorkflowInput(
+                request_json=payload,
+                continuation=WorkflowContinuationEnvelope(
+                    wait=wait,
+                    result_record_id=batch_id,
+                    outcome="completed",
+                ),
+            ),
             id=f"candidate-preflight-{run_id}-{batch_id}",
             task_queue=self._task_queue,
         )

@@ -30,12 +30,54 @@ class DurableWait:
 
 
 @dataclass(frozen=True)
+class WorkflowContinuationContext:
+    """Graph-owned facts used to create one durable wait bookmark."""
+
+    thread: WorkflowThreadReference
+    expected_research_status: str
+    expected_status_version: int
+
+    def wait(
+        self,
+        execution_id: str,
+        wait_type: Literal["candidate_preflight", "evidence_summary"],
+    ) -> DurableWait:
+        return DurableWait(
+            thread=self.thread,
+            execution_id=execution_id,
+            wait_type=wait_type,
+            expected_research_status=self.expected_research_status,
+            expected_status_version=self.expected_status_version,
+            idempotency_key=(
+                f"{self.thread.checkpoint_namespace}:{wait_type}:{execution_id}:"
+                f"{self.expected_status_version}"
+            ),
+        )
+
+
+@dataclass(frozen=True)
 class WorkflowContinuationEnvelope:
     """Typed request to resume a graph after a durable result has been persisted."""
 
     wait: DurableWait
     result_record_id: str
     outcome: Literal["completed", "failed"]
+
+
+@dataclass(frozen=True)
+class CandidatePreflightWorkflowInput:
+    """Stored preflight request plus its non-authoritative graph bookmark."""
+
+    request_json: str
+    continuation: WorkflowContinuationEnvelope
+
+
+@dataclass(frozen=True)
+class EvidenceSummaryWorkflowInput:
+    """Stored summary execution identity plus its graph bookmark."""
+
+    execution_id: str
+    continuation: WorkflowContinuationEnvelope
 
 
 @dataclass(frozen=True)

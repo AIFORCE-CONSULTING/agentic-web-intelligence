@@ -9,6 +9,12 @@ import httpx
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from temporalio.client import Client
 
+from app.durable_execution.contracts import (
+    EvidenceSummaryWorkflowInput,
+    WorkflowContinuationContext,
+    WorkflowContinuationEnvelope,
+    WorkflowThreadReference,
+)
 from app.evidence_summaries.contracts import EvidenceSummaryExecution
 from app.evidence_summaries.store import EvidenceSummaryStore
 from app.evidence_summaries.workflow import EvidenceSummaryWorkflow
@@ -386,7 +392,11 @@ class EvidenceSummaryTemporalBoundary:
         self._namespace = namespace
         self._task_queue = task_queue
 
-    async def schedule(self, execution: EvidenceSummaryExecution) -> None:
+    async def schedule(
+        self,
+        execution: EvidenceSummaryExecution,
+        continuation: WorkflowContinuationContext,
+    ) -> None:
         if not self._address:
             raise EvidenceSummarySchedulingUnavailable("Durable execution is not configured.")
         if execution.route != "durable" or execution.status != "awaiting_execution":
@@ -394,9 +404,17 @@ class EvidenceSummaryTemporalBoundary:
                 "Only a prepared durable summary execution may be scheduled."
             )
         client = await Client.connect(self._address, namespace=self._namespace)
+        wait = continuation.wait(str(execution.id), "evidence_summary")
         await client.start_workflow(
             EvidenceSummaryWorkflow.run,
-            str(execution.id),
+            EvidenceSummaryWorkflowInput(
+                execution_id=str(execution.id),
+                continuation=WorkflowContinuationEnvelope(
+                    wait=wait,
+                    result_record_id=str(execution.id),
+                    outcome="completed",
+                ),
+            ),
             id=f"evidence-summary-{execution.id}-{execution.regeneration_attempt}",
             task_queue=self._task_queue,
         )
@@ -447,7 +465,11 @@ class EvidenceSummaryAutomation:
         return executions[-1]
 
     async def start_for_urls(
-        self, workspace_id: UUID, run_id: UUID, urls: list[str]
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        urls: list[str],
+        continuation: WorkflowContinuationContext | None = None,
     ) -> EvidenceSummaryExecution:
         """Prepare a server-selected summary request and route it by fixed policy."""
 
@@ -471,7 +493,20 @@ class EvidenceSummaryAutomation:
         if prepared.route == ExecutionRoute.DIRECT:
             return await self._service.execute(execution.id)
         try:
-            await self._temporal.schedule(prepared.execution)
+            if continuation is None:
+                run = await self._research_store.get_run(workspace_id, run_id)
+                if run is None:
+                    raise EvidenceSummaryUnavailable("The research run no longer exists.")
+                continuation = WorkflowContinuationContext(
+                    thread=WorkflowThreadReference(
+                        research_run_id=str(run_id),
+                        workspace_id=str(workspace_id),
+                        thread_id=str(run_id),
+                    ),
+                    expected_research_status=run.status,
+                    expected_status_version=run.status_version,
+                )
+            await self._temporal.schedule(prepared.execution, continuation)
         except EvidenceSummarySchedulingUnavailable:
             await self._execution_store.fail_execution(execution.id)
         scheduled = await self._execution_store.get_execution(workspace_id, execution.id)

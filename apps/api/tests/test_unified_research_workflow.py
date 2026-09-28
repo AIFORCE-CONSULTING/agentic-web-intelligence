@@ -141,6 +141,7 @@ def nodes(
             "generate_final_report", visited, {"stage": "report_stored"}
         ),
         complete_research=node("complete_research", visited, {"stage": "completed"}),
+        fail_durable_work=node("fail_durable_work", visited, {"stage": "failed"}),
     )
 
 
@@ -656,3 +657,25 @@ def test_durable_interrupt_resumes_same_checkpointed_thread() -> None:
     assert resumed["stage"] == "completed"
     assert visited.count("plan_topics") == 1
     assert visited.count("evaluate_relevance") == 1
+
+
+def test_failed_durable_result_routes_to_graph_owned_failure_node() -> None:
+    visited: list[str] = []
+    workflow = build_research_workflow(
+        nodes(
+            visited,
+            acquisition={"stage": "awaiting_preflight"},
+            coverage={"stage": "coverage_complete", "uncovered_topic_ids": []},
+        )
+    ).compile(checkpointer=InMemorySaver())
+    workflow_state = initial_state()
+    config = ResearchCheckpointLifecycle.graph_config(workflow_state["run_id"])
+
+    asyncio.run(workflow.ainvoke(workflow_state, config))
+    result = asyncio.run(workflow.ainvoke(Command(resume={"outcome": "failed"}), config))
+
+    assert result["stage"] == "failed"
+    assert result["failure_code"] == "durable_work_failed"
+    assert result["retryable"] is True
+    assert "fail_durable_work" in visited
+    assert "evaluate_relevance" not in visited

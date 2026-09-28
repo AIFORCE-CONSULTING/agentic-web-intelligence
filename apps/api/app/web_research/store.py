@@ -103,6 +103,17 @@ CREATE TABLE IF NOT EXISTS research_checkpoint_cleanups (
     explanation TEXT,
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS research_workflow_continuations (
+    idempotency_key TEXT PRIMARY KEY,
+    research_run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    execution_id TEXT NOT NULL,
+    wait_type TEXT NOT NULL CHECK (wait_type IN ('candidate_preflight', 'evidence_summary')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('accepted', 'completed', 'stale', 'failed')),
+    explanation TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS mcp_tool_audit_events (
     id UUID PRIMARY KEY,
     workspace_id UUID,
@@ -459,6 +470,57 @@ class ResearchStore:
                 uuid4(),
                 run_id,
                 outcome,
+                explanation,
+            )
+
+    async def claim_workflow_continuation(
+        self,
+        idempotency_key: str,
+        research_run_id: UUID,
+        execution_id: str,
+        wait_type: str,
+        outcome: str,
+    ) -> bool:
+        """Claim one Temporal completion once without changing research status."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                idempotency_key,
+            )
+            existing = await connection.fetchval(
+                "SELECT status FROM research_workflow_continuations WHERE idempotency_key = $1",
+                idempotency_key,
+            )
+            if existing is not None:
+                return existing == "accepted"
+            await connection.execute(
+                """INSERT INTO research_workflow_continuations
+                   (idempotency_key, research_run_id, execution_id, wait_type,
+                    outcome, status)
+                   VALUES ($1, $2, $3, $4, $5, 'accepted')""",
+                idempotency_key,
+                research_run_id,
+                execution_id,
+                wait_type,
+                outcome,
+            )
+        return True
+
+    async def finish_workflow_continuation(
+        self, idempotency_key: str, status: str, explanation: str | None = None
+    ) -> None:
+        """Record a bounded continuation result without becoming business authority."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """UPDATE research_workflow_continuations
+                   SET status = $2, explanation = $3, updated_at = now()
+                   WHERE idempotency_key = $1""",
+                idempotency_key,
+                status,
                 explanation,
             )
 

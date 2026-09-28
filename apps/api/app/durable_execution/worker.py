@@ -135,6 +135,7 @@ async def _research_continuation_dependencies():
             settings.temporal_task_queue,
         ),
         relevance=TopicRelevanceService(agentic_store, local_models),
+        trust=trust,
         summaries=EvidenceSummaryAutomation(
             summary_service,
             summary_store,

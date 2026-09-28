@@ -105,10 +105,10 @@ parallel run.
 
 ### Tests for User Story 1
 
-- [ ] T026 [P] [US1] Add failing API contract tests for thin `POST /v1/research/runs` start/reuse behavior, unchanged 200/201 responses, service-unavailable responses for PostgreSQL/checkpointer/Temporal readiness, safe failed-run details, and the replacement workspace-scoped `/v1/research/durable-work` list/detail contract in `apps/api/tests/test_web_research.py`
+- [x] T026 [P] [US1] Add failing API contract tests for thin `POST /v1/research/runs` start/reuse behavior, unchanged 200/201 responses, service-unavailable responses for PostgreSQL/checkpointer/Temporal readiness, safe failed-run details, and the replacement workspace-scoped `/v1/research/durable-work` list/detail contract in `apps/api/tests/test_web_research.py`
 - [x] T027 [P] [US1] Replace harness-supplied grants with RuntimeService and governed MCP test doubles, asserting every agent tool call links to exactly one matching prior allow decision and mismatches fail before provider invocation, in `apps/api/tests/test_unified_research_integration.py`
 - [x] T028 [P] [US1] Add complete graph status-transition, checkpoint, interrupt, resume, duplicate-start, stale-checkpoint, optimistic-concurrency conflict, and canonical-state reconstruction tests in `apps/api/tests/test_unified_research_workflow.py`
-- [ ] T029 [P] [US1] Add direct and Temporal-backed end-to-end cases for source limits, known-URL reuse, idempotent retries, two gap rounds, grounded reports, PostgreSQL loss without replacement state, dependency recovery from the stored failed stage, and durable-work visibility that agrees with each owning store in `apps/api/tests/test_unified_research_integration.py`
+- [x] T029 [P] [US1] Add direct and Temporal-backed end-to-end cases for source limits, known-URL reuse, idempotent retries, two gap rounds, grounded reports, PostgreSQL loss without replacement state, dependency recovery from the stored failed stage, and durable-work visibility that agrees with each owning store in `apps/api/tests/test_unified_research_integration.py`
 - [x] T030 [P] [US1] Add deterministic Temporal workflow tests for successful continuation, mandatory readiness, unavailable scheduling without direct fallback, exhausted retries, duplicate and late continuation, stale wait, status-version mismatch, wrong workspace, failed work, and worker restart, proving Temporal never writes research status, in `apps/api/tests/test_durable_execution.py`
 
 ### Implementation for User Story 1
@@ -120,9 +120,9 @@ parallel run.
 - [x] T035 [US1] Extend preflight and summary Temporal inputs with typed thread and expected-resume metadata in `apps/api/app/web_trust/workflow.py`, `apps/api/app/evidence_summaries/workflow.py`, and `apps/api/app/durable_execution/contracts.py`
 - [x] T036 [US1] Add idempotent LangGraph continuation activities after persisted preflight and summary outcomes, comparing expected research status and version while leaving status writes to the resumed graph, in `apps/api/app/durable_execution/worker.py`
 - [x] T037 [US1] Update `CandidatePreflightWorkflow` and `EvidenceSummaryWorkflow` to schedule their existing work activity followed by the typed continuation activity in `apps/api/app/web_trust/workflow.py` and `apps/api/app/evidence_summaries/workflow.py`
-- [ ] T038 [US1] Wire RuntimeService, the compiled graph, checkpointer lifecycle, mandatory PostgreSQL/checkpointer/Temporal readiness, MCP invocation, and continuation dependencies into application startup/shutdown without fallback substitution in `apps/api/app/main.py`
-- [ ] T039 [US1] Refactor `POST /v1/research/runs` into the thin authenticated start/resume route defined by `contracts/research-api.md`, delegating record creation and every status transition to the unified graph adapter, and add the replacement read-only research durable-work list/detail endpoints defined by `contracts/durable-work-api.md` in `apps/api/app/main.py`
-- [ ] T040 [US1] Preserve existing Research UI submission and source-count choices, make polling display `research_runs.status` exclusively, show safe dependency failure, failed stage, and retryability details, and reconnect the Admin Durable work section to the replacement research durable-work endpoint with no retired-workflow controls in `apps/web/src/App.tsx`
+- [x] T038 [US1] Wire RuntimeService, the compiled graph, checkpointer lifecycle, mandatory PostgreSQL/checkpointer/Temporal readiness, MCP invocation, and continuation dependencies into application startup/shutdown without fallback substitution in `apps/api/app/main.py`
+- [x] T039 [US1] Refactor `POST /v1/research/runs` into the thin authenticated start/resume route defined by `contracts/research-api.md`, delegating record creation and every status transition to the unified graph adapter, and add the replacement read-only research durable-work list/detail endpoints defined by `contracts/durable-work-api.md` in `apps/api/app/main.py`
+- [x] T040 [US1] Preserve existing Research UI submission and source-count choices, make polling display `research_runs.status` exclusively, show safe dependency failure, failed stage, and retryability details, and reconnect the Admin Durable work section to the replacement research durable-work endpoint with no retired-workflow controls in `apps/web/src/App.tsx`
 
 **Checkpoint**: The existing operator action runs the unified governed workflow.
 
@@ -139,16 +139,16 @@ exactly accepted evidence can reach summaries, coverage, and reporting.
 
 ### Tests for User Story 3
 
-- [ ] T041 [P] [US3] Add graph integration cases for eligible, blocked, review-required, expired-acceptance, irrelevant, malformed planning and relevance output, and local-model unavailability at planning, relevance, summary, coverage, and reporting stages in `apps/api/tests/test_unified_research_integration.py`
-- [ ] T042 [P] [US3] Add exact evidence-version human acceptance and repeated/expired decision tests in `apps/api/tests/test_web_trust.py`
-- [ ] T043 [P] [US3] Add final-report source-grounding tests proving excluded evidence never enters model input in `apps/api/tests/test_research_workflow_nodes.py`
+- [x] T041 [P] [US3] Add graph integration cases for eligible, blocked, review-required, expired-acceptance, irrelevant, malformed planning and relevance output, and local-model unavailability at planning, relevance, summary, coverage, and reporting stages in `apps/api/tests/test_unified_research_integration.py`
+- [x] T042 [P] [US3] Add exact evidence-version human acceptance and repeated/expired decision tests in `apps/api/tests/test_web_trust.py`
+- [x] T043 [P] [US3] Add final-report source-grounding tests proving excluded evidence never enters model input in `apps/api/tests/test_research_workflow_nodes.py`
 
 ### Implementation for User Story 3
 
-- [ ] T044 [US3] Ensure relevance, summary, coverage, and reporting nodes reload and enforce stored trust and exact human-review facts through existing owners in `apps/api/app/agentic_research/workflow_nodes.py`
-- [ ] T045 [US3] Add the human-review LangGraph interrupt and bounded resume path without moving acceptance authority out of `EvidenceTrustService` in `apps/api/app/agent_runtime/research_workflow.py`
-- [ ] T046 [US3] Resume a waiting graph only after the existing acceptance route stores and reloads a matching evidence-version decision in `apps/api/app/main.py`
-- [ ] T047 [US3] Preserve trust decision and acceptance audit attribution while adding workflow-resume metadata in `apps/api/app/web_trust/service.py` and `apps/api/app/web_trust/store.py`
+- [x] T044 [US3] Ensure relevance, summary, coverage, and reporting nodes reload and enforce stored trust and exact human-review facts through existing owners in `apps/api/app/agentic_research/workflow_nodes.py`
+- [x] T045 [US3] Add the human-review LangGraph interrupt and bounded resume path without moving acceptance authority out of `EvidenceTrustService` in `apps/api/app/agent_runtime/research_workflow.py`
+- [x] T046 [US3] Resume a waiting graph only after the existing acceptance route stores and reloads a matching evidence-version decision in `apps/api/app/main.py`
+- [x] T047 [US3] Preserve trust decision and acceptance audit attribution while adding workflow-resume metadata in `apps/api/app/web_trust/service.py` and `apps/api/app/web_trust/store.py`
 
 **Checkpoint**: Trust and human review remain independent of orchestration.
 

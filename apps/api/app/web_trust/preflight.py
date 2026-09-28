@@ -60,6 +60,15 @@ class CandidatePreflightService:
         self._research_store = research_store
         self._trust_service = trust_service
 
+    async def record_route(
+        self, run_id: UUID, route: str, source_count: int
+    ) -> None:
+        """Persist the platform-selected execution route for operator visibility."""
+
+        await self._research_store.record_candidate_preflight_route(
+            run_id, route, source_count
+        )
+
     async def preflight_run(
         self, workspace_id: UUID, run_id: UUID, source_urls: list[str] | None = None
     ) -> None:

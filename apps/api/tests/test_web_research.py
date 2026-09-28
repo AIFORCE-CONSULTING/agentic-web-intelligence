@@ -7,6 +7,10 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.agent_runtime.research_workflow import (
+    ResearchWorkflowUnavailable,
+    UnifiedResearchWorkflowEntry,
+)
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
@@ -14,6 +18,10 @@ from app.evidence_summaries.contracts import (
 )
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
+from app.research_durable_work import (
+    ResearchDurableOperation,
+    ResearchDurableWork,
+)
 from app.settings import Settings
 from app.web_research.contracts import (
     Evidence,
@@ -42,6 +50,69 @@ from app.web_research.store import (
 
 async def permit_public_destination(_: str) -> None:
     """Avoid external DNS in unit tests whose focus is extraction behavior."""
+
+
+def test_application_lifespan_builds_one_checkpointed_research_entry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app = create_app()
+    saver = object()
+    graph = object()
+    stopped = False
+
+    class Checkpoints:
+        async def start(self):
+            return saver
+
+        async def stop(self) -> None:
+            nonlocal stopped
+            stopped = True
+
+    app.state.research_checkpoint_lifecycle = Checkpoints()
+    app.state.research_workflow_nodes = object()
+
+    def compile_graph(nodes, store, requested_saver):
+        assert nodes is app.state.research_workflow_nodes
+        assert store is app.state.research_store
+        assert requested_saver is saver
+        return graph
+
+    monkeypatch.setattr("app.main.compile_research_workflow", compile_graph)
+
+    async def run_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            assert app.state.research_workflow_graph is graph
+            assert isinstance(
+                app.state.research_workflow_entry, UnifiedResearchWorkflowEntry
+            )
+
+    asyncio.run(run_lifespan())
+
+    assert stopped is True
+
+
+def test_application_lifespan_does_not_substitute_for_failed_checkpoints() -> None:
+    app = create_app()
+    stopped = False
+
+    class Checkpoints:
+        async def start(self):
+            raise RuntimeError("checkpoint unavailable")
+
+        async def stop(self) -> None:
+            nonlocal stopped
+            stopped = True
+
+    app.state.research_checkpoint_lifecycle = Checkpoints()
+
+    async def run_lifespan() -> None:
+        async with app.router.lifespan_context(app):
+            assert app.state.research_workflow_graph is None
+            assert app.state.research_workflow_entry is None
+
+    asyncio.run(run_lifespan())
+
+    assert stopped is True
 
 
 def test_research_status_contract_has_one_complete_guarded_transition_table() -> None:
@@ -992,61 +1063,23 @@ def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.Mon
     assert response.json()["detail"] == "The search provider is unavailable."
 
 
-def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_run_endpoint_delegates_new_research_to_unified_workflow() -> None:
     run_id = uuid4()
+    calls: list[tuple[object, str, int]] = []
 
-    class FakeStore:
-        def __init__(self) -> None:
-            self.sources: list[SearchResult] = []
-
-        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
+    class FakeEntry:
+        async def start_or_resume(self, workspace_id, question, source_limit):
+            calls.append((workspace_id, question, source_limit))
             return ResearchRun(
                 id=run_id,
                 question=question,
-                status="searching",
+                status="discovering",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             ), True
 
-        async def save_new_sources(
-            self, _: object, sources: list[SearchResult], requested_max_results: int
-        ) -> list[SearchResult]:
-            assert requested_max_results == 10
-            self.sources = sources
-            return sources
-
-        async def get_run(self, *_: object) -> ResearchRun:
-            return ResearchRun(
-                id=run_id,
-                question="evidence",
-                status="ready",
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-                sources=self.sources,
-            )
-
-    async def search(_: str, max_results: int) -> SearchResponse:
-        assert max_results == 10
-        return SearchResponse(
-            query="evidence",
-            results=[SearchResult(title="Source", url="https://example.com", snippet="Summary")],
-        )
-
-    monkeypatch.setattr("app.main.run_search_workflow", search)
-    app, _ = authenticated_app(create_app())
-    app.state.research_store = FakeStore()
-
-    class FakePreflightService:
-        async def preflight_run(self, *_: object) -> None:
-            return None
-
-    app.state.candidate_preflight_service = FakePreflightService()
-
-    class FakeSummaryAutomation:
-        async def start_for_discovered_candidates(self, *_: object) -> None:
-            return None
-
-    app.state.evidence_summary_automation = FakeSummaryAutomation()
+    app, user = authenticated_app(create_app())
+    app.state.research_workflow_entry = FakeEntry()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -1058,8 +1091,8 @@ def test_run_endpoint_persists_discovery_with_audit(monkeypatch: pytest.MonkeyPa
     response = asyncio.run(request())
 
     assert response.status_code == 201
-    assert response.json()["status"] == "ready"
-    assert response.json()["sources"][0]["rank"] == 1
+    assert response.json()["status"] == "discovering"
+    assert calls == [(user.workspace_id, "evidence", 10)]
 
 
 def test_run_endpoint_rejects_unsupported_source_count() -> None:
@@ -1077,85 +1110,103 @@ def test_run_endpoint_rejects_unsupported_source_count() -> None:
     assert response.status_code == 422
 
 
-def test_run_endpoint_refreshes_an_existing_normalized_target(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_run_endpoint_returns_safe_workflow_unavailability() -> None:
+    class FakeEntry:
+        async def start_or_resume(self, *_: object):
+            raise ResearchWorkflowUnavailable(
+                "Research checkpoint persistence is unavailable."
+            )
+
+    app, _ = authenticated_app(create_app())
+    app.state.research_workflow_entry = FakeEntry()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                "/v1/research/runs",
+                json={"question": "evidence", "max_results": 10},
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 503
+    assert response.json() == {
+        "detail": "Research checkpoint persistence is unavailable."
+    }
+
+
+def test_research_durable_work_endpoints_are_workspace_scoped_and_read_only() -> None:
+    run_id = uuid4()
+    operation = ResearchDurableOperation(
+        id=f"candidate-preflight:{run_id}",
+        operation_type="candidate_preflight",
+        route="temporal",
+        status="completed",
+        updated_at=datetime.now(UTC),
+    )
+    item = ResearchDurableWork(
+        research_run_id=run_id,
+        question="evidence",
+        research_status="evaluating_relevance",
+        updated_at=datetime.now(UTC),
+        operations=[operation],
+    )
+    workspaces: list[object] = []
+
+    class FakeDurableWork:
+        async def list_for_workspace(self, workspace_id, limit):
+            workspaces.append(workspace_id)
+            assert limit == 25
+            return [item]
+
+        async def get(self, workspace_id, requested_run_id):
+            workspaces.append(workspace_id)
+            assert requested_run_id == run_id
+            return item
+
+    app, user = authenticated_app(create_app())
+    app.state.research_durable_work = FakeDurableWork()
+
+    async def request() -> tuple[httpx.Response, httpx.Response]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            listing = await client.get("/v1/research/durable-work")
+            detail = await client.get(f"/v1/research/runs/{run_id}/durable-work")
+            return listing, detail
+
+    listing, detail = asyncio.run(request())
+
+    assert listing.status_code == 200
+    assert detail.status_code == 200
+    assert listing.json()["items"][0]["research_status"] == "evaluating_relevance"
+    assert detail.json()["operations"][0]["route"] == "temporal"
+    assert workspaces == [user.workspace_id, user.workspace_id]
+
+
+def test_run_endpoint_reuses_existing_unified_research_record() -> None:
     prior_run_id = uuid4()
-    search_called = False
-    preflight_urls: list[str] = []
-    summary_urls: list[str] = []
+    calls = 0
 
-    class FakeStore:
-        def __init__(self) -> None:
-            self.sources = [
-                SourceCandidate(
-                    rank=1,
-                    title="Existing source",
-                    url="https://example.com/existing",
-                    snippet="Persisted source.",
-                )
-            ]
-
-        async def get_or_create_run(self, _: object, question: str) -> tuple[ResearchRun, bool]:
+    class FakeEntry:
+        async def start_or_resume(self, _workspace_id, question, source_limit):
+            nonlocal calls
+            calls += 1
+            assert source_limit == 10
             return ResearchRun(
                 id=prior_run_id,
                 question=question,
-                status="ready",
+                status="assessing_coverage",
                 created_at=datetime.now(UTC),
                 updated_at=datetime.now(UTC),
             ), False
 
-        async def save_new_sources(
-            self, _: object, sources: list[SourceCandidate], __: int
-        ) -> list[SourceCandidate]:
-            fresh = [source for source in sources if source.url != self.sources[0].url]
-            self.sources.extend(fresh)
-            return fresh
-
-        async def get_run(self, _: object, requested_run_id: object) -> ResearchRun:
-            assert requested_run_id == prior_run_id
-            return ResearchRun(
-                id=prior_run_id,
-                question="evidence",
-                status="ready",
-                created_at=datetime.now(UTC),
-                updated_at=datetime.now(UTC),
-                sources=self.sources,
-            )
-
     app, _ = authenticated_app(create_app())
-    app.state.research_store = FakeStore()
-
-    async def search(_: str, __: int) -> SearchResponse:
-        nonlocal search_called
-        search_called = True
-        return SearchResponse(
-            query="evidence",
-            results=[
-                SearchResult(title="Existing", url="https://example.com/existing"),
-                SearchResult(title="Fresh", url="https://example.com/fresh"),
-            ],
-        )
-
-    monkeypatch.setattr("app.main.run_search_workflow", search)
-
-    class FakePreflightService:
-        async def preflight_run(
-            self, _: object, __: object, source_urls: list[str]
-        ) -> None:
-            preflight_urls.extend(source_urls)
-            return None
-
-    app.state.candidate_preflight_service = FakePreflightService()
-
-    class FakeSummaryAutomation:
-        async def start_for_discovered_candidates(
-            self, _: object, __: object, source_urls: list[str]
-        ) -> None:
-            summary_urls.extend(source_urls)
-            return None
-
-    app.state.evidence_summary_automation = FakeSummaryAutomation()
+    app.state.research_workflow_entry = FakeEntry()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -1168,13 +1219,8 @@ def test_run_endpoint_refreshes_an_existing_normalized_target(
 
     assert response.status_code == 200
     assert response.json()["id"] == str(prior_run_id)
-    assert [source["url"] for source in response.json()["sources"]] == [
-        "https://example.com/existing",
-        "https://example.com/fresh",
-    ]
-    assert search_called is True
-    assert preflight_urls == ["https://example.com/fresh"]
-    assert summary_urls == ["https://example.com/fresh"]
+    assert response.json()["status"] == "assessing_coverage"
+    assert calls == 1
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:

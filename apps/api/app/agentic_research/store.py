@@ -504,6 +504,24 @@ class AgenticResearchStore:
                    JOIN evidence_summary_artifacts AS artifact
                      ON artifact.id = coverage.summary_artifact_id
                    WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND EXISTS (
+                         SELECT 1
+                         FROM web_evidence_trust_evaluations AS evaluation
+                         LEFT JOIN web_evidence_trust_overrides AS active_override
+                           ON active_override.evaluation_id = evaluation.id
+                          AND (
+                              active_override.expires_at IS NULL
+                              OR active_override.expires_at > now()
+                          )
+                         WHERE evaluation.id = coverage.trust_evaluation_id
+                           AND (
+                               evaluation.disposition IN ('eligible', 'eligible_with_notice')
+                               OR (
+                                   evaluation.disposition = 'review_required'
+                                   AND active_override.id IS NOT NULL
+                               )
+                           )
+                     )
                    ORDER BY topic.position, coverage.qualified_at""",
                 workspace_id,
                 run_id,

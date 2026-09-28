@@ -712,6 +712,7 @@ class ResearchStore:
                 redirect_result,
                 trust_disposition,
             )
+
             await self._append_audit(
                 connection,
                 run_id,
@@ -728,6 +729,20 @@ class ResearchStore:
             )
             await connection.execute(
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
+    async def record_candidate_preflight_route(
+        self, run_id: UUID, route: str, source_count: int
+    ) -> None:
+        """Record the platform-selected execution route without using Temporal history."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.candidate.preflight.routed",
+                {"route": route, "source_count": source_count},
             )
 
     async def complete_candidate_preflight(self, run_id: UUID) -> None:
@@ -1036,7 +1051,9 @@ class ResearchStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT runs.id, runs.question, runs.status, runs.created_at, runs.updated_at,
+                """SELECT runs.id, runs.question, runs.status, runs.status_version,
+                          runs.failed_stage, runs.failure_code, runs.failure_explanation,
+                          runs.retryable, runs.failed_at, runs.created_at, runs.updated_at,
                           COUNT(DISTINCT sources.id)::integer AS source_count,
                           COUNT(DISTINCT evidence.id)::integer AS evidence_count
                    FROM research_runs AS runs

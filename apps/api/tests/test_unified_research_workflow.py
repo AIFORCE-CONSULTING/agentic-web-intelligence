@@ -24,6 +24,7 @@ from app.agent_runtime.research_workflow import (
     UnifiedResearchWorkflowEntry,
     build_research_workflow,
 )
+from app.agentic_research.topic_planning import TopicPlanningUnavailable
 from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
 from app.web_research.contracts import ResearchRun
 
@@ -105,6 +106,7 @@ def nodes(
     coverage: ResearchWorkflowState,
     gap_result: ResearchWorkflowState | None = None,
     acquisition: ResearchWorkflowState | None = None,
+    relevance: ResearchWorkflowState | None = None,
 ) -> ResearchWorkflowNodes:
     async def assess_coverage(_: ResearchWorkflowState) -> ResearchWorkflowState:
         visited.append("assess_topic_coverage")
@@ -121,7 +123,9 @@ def nodes(
             acquisition or {"stage": "evidence_acquired"},
         ),
         evaluate_relevance=node(
-            "evaluate_relevance", visited, {"stage": "relevance_decided"}
+            "evaluate_relevance",
+            visited,
+            relevance or {"stage": "relevance_decided"},
         ),
         summarize_evidence=node(
             "summarize_evidence", visited, {"stage": "summaries_stored"}
@@ -455,6 +459,53 @@ def test_workflow_entry_retries_from_stored_failed_stage() -> None:
     assert graph_states[0]["status_version"] == 5
 
 
+def test_workflow_entry_resumes_exact_waiting_review_thread() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="awaiting_review",
+        status_version=4,
+        created_at=now,
+        updated_at=now,
+    )
+    graph_calls: list[tuple[object, object]] = []
+
+    class Store:
+        async def get_run(self, *_):
+            return run
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+    class Graph:
+        async def ainvoke(self, command, config):
+            graph_calls.append((command, config))
+
+    async def temporal_ready() -> bool:
+        return True
+
+    resumed = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), object(), Checkpoints(), Graph(), temporal_ready
+        ).resume_after_review(
+            workspace_id,
+            run_id,
+            "https://example.com/review",
+            "sha256:review",
+        )
+    )
+
+    assert resumed == run
+    assert len(graph_calls) == 1
+    assert graph_calls[0][1] == ResearchCheckpointLifecycle.graph_config(run_id)
+
+
 def test_canonical_node_uses_database_status_instead_of_checkpoint_status() -> None:
     workflow_state = initial_state()
     workflow_state["canonical_status"] = "reporting"
@@ -492,6 +543,56 @@ def test_canonical_node_uses_database_status_instead_of_checkpoint_status() -> N
     assert transitions[0][0][1:4] == ("planning", 0, "discovering")
     assert update["canonical_status"] == "discovering"
     assert update["status_version"] == 1
+
+
+def test_local_model_dependency_failure_records_safe_retryable_status() -> None:
+    workflow_state = initial_state()
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=workflow_state["run_id"],
+        question=workflow_state["question"],
+        status="planning",
+        status_version=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+    class Store:
+        async def get_run(self, *_):
+            return current
+
+        async def transition_status(self, *args, **kwargs):
+            nonlocal current
+            assert args[1:4] == ("planning", 0, "failed")
+            assert kwargs["failure_code"] == "plan_topics_unavailable"
+            assert kwargs["retryable"] is True
+            current = current.model_copy(
+                update={
+                    "status": "failed",
+                    "status_version": 1,
+                    "failed_stage": "planning",
+                    "failure_code": kwargs["failure_code"],
+                    "failure_explanation": kwargs["failure_explanation"],
+                    "retryable": True,
+                }
+            )
+            return True
+
+    workflow_nodes = nodes(
+        [], coverage={"stage": "coverage_complete", "uncovered_topic_ids": []}
+    )
+
+    async def unavailable(_: ResearchWorkflowState) -> ResearchWorkflowState:
+        raise TopicPlanningUnavailable("model offline")
+
+    workflow_nodes.plan_topics = unavailable
+    governed = CanonicalResearchWorkflowNodes(workflow_nodes, Store()).wrapped()
+
+    with pytest.raises(ResearchWorkflowUnavailable, match="temporarily unavailable"):
+        asyncio.run(governed.plan_topics(workflow_state))
+
+    assert current.status == "failed"
+    assert current.failed_stage == "planning"
 
 
 def test_canonical_node_fails_safely_on_concurrent_status_change() -> None:
@@ -626,15 +727,55 @@ def test_exhausted_gap_limit_generates_report_without_another_search() -> None:
 
 def test_review_required_evidence_stops_before_report_generation() -> None:
     visited: list[str] = []
-    workflow = build_research_workflow(
-        nodes(visited, coverage={"stage": "awaiting_review"})
-    ).compile()
+    workflow_nodes = nodes(
+        visited,
+        coverage={"stage": "coverage_complete", "uncovered_topic_ids": []},
+    )
+    relevance_calls = 0
 
-    result = asyncio.run(workflow.ainvoke(initial_state()))
+    async def relevance(_: ResearchWorkflowState) -> ResearchWorkflowState:
+        nonlocal relevance_calls
+        relevance_calls += 1
+        visited.append("evaluate_relevance")
+        if relevance_calls == 1:
+            return {
+                "stage": "awaiting_review",
+                "review_required_sources": [
+                    {
+                        "source_url": "https://example.com/review",
+                        "content_hash": "sha256:review",
+                    }
+                ],
+            }
+        return {"stage": "relevance_decided"}
+
+    workflow_nodes.evaluate_relevance = relevance
+    workflow = build_research_workflow(workflow_nodes).compile(
+        checkpointer=InMemorySaver()
+    )
+    workflow_state = initial_state()
+    config = ResearchCheckpointLifecycle.graph_config(workflow_state["run_id"])
+
+    result = asyncio.run(workflow.ainvoke(workflow_state, config))
 
     assert result["stage"] == "awaiting_review"
+    review_wait = result["__interrupt__"][0].value
+    assert review_wait["wait_type"] == "human_review"
+    assert review_wait["evidence_versions"] == [
+        {
+            "source_url": "https://example.com/review",
+            "content_hash": "sha256:review",
+        }
+    ]
     assert "generate_final_report" not in visited
     assert "complete_research" not in visited
+
+    resumed = asyncio.run(
+        workflow.ainvoke(Command(resume={"outcome": "accepted"}), config)
+    )
+
+    assert resumed["stage"] == "completed"
+    assert relevance_calls == 2
 
 
 def test_durable_interrupt_resumes_same_checkpointed_thread() -> None:

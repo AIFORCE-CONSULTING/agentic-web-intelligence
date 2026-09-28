@@ -8,6 +8,7 @@ import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from temporalio.client import Client
 
 from app.agent_runtime.contracts import (
     AuthorizationDecisionList,
@@ -15,13 +16,20 @@ from app.agent_runtime.contracts import (
     RuntimeRunList,
     RuntimeStoreUnavailable,
 )
-from app.agent_runtime.research_workflow import ResearchCheckpointLifecycle
+from app.agent_runtime.research_workflow import (
+    ResearchCheckpointLifecycle,
+    ResearchWorkflowConflict,
+    ResearchWorkflowUnavailable,
+    UnifiedResearchWorkflowEntry,
+    compile_research_workflow,
+)
 from app.agent_runtime.service import RuntimePlanError, RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.durable_execution.contracts import (
-    WorkflowContinuationContext,
-    WorkflowThreadReference,
-)
+from app.agentic_research.relevance import TopicRelevanceService
+from app.agentic_research.reporting import ResearchReportingService
+from app.agentic_research.store import AgenticResearchStore
+from app.agentic_research.topic_planning import TopicPlanningService
+from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.durable_execution.service import (
     DurableExecutionPolicyError,
     DurableExecutionUnavailable,
@@ -95,6 +103,11 @@ from app.prompt_templates import (
     governed_research_template_info,
     render_governed_research_prompt,
 )
+from app.research_durable_work import (
+    ResearchDurableWork,
+    ResearchDurableWorkList,
+    ResearchDurableWorkService,
+)
 from app.secrets import DeploymentSecrets, SecretName, SecretStatusList
 from app.settings import get_settings
 from app.web_research.contracts import (
@@ -110,7 +123,6 @@ from app.web_research.contracts import (
     ResearchStoreUnavailable,
     SearchRequest,
     SearchResponse,
-    SourceCandidate,
     ToolPolicyError,
     ToolProviderError,
     ToolRetrievalError,
@@ -125,10 +137,8 @@ from app.web_trust.contracts import (
     EvidenceTrustEvaluationList,
 )
 from app.web_trust.preflight import (
-    DIRECT_PREFLIGHT_SOURCE_LIMIT,
     CandidatePreflightService,
     CandidatePreflightTemporalBoundary,
-    CandidatePreflightUnavailable,
 )
 from app.web_trust.service import EvidenceTrustService
 from app.web_trust.store import WebTrustStore, WebTrustStoreUnavailable
@@ -177,10 +187,24 @@ def create_app() -> FastAPI:
     async def lifespan(application: FastAPI):
         checkpoint_lifecycle = application.state.research_checkpoint_lifecycle
         try:
-            await checkpoint_lifecycle.start()
+            saver = await checkpoint_lifecycle.start()
+            graph = compile_research_workflow(
+                application.state.research_workflow_nodes,
+                application.state.research_store,
+                saver,
+            )
+            application.state.research_workflow_graph = graph
+            application.state.research_workflow_entry = UnifiedResearchWorkflowEntry(
+                application.state.research_store,
+                application.state.runtime_service,
+                checkpoint_lifecycle,
+                graph,
+                application.state.research_temporal_ready,
+            )
         except RuntimeError:
             # Health and research entry points expose the unavailable dependency.
-            pass
+            application.state.research_workflow_graph = None
+            application.state.research_workflow_entry = None
         try:
             yield
         finally:
@@ -226,6 +250,7 @@ def create_app() -> FastAPI:
     app.state.local_model_provider = LocalModelProviderService(
         LocalModelProviderStore(settings.database_url)
     )
+    app.state.agentic_research_store = AgenticResearchStore(settings.database_url)
     app.state.evidence_summary_store = EvidenceSummaryStore(settings.database_url)
     app.state.web_trust_store = WebTrustStore(
         settings.database_url, app.state.deployment_secrets.redact
@@ -256,7 +281,64 @@ def create_app() -> FastAPI:
         app.state.research_store,
         app.state.evidence_summary_temporal,
     )
-    app.state.mcp_host = GovernedWebMcpHost(deployment_secrets=app.state.deployment_secrets)
+    app.state.research_durable_work = ResearchDurableWorkService(
+        app.state.research_store,
+        app.state.evidence_summary_store,
+    )
+    async def record_correlated_mcp_event(correlation, outcome, details) -> None:
+        await app.state.research_store.record_mcp_tool_event(
+            correlation.workspace_id,
+            str(correlation.request_id),
+            correlation.tool_name,
+            outcome,
+            details,
+            research_run_id=correlation.research_run_id,
+            runtime_run_id=correlation.runtime_run_id,
+            runtime_step_id=correlation.runtime_step_id,
+            authorization_decision_id=correlation.authorization_decision_id,
+            resource_type=correlation.resource_type,
+            resource_id=correlation.resource_id,
+        )
+
+    app.state.mcp_host = GovernedWebMcpHost(
+        correlated_audit_recorder=record_correlated_mcp_event,
+        deployment_secrets=app.state.deployment_secrets,
+    )
+    app.state.research_workflow_nodes = platform_research_nodes(
+        topic_planning=TopicPlanningService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+        authority=app.state.runtime_service,
+        mcp=app.state.mcp_host,
+        research_store=app.state.research_store,
+        agentic_store=app.state.agentic_research_store,
+        preflight=app.state.candidate_preflight_service,
+        preflight_temporal=app.state.candidate_preflight_temporal,
+        relevance=TopicRelevanceService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+        trust=app.state.web_trust_service,
+        summaries=app.state.evidence_summary_automation,
+        reporting=ResearchReportingService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+    )
+
+    async def research_temporal_ready() -> bool:
+        if not settings.temporal_address:
+            return False
+        try:
+            await Client.connect(
+                settings.temporal_address,
+                namespace=settings.temporal_namespace,
+            )
+        except Exception:
+            return False
+        return True
+
+    app.state.research_temporal_ready = research_temporal_ready
+    app.state.research_workflow_graph = None
+    app.state.research_workflow_entry = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -1246,58 +1328,80 @@ def create_app() -> FastAPI:
     async def create_research_run(
         request: ResearchRunRequest, http_request: Request, response: Response
     ) -> ResearchRun:
-        """Persist a discovery run and its source provenance as one durable record."""
+        """Start or resume the one governed research workflow."""
 
         user = await require_workspace_permission(http_request, "research.write")
-        store: ResearchStore = http_request.app.state.research_store
+        entry: UnifiedResearchWorkflowEntry | None = (
+            http_request.app.state.research_workflow_entry
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
         try:
-            run, created = await store.get_or_create_run(user.workspace_id, request.question)
-            try:
-                search = await run_search_workflow(request.question, request.max_results)
-            except ToolProviderError as error:
-                if created:
-                    await store.mark_failed(run.id, str(error))
-                raise HTTPException(status_code=503, detail=str(error)) from error
-            sources = [
-                SourceCandidate(rank=index, **result.model_dump())
-                for index, result in enumerate(search.results, start=1)
-            ]
-            new_sources = await store.save_new_sources(run.id, sources, request.max_results)
-            new_urls = [source.url for source in new_sources]
-            if new_sources and len(new_sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
-                await http_request.app.state.candidate_preflight_service.preflight_run(
-                    user.workspace_id, run.id, new_urls
-                )
-                automation: EvidenceSummaryAutomation = (
-                    http_request.app.state.evidence_summary_automation
-                )
-                await automation.start_for_discovered_candidates(
-                    user.workspace_id, run.id, new_urls
-                )
-            elif new_sources:
-                try:
-                    await http_request.app.state.candidate_preflight_temporal.schedule(
-                        run.id,
-                        new_urls,
-                        WorkflowContinuationContext(
-                            thread=WorkflowThreadReference(
-                                research_run_id=str(run.id),
-                                workspace_id=str(user.workspace_id),
-                                thread_id=str(run.id),
-                            ),
-                            expected_research_status=run.status,
-                            expected_status_version=run.status_version,
-                        ),
-                    )
-                except CandidatePreflightUnavailable as error:
-                    await store.fail_candidate_preflight(run.id, str(error))
-            persisted_run = await store.get_run(user.workspace_id, run.id)
-            assert persisted_run is not None
+            persisted_run, created = await entry.start_or_resume(
+                user.workspace_id,
+                request.question,
+                request.max_results,
+            )
             if not created:
                 response.status_code = 200
             return persisted_run
-        except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
+        except (ResearchWorkflowUnavailable, ResearchStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+        except ResearchWorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/durable-work",
+        response_model=ResearchDurableWorkList,
+        tags=["research"],
+    )
+    async def list_research_durable_work(
+        http_request: Request,
+        limit: int = Query(default=25, ge=1, le=50),
+    ) -> ResearchDurableWorkList:
+        """List workspace research operations from their owning application stores."""
+
+        user = await require_workspace_permission(http_request, "runtime.read")
+        service: ResearchDurableWorkService = (
+            http_request.app.state.research_durable_work
+        )
+        try:
+            return ResearchDurableWorkList(
+                items=await service.list_for_workspace(user.workspace_id, limit)
+            )
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/runs/{run_id}/durable-work",
+        response_model=ResearchDurableWork,
+        tags=["research"],
+    )
+    async def get_research_durable_work(
+        run_id: str, http_request: Request
+    ) -> ResearchDurableWork:
+        """Inspect read-only durable operations for one workspace research record."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_workspace_permission(http_request, "runtime.read")
+        service: ResearchDurableWorkService = (
+            http_request.app.state.research_durable_work
+        )
+        try:
+            item = await service.get(user.workspace_id, parsed_run_id)
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if item is None:
+            raise HTTPException(status_code=404, detail="Research run was not found.")
+        return item
 
     @app.get("/v1/research/runs/{run_id}", response_model=ResearchRun, tags=["research"])
     async def get_research_run(run_id: str, http_request: Request) -> ResearchRun:
@@ -1394,17 +1498,41 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
         if evaluation is None:
             raise HTTPException(status_code=404, detail="Evidence trust evaluation was not found.")
+        entry: UnifiedResearchWorkflowEntry | None = (
+            http_request.app.state.research_workflow_entry
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
         try:
-            await http_request.app.state.evidence_summary_automation.start_for_urls(
-                identity.workspace_id, parsed_run_id, [request.source_url]
+            run = await http_request.app.state.research_store.get_run(
+                identity.workspace_id, parsed_run_id
+            )
+            if run is None:
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            await service.record_workflow_resume(
+                identity.workspace_id,
+                parsed_run_id,
+                request.source_url,
+                request.content_hash,
+                run.status_version,
+            )
+            await entry.resume_after_review(
+                identity.workspace_id,
+                parsed_run_id,
+                request.source_url,
+                request.content_hash,
             )
         except (
             ResearchStoreUnavailable,
-            EvidenceSummaryStoreUnavailable,
             WebTrustStoreUnavailable,
-            EvidenceSummaryUnavailable,
+            ResearchWorkflowUnavailable,
         ) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+        except (ResearchWorkflowConflict, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         return evaluation
 
     @app.get("/v1/research/runs", response_model=ResearchRunList, tags=["research"])

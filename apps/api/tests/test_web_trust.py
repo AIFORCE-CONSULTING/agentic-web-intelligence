@@ -59,6 +59,7 @@ def authenticated_app(app):
 class FakeTrustStore:
     def __init__(self) -> None:
         self.current: EvidenceTrustEvaluation | None = None
+        self.accept_calls = 0
 
     async def latest_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
         return self.current
@@ -87,6 +88,7 @@ class FakeTrustStore:
         return [self.current] if self.current else []
 
     async def accept_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
+        self.accept_calls += 1
         assert self.current is not None
         self.current = self.current.model_copy(
             update={
@@ -130,6 +132,21 @@ def test_unsupported_content_requires_human_review_and_can_be_accepted() -> None
     assert accepted is not None
     assert accepted.disposition == "eligible"
     assert accepted.override_reason == "Reviewed"
+
+    repeated = asyncio.run(
+        service.accept(
+            workspace_id,
+            run_id,
+            result.source_url,
+            result.content_hash,
+            uuid4(),
+            "Repeated request",
+            None,
+        )
+    )
+
+    assert repeated == accepted
+    assert store.accept_calls == 1
 
 
 def test_review_acceptance_expiry_must_be_in_the_future() -> None:
@@ -512,19 +529,32 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
             return user
 
     class FakeTrustService:
+        resume_records: list[tuple[object, ...]] = []
+
         async def accept(self, *_: object) -> EvidenceTrustEvaluation:
             return review.model_copy(
                 update={"disposition": "eligible", "override_reason": "Reviewed"}
             )
 
+        async def record_workflow_resume(self, *args: object) -> None:
+            self.resume_records.append(args)
+
     app.state.identity_service = FakeIdentityService()
     app.state.web_trust_service = FakeTrustService()
 
-    class FakeSummaryAutomation:
-        async def start_for_urls(self, *_: object) -> None:
-            return None
+    class FakeResearchStore:
+        async def get_run(self, *_: object) -> object:
+            return SimpleNamespace(status_version=4)
 
-    app.state.evidence_summary_automation = FakeSummaryAutomation()
+    resumed: list[tuple[object, ...]] = []
+
+    class FakeWorkflowEntry:
+        async def resume_after_review(self, *args: object) -> object:
+            resumed.append(args)
+            return SimpleNamespace(status="evaluating_relevance")
+
+    app.state.research_store = FakeResearchStore()
+    app.state.research_workflow_entry = FakeWorkflowEntry()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -543,3 +573,7 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
     assert response.status_code == 200
     assert response.json()["disposition"] == "eligible"
     assert response.json()["override_reason"] == "Reviewed"
+    assert len(app.state.web_trust_service.resume_records) == 1
+    assert resumed == [
+        (user.workspace_id, run_id, review.source_url, review.content_hash)
+    ]

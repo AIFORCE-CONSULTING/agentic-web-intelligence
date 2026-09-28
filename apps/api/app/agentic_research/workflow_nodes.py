@@ -37,6 +37,7 @@ from app.web_trust.preflight import (
     CandidatePreflightService,
     CandidatePreflightTemporalBoundary,
 )
+from app.web_trust.service import EvidenceTrustService
 
 Search = Callable[[str, int], Awaitable[SearchResponse]]
 
@@ -256,10 +257,12 @@ def evidence_acquisition_node(
         if not urls:
             return {"stage": "evidence_acquired"}
         if len(urls) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
+            await direct.record_route(state["run_id"], "direct", len(urls))
             await direct.preflight_run_authorized(
                 state["workspace_id"], state["run_id"], authority, mcp, urls
             )
             return {"stage": "evidence_acquired"}
+        await direct.record_route(state["run_id"], "temporal", len(urls))
         await temporal.schedule(
             state["run_id"], urls, _continuation_context(state)
         )
@@ -272,6 +275,7 @@ def topic_relevance_node(
     research_store: ResearchStore,
     agentic_store: AgenticResearchStore,
     relevance: TopicRelevanceService,
+    trust: EvidenceTrustService,
 ) -> ResearchNode:
     """Evaluate only trust-eligible evidence against its originating topics."""
 
@@ -282,24 +286,59 @@ def topic_relevance_node(
         associations = state.get("source_topics") or await agentic_store.list_discovered_sources(
             state["workspace_id"], state["run_id"]
         )
+        evaluations = await trust.list_for_run(state["workspace_id"], state["run_id"])
+        trust_by_version = {
+            (item.source_url, item.content_hash): item for item in evaluations
+        }
         candidates = {source.url: source for source in run.sources}
-        relevant: list[TopicSourceAssociation] = []
+        review_required: list[dict[str, str]] = []
+        eligible: list[tuple[TopicSourceAssociation, str, str]] = []
         for association in associations:
             source = candidates.get(association.source_url)
-            if source is None or source.preflight_status != "ready_to_extract":
+            if source is None or source.preflight_content_hash is None:
                 continue
-            if source.preflight_content_hash is None:
+            evidence_url = source.preflight_final_url or source.url
+            evaluation = trust_by_version.get(
+                (evidence_url, source.preflight_content_hash)
+            )
+            if source.preflight_status == "review_required" and (
+                evaluation is None or evaluation.disposition != "eligible"
+            ):
+                review_required.append(
+                    {
+                        "source_url": evidence_url,
+                        "content_hash": source.preflight_content_hash,
+                    }
+                )
                 continue
+            if source.preflight_status not in {"ready_to_extract", "review_required"}:
+                continue
+            eligible.append(
+                (association, evidence_url, source.preflight_content_hash)
+            )
+        if review_required:
+            return {
+                "stage": "awaiting_review",
+                "relevant_sources": [],
+                "review_required_sources": review_required,
+            }
+
+        relevant: list[TopicSourceAssociation] = []
+        for association, evidence_url, content_hash in eligible:
             decision = await relevance.evaluate(
                 state["workspace_id"],
                 state["run_id"],
                 association.topic_id,
-                source.preflight_final_url or source.url,
-                source.preflight_content_hash,
+                evidence_url,
+                content_hash,
             )
             if decision.decision == "relevant":
                 relevant.append(association)
-        return {"stage": "relevance_decided", "relevant_sources": relevant}
+        return {
+            "stage": "relevance_decided",
+            "relevant_sources": relevant,
+            "review_required_sources": [],
+        }
 
     return evaluate
 
@@ -470,6 +509,7 @@ def platform_research_nodes(
     preflight: CandidatePreflightService,
     preflight_temporal: CandidatePreflightTemporalBoundary,
     relevance: TopicRelevanceService,
+    trust: EvidenceTrustService,
     summaries: EvidenceSummaryAutomation,
     reporting: ResearchReportingService,
 ) -> ResearchWorkflowNodes:
@@ -482,7 +522,7 @@ def platform_research_nodes(
             preflight, preflight_temporal, authority, mcp
         ),
         evaluate_relevance=topic_relevance_node(
-            research_store, agentic_store, relevance
+            research_store, agentic_store, relevance, trust
         ),
         summarize_evidence=evidence_summary_node(summaries),
         assess_topic_coverage=topic_coverage_node(research_store, agentic_store),

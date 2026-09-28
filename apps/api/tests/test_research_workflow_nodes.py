@@ -130,6 +130,10 @@ def test_topic_search_round_robins_unique_results_with_one_total_limit() -> None
 class DirectPreflight:
     def __init__(self) -> None:
         self.called = False
+        self.routes: list[tuple[object, ...]] = []
+
+    async def record_route(self, *args: object) -> None:
+        self.routes.append(args)
 
     async def preflight_run_authorized(self, *args: object) -> None:
         self.called = True
@@ -155,6 +159,7 @@ def test_acquisition_uses_direct_service_for_two_sources() -> None:
 
     assert update["stage"] == "evidence_acquired"
     assert direct.called is True
+    assert direct.routes[0][1:] == ("direct", 2)
     assert temporal.called is False
 
 
@@ -176,4 +181,5 @@ def test_acquisition_pauses_after_temporal_accepts_larger_batch() -> None:
 
     assert update["stage"] == "awaiting_preflight"
     assert direct.called is False
+    assert direct.routes[0][1:] == ("temporal", 3)
     assert temporal.called is True

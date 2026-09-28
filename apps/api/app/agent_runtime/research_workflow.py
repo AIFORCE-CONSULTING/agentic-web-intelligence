@@ -14,17 +14,38 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
 from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
-from app.agentic_research.topic_planning import TopicPlanningService
+from app.agentic_research.relevance import TopicRelevanceUnavailable
+from app.agentic_research.reporting import ResearchReportingUnavailable
+from app.agentic_research.store import AgenticResearchStoreUnavailable
+from app.agentic_research.topic_planning import (
+    TopicPlanningService,
+    TopicPlanningUnavailable,
+)
 from app.durable_execution.contracts import (
     UNIFIED_RESEARCH_WORKFLOW_VERSION,
     WorkflowContinuationEnvelope,
 )
+from app.evidence_summaries.service import EvidenceSummaryUnavailable
+from app.evidence_summaries.store import EvidenceSummaryStoreUnavailable
 from app.settings import get_settings
-from app.web_research.contracts import ResearchRun
+from app.web_research.contracts import ResearchRun, ToolProviderError
 from app.web_research.store import ResearchStore
+from app.web_trust.preflight import CandidatePreflightUnavailable
+from app.web_trust.store import WebTrustStoreUnavailable
 
 MAX_GAP_SEARCH_ROUNDS = 2
 CHECKPOINT_STARTUP_CLEANUP_LIMIT = 100
+WORKFLOW_DEPENDENCY_ERRORS = (
+    AgenticResearchStoreUnavailable,
+    CandidatePreflightUnavailable,
+    EvidenceSummaryStoreUnavailable,
+    EvidenceSummaryUnavailable,
+    ResearchReportingUnavailable,
+    ToolProviderError,
+    TopicPlanningUnavailable,
+    TopicRelevanceUnavailable,
+    WebTrustStoreUnavailable,
+)
 
 
 class ResearchWorkflowUnavailable(RuntimeError):
@@ -44,6 +65,14 @@ class ResearchWorkflowEntry(Protocol):
         question: str,
         source_limit: int,
     ) -> tuple[ResearchRun, bool]: ...
+
+    async def resume_after_review(
+        self,
+        workspace_id: UUID,
+        research_run_id: UUID,
+        source_url: str,
+        content_hash: str,
+    ) -> ResearchRun: ...
 
 
 class CompiledResearchGraph(Protocol):
@@ -235,6 +264,42 @@ class UnifiedResearchWorkflowEntry:
                 "The research record could not be reloaded after workflow execution."
             )
         return persisted, created
+
+    async def resume_after_review(
+        self,
+        workspace_id: UUID,
+        research_run_id: UUID,
+        source_url: str,
+        content_hash: str,
+    ) -> ResearchRun:
+        """Resume the stored review interrupt after an exact acceptance exists."""
+
+        checkpoint_status = await self._checkpoints.readiness()
+        if not checkpoint_status.ready:
+            raise ResearchWorkflowUnavailable(checkpoint_status.detail)
+        run = await self._store.get_run(workspace_id, research_run_id)
+        if run is None:
+            raise ResearchWorkflowUnavailable("The research record is unavailable.")
+        if run.status != "awaiting_review":
+            raise ResearchWorkflowConflict(
+                "The research workflow is not waiting for human review."
+            )
+        await self._graph.ainvoke(
+            Command(
+                resume={
+                    "outcome": "accepted",
+                    "source_url": source_url,
+                    "content_hash": content_hash,
+                }
+            ),
+            self._checkpoints.graph_config(research_run_id),
+        )
+        persisted = await self._store.get_run(workspace_id, research_run_id)
+        if persisted is None:
+            raise ResearchWorkflowUnavailable(
+                "The research record could not be reloaded after human review."
+            )
+        return persisted
 
 
 class CheckpointCleanupStore(Protocol):
@@ -455,6 +520,7 @@ class ResearchWorkflowState(TypedDict, total=False):
     discovered_source_count: int
     source_topics: list[TopicSourceAssociation]
     relevant_sources: list[TopicSourceAssociation]
+    review_required_sources: list[dict[str, str]]
     uncovered_topic_ids: list[str]
     gap_search_rounds: int
     failure_reason: str
@@ -541,7 +607,11 @@ class CanonicalResearchWorkflowNodes:
                 "evaluate_relevance",
                 "evaluating_relevance",
                 self._nodes.evaluate_relevance,
-                lambda _: "summarizing",
+                lambda update: (
+                    "awaiting_review"
+                    if update.get("stage") == "awaiting_review"
+                    else "summarizing"
+                ),
             ),
             summarize_evidence=self._transitioning(
                 "summarize_evidence",
@@ -603,7 +673,30 @@ class CanonicalResearchWorkflowNodes:
                 before = await self._move_status(
                     state, before, required_status, f"{node_name}:resume"
                 )
-            update = await operation(state)
+            try:
+                update = await operation(state)
+            except WORKFLOW_DEPENDENCY_ERRORS as error:
+                current = await self._store.get_run(
+                    state["workspace_id"], state["run_id"]
+                )
+                if current is not None and current.status != "failed":
+                    failure_state: ResearchWorkflowState = {
+                        **state,
+                        "failure_code": f"{node_name}_unavailable",
+                        "failure_explanation": (
+                            "A required local research service is temporarily unavailable."
+                        ),
+                        "retryable": True,
+                    }
+                    await self._move_status(
+                        failure_state,
+                        current,
+                        "failed",
+                        f"{node_name}:dependency-failed",
+                    )
+                raise ResearchWorkflowUnavailable(
+                    "A required local research service is temporarily unavailable."
+                ) from error
             requested_status = next_status(update)
             if requested_status is None or requested_status == before.status:
                 return {
@@ -695,19 +788,34 @@ def _route_after_summaries(
     )
 
 
+def _route_after_relevance(
+    state: ResearchWorkflowState,
+) -> Literal["summarize_evidence", "wait_for_review"]:
+    return (
+        "wait_for_review"
+        if state.get("stage") == "awaiting_review"
+        else "summarize_evidence"
+    )
+
+
 def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     """Build the single topic-driven research graph without executing it."""
 
     async def wait_for_review(state: ResearchWorkflowState) -> ResearchWorkflowState:
-        interrupt(
+        resume = interrupt(
             {
                 "wait_type": "human_review",
                 "workspace_id": str(state["workspace_id"]),
                 "research_run_id": str(state["run_id"]),
                 "expected_status": state.get("canonical_status", "awaiting_review"),
                 "expected_status_version": state.get("status_version", 0),
+                "evidence_versions": state.get("review_required_sources", []),
             }
         )
+        if not isinstance(resume, dict) or resume.get("outcome") != "accepted":
+            raise ResearchWorkflowUnavailable(
+                "The human-review continuation outcome is invalid."
+            )
         return {"stage": "review_resumed"}
 
     async def wait_for_durable_work(state: ResearchWorkflowState) -> ResearchWorkflowState:
@@ -766,7 +874,14 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
             "wait_for_durable_work": "wait_for_durable_work",
         },
     )
-    graph.add_edge("evaluate_relevance", "summarize_evidence")
+    graph.add_conditional_edges(
+        "evaluate_relevance",
+        _route_after_relevance,
+        {
+            "summarize_evidence": "summarize_evidence",
+            "wait_for_review": "wait_for_review",
+        },
+    )
     graph.add_conditional_edges(
         "summarize_evidence",
         _route_after_summaries,

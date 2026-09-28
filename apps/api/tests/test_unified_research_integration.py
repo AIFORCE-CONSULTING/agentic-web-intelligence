@@ -31,6 +31,7 @@ class Harness:
         self.run_id = uuid4()
         self.source_count = source_count
         self.blocked = blocked or set()
+        self.accepted: set[str] = set()
         self.malformed = malformed or set()
         self.sources: dict[str, SourceCandidate] = {}
         self.associations = []
@@ -39,6 +40,7 @@ class Harness:
         self.search_queries: set[str] = set()
         self.gap_rounds = 0
         self.preflight_scheduled = False
+        self.preflight_routes: list[tuple[object, str, int]] = []
         self.summary_urls: list[str] = []
         self.report_created = False
         self.runtime_run_id = uuid4()
@@ -151,6 +153,9 @@ class Harness:
                 }
             )
 
+    async def record_route(self, *args: object) -> None:
+        self.preflight_routes.append(args)
+
     async def schedule(self, *_: object) -> None:
         self.preflight_scheduled = True
 
@@ -168,6 +173,21 @@ class Harness:
     async def transition_status(self, *args: object, **kwargs: object) -> bool:
         self.failures.append((args, kwargs))
         return True
+
+    async def list_for_run(self, *_: object) -> list[object]:
+        return [
+            SimpleNamespace(
+                source_url=source.preflight_final_url or source.url,
+                content_hash=source.preflight_content_hash,
+                disposition=(
+                    "eligible"
+                    if source.url not in self.blocked or source.url in self.accepted
+                    else "review_required"
+                ),
+            )
+            for source in self.sources.values()
+            if source.preflight_content_hash is not None
+        ]
 
     async def evaluate(
         self, _workspace: object, _run: object, topic_id: str, url: str, _hash: str
@@ -228,6 +248,7 @@ def run(harness: Harness, source_limit: int = 5) -> dict[str, object]:
         preflight=harness,
         preflight_temporal=harness,
         relevance=harness,
+        trust=harness,
         summaries=harness,
         reporting=harness,
     )
@@ -251,11 +272,11 @@ def test_direct_workflow_enforces_total_limit_and_excludes_unapproved_evidence()
 
     result = run(harness, source_limit=2)
 
-    assert result["stage"] == "completed"
+    assert result["stage"] == "awaiting_review"
     assert len(harness.sources) == 2
     assert "https://identity1.example" not in harness.summary_urls
-    assert harness.gap_rounds == 2
-    assert harness.report_created is True
+    assert harness.gap_rounds == 0
+    assert harness.report_created is False
 
 
 def test_malformed_relevance_result_never_reaches_summaries_or_report() -> None:

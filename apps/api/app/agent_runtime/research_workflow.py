@@ -6,11 +6,12 @@ from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import AbstractAsyncContextManager
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol, TypedDict, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 from langgraph.graph import END, START, StateGraph
+from langgraph.types import interrupt
 
 from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningService
@@ -25,6 +26,10 @@ CHECKPOINT_STARTUP_CLEANUP_LIMIT = 100
 
 class ResearchWorkflowUnavailable(RuntimeError):
     """Raised when required workflow infrastructure cannot start or resume research."""
+
+
+class ResearchWorkflowConflict(RuntimeError):
+    """Raised when official research state changed during one graph node."""
 
 
 class ResearchWorkflowEntry(Protocol):
@@ -84,6 +89,35 @@ class UnifiedResearchWorkflowEntry:
         await self._runtime_service.ensure_research_assignment(
             workspace_id, run.id, question
         )
+        if run.status == "failed":
+            if run.failed_stage is None:
+                raise ResearchWorkflowUnavailable(
+                    "The failed research record has no safe resume stage."
+                )
+            transition_id = uuid5(
+                NAMESPACE_URL,
+                (
+                    f"{UNIFIED_RESEARCH_WORKFLOW_VERSION}:{run.id}:retry:"
+                    f"{run.status_version}:{run.failed_stage}"
+                ),
+            )
+            resumed = await self._store.transition_status(
+                run.id,
+                run.status,
+                run.status_version,
+                run.failed_stage,
+                transition_id,
+                "Operator retried the failed research workflow.",
+            )
+            run = await self._store.get_run(workspace_id, run.id)
+            if run is None:
+                raise ResearchWorkflowUnavailable(
+                    "The research record could not be reloaded for retry."
+                )
+            if not resumed and run.status == "failed":
+                raise ResearchWorkflowConflict(
+                    "Official research status changed while retrying the workflow."
+                )
         if run.status != "completed":
             await self._graph.ainvoke(
                 {
@@ -92,6 +126,8 @@ class UnifiedResearchWorkflowEntry:
                     "question": question,
                     "source_limit": source_limit,
                     "stage": run.status,
+                    "canonical_status": run.status,
+                    "status_version": run.status_version,
                 },
                 self._checkpoints.graph_config(run.id),
             )
@@ -324,6 +360,8 @@ class ResearchWorkflowState(TypedDict, total=False):
     uncovered_topic_ids: list[str]
     gap_search_rounds: int
     failure_reason: str
+    canonical_status: str
+    status_version: int
 
 
 ResearchNode = Callable[[ResearchWorkflowState], Awaitable[ResearchWorkflowState]]
@@ -370,6 +408,145 @@ class ResearchWorkflowNodes:
         self.complete_research = complete_research
 
 
+class CanonicalResearchWorkflowNodes:
+    """Make ResearchStore the sole business-status writer around service nodes."""
+
+    def __init__(self, nodes: ResearchWorkflowNodes, store: ResearchStore) -> None:
+        self._nodes = nodes
+        self._store = store
+
+    def wrapped(self) -> ResearchWorkflowNodes:
+        return ResearchWorkflowNodes(
+            plan_topics=self._transitioning(
+                "plan_topics", "planning", self._nodes.plan_topics, lambda _: "discovering"
+            ),
+            search_topics=self._transitioning(
+                "search_topics", "discovering", self._nodes.search_topics, lambda _: "acquiring"
+            ),
+            acquire_evidence=self._transitioning(
+                "acquire_evidence",
+                "acquiring",
+                self._nodes.acquire_evidence,
+                lambda update: (
+                    None
+                    if update.get("stage") == "awaiting_preflight"
+                    else "evaluating_relevance"
+                ),
+            ),
+            evaluate_relevance=self._transitioning(
+                "evaluate_relevance",
+                "evaluating_relevance",
+                self._nodes.evaluate_relevance,
+                lambda _: "summarizing",
+            ),
+            summarize_evidence=self._transitioning(
+                "summarize_evidence",
+                "summarizing",
+                self._nodes.summarize_evidence,
+                lambda update: (
+                    None
+                    if update.get("stage") == "awaiting_summaries"
+                    else "assessing_coverage"
+                ),
+            ),
+            assess_topic_coverage=self._transitioning(
+                "assess_topic_coverage",
+                "assessing_coverage",
+                self._nodes.assess_topic_coverage,
+                self._coverage_status,
+            ),
+            search_missing_topic=self._transitioning(
+                "search_missing_topic",
+                "discovering",
+                self._nodes.search_missing_topic,
+                lambda _: "acquiring",
+            ),
+            generate_final_report=self._transitioning(
+                "generate_final_report",
+                "reporting",
+                self._nodes.generate_final_report,
+                lambda _: "completed",
+            ),
+            complete_research=self._nodes.complete_research,
+        )
+
+    @staticmethod
+    def _coverage_status(update: ResearchWorkflowState) -> str:
+        if update.get("stage") == "awaiting_review":
+            return "awaiting_review"
+        if update.get("uncovered_topic_ids") and update.get("gap_search_rounds", 0) < 2:
+            return "discovering"
+        return "reporting"
+
+    def _transitioning(
+        self,
+        node_name: str,
+        required_status: str,
+        operation: ResearchNode,
+        next_status: Callable[[ResearchWorkflowState], str | None],
+    ) -> ResearchNode:
+        async def run(state: ResearchWorkflowState) -> ResearchWorkflowState:
+            before = await self._store.get_run(state["workspace_id"], state["run_id"])
+            if before is None:
+                raise ResearchWorkflowUnavailable("The research record is unavailable.")
+            if before.status != required_status:
+                before = await self._move_status(
+                    state, before, required_status, f"{node_name}:resume"
+                )
+            update = await operation(state)
+            requested_status = next_status(update)
+            if requested_status is None or requested_status == before.status:
+                return {
+                    **update,
+                    "canonical_status": before.status,
+                    "status_version": before.status_version,
+                }
+            after = await self._move_status(
+                state, before, requested_status, node_name
+            )
+            return {
+                **update,
+                "canonical_status": after.status,
+                "status_version": after.status_version,
+            }
+
+        return run
+
+    async def _move_status(
+        self,
+        state: ResearchWorkflowState,
+        before: ResearchRun,
+        requested_status: str,
+        transition_name: str,
+    ) -> ResearchRun:
+        transition_id = uuid5(
+                NAMESPACE_URL,
+                (
+                    f"{UNIFIED_RESEARCH_WORKFLOW_VERSION}:{state['run_id']}:"
+                    f"{transition_name}:{before.status_version}:{requested_status}"
+                ),
+            )
+        changed = await self._store.transition_status(
+            state["run_id"],
+            before.status,
+            before.status_version,
+            requested_status,
+            transition_id,
+            f"Unified research graph completed {transition_name}.",
+        )
+        after = await self._store.get_run(state["workspace_id"], state["run_id"])
+        if after is None:
+            raise ResearchWorkflowUnavailable("The research record is unavailable.")
+        if not changed and (
+            after.status != requested_status
+            or after.status_version != before.status_version + 1
+        ):
+            raise ResearchWorkflowConflict(
+                "Official research status changed while the workflow was running."
+            )
+        return after
+
+
 def _route_after_coverage(
     state: ResearchWorkflowState,
 ) -> Literal["search_missing_topic", "generate_final_report", "wait_for_review"]:
@@ -406,10 +583,39 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     """Build the single topic-driven research graph without executing it."""
 
     async def wait_for_review(state: ResearchWorkflowState) -> ResearchWorkflowState:
-        return {"stage": "awaiting_review"}
+        interrupt(
+            {
+                "wait_type": "human_review",
+                "workspace_id": str(state["workspace_id"]),
+                "research_run_id": str(state["run_id"]),
+                "expected_status": state.get("canonical_status", "awaiting_review"),
+                "expected_status_version": state.get("status_version", 0),
+            }
+        )
+        return {"stage": "review_resumed"}
 
     async def wait_for_durable_work(state: ResearchWorkflowState) -> ResearchWorkflowState:
-        return {}
+        wait_stage = state.get("stage")
+        interrupt(
+            {
+                "wait_type": (
+                    "candidate_preflight"
+                    if wait_stage == "awaiting_preflight"
+                    else "evidence_summary"
+                ),
+                "workspace_id": str(state["workspace_id"]),
+                "research_run_id": str(state["run_id"]),
+                "expected_status": state.get("canonical_status"),
+                "expected_status_version": state.get("status_version", 0),
+            }
+        )
+        return {
+            "stage": (
+                "evidence_acquired"
+                if wait_stage == "awaiting_preflight"
+                else "summaries_stored"
+            )
+        }
 
     graph = StateGraph(ResearchWorkflowState)
     graph.add_node("plan_topics", nodes.plan_topics)
@@ -456,9 +662,30 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     graph.add_edge("search_missing_topic", "acquire_evidence")
     graph.add_edge("generate_final_report", "complete_research")
     graph.add_edge("complete_research", END)
-    graph.add_edge("wait_for_review", END)
-    graph.add_edge("wait_for_durable_work", END)
+    graph.add_edge("wait_for_review", "evaluate_relevance")
+    graph.add_conditional_edges(
+        "wait_for_durable_work",
+        lambda state: state.get("stage"),
+        {
+            "evidence_acquired": "evaluate_relevance",
+            "summaries_stored": "assess_topic_coverage",
+        },
+    )
     return graph
+
+
+def compile_research_workflow(
+    nodes: ResearchWorkflowNodes,
+    store: ResearchStore,
+    checkpointer: AsyncCheckpointSaver,
+) -> CompiledResearchGraph:
+    """Compile the only production graph with official status and checkpoints."""
+
+    governed = CanonicalResearchWorkflowNodes(nodes, store).wrapped()
+    return cast(
+        CompiledResearchGraph,
+        build_research_workflow(governed).compile(checkpointer=checkpointer),
+    )
 
 
 async def _run_checkpoint_maintenance(action: str, limit: int) -> int:

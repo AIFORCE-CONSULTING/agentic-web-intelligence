@@ -9,11 +9,15 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.types import Command
 
 import app.agent_runtime.research_workflow as research_workflow_module
 from app.agent_runtime.research_workflow import (
+    CanonicalResearchWorkflowNodes,
     CheckpointReadiness,
     ResearchCheckpointLifecycle,
+    ResearchWorkflowConflict,
     ResearchWorkflowNodes,
     ResearchWorkflowState,
     ResearchWorkflowUnavailable,
@@ -100,6 +104,7 @@ def nodes(
     *,
     coverage: ResearchWorkflowState,
     gap_result: ResearchWorkflowState | None = None,
+    acquisition: ResearchWorkflowState | None = None,
 ) -> ResearchWorkflowNodes:
     async def assess_coverage(_: ResearchWorkflowState) -> ResearchWorkflowState:
         visited.append("assess_topic_coverage")
@@ -110,7 +115,11 @@ def nodes(
     return ResearchWorkflowNodes(
         plan_topics=node("plan_topics", visited, {"stage": "topics_planned"}),
         search_topics=node("search_topics", visited, {"stage": "sources_discovered"}),
-        acquire_evidence=node("acquire_evidence", visited, {"stage": "evidence_acquired"}),
+        acquire_evidence=node(
+            "acquire_evidence",
+            visited,
+            acquisition or {"stage": "evidence_acquired"},
+        ),
         evaluate_relevance=node(
             "evaluate_relevance", visited, {"stage": "relevance_decided"}
         ),
@@ -341,6 +350,218 @@ def test_workflow_entry_fails_before_record_creation_when_temporal_is_unavailabl
         asyncio.run(entry.start_or_resume(uuid4(), "agent identity", 20))
 
 
+def test_workflow_entry_does_not_restart_completed_research() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="completed",
+        status_version=8,
+        created_at=now,
+        updated_at=now,
+    )
+
+    class Store:
+        async def get_or_create_run(self, *_):
+            return run, False
+
+        async def get_run(self, *_):
+            return run
+
+    class Runtime:
+        async def ensure_research_assignment(self, *_):
+            return None
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+    class Graph:
+        async def ainvoke(self, *_):
+            raise AssertionError("Completed research must not restart the graph.")
+
+    async def temporal_ready() -> bool:
+        return True
+
+    persisted, created = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+        ).start_or_resume(workspace_id, "agent identity", 20)
+    )
+
+    assert persisted.status == "completed"
+    assert created is False
+
+
+def test_workflow_entry_retries_from_stored_failed_stage() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    failed = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="failed",
+        status_version=4,
+        failed_stage="discovering",
+        created_at=now,
+        updated_at=now,
+    )
+    resumed = failed.model_copy(
+        update={"status": "discovering", "status_version": 5, "failed_stage": None}
+    )
+    current = failed
+    graph_states: list[dict] = []
+
+    class Store:
+        async def get_or_create_run(self, *_):
+            return current, False
+
+        async def transition_status(self, *args, **_kwargs):
+            nonlocal current
+            assert args[1:4] == ("failed", 4, "discovering")
+            current = resumed
+            return True
+
+        async def get_run(self, *_):
+            return current
+
+    class Runtime:
+        async def ensure_research_assignment(self, *_):
+            return None
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+    class Graph:
+        async def ainvoke(self, state, _config):
+            graph_states.append(state)
+            return state
+
+    async def temporal_ready() -> bool:
+        return True
+
+    asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+        ).start_or_resume(workspace_id, "agent identity", 20)
+    )
+
+    assert graph_states[0]["canonical_status"] == "discovering"
+    assert graph_states[0]["status_version"] == 5
+
+
+def test_canonical_node_uses_database_status_instead_of_checkpoint_status() -> None:
+    workflow_state = initial_state()
+    workflow_state["canonical_status"] = "reporting"
+    workflow_state["status_version"] = 99
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=workflow_state["run_id"],
+        question=workflow_state["question"],
+        status="planning",
+        status_version=0,
+        created_at=now,
+        updated_at=now,
+    )
+    transitions: list[tuple] = []
+
+    class Store:
+        async def get_run(self, *_):
+            return current
+
+        async def transition_status(self, *args, **kwargs):
+            nonlocal current
+            transitions.append((args, kwargs))
+            current = current.model_copy(
+                update={"status": args[3], "status_version": current.status_version + 1}
+            )
+            return True
+
+    visited: list[str] = []
+    governed = CanonicalResearchWorkflowNodes(
+        nodes(visited, coverage={"stage": "coverage_complete"}), Store()
+    ).wrapped()
+
+    update = asyncio.run(governed.plan_topics(workflow_state))
+
+    assert transitions[0][0][1:4] == ("planning", 0, "discovering")
+    assert update["canonical_status"] == "discovering"
+    assert update["status_version"] == 1
+
+
+def test_canonical_node_fails_safely_on_concurrent_status_change() -> None:
+    workflow_state = initial_state()
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=workflow_state["run_id"],
+        question=workflow_state["question"],
+        status="planning",
+        status_version=0,
+        created_at=now,
+        updated_at=now,
+    )
+
+    class Store:
+        async def get_run(self, *_):
+            return current
+
+        async def transition_status(self, *_args, **_kwargs):
+            nonlocal current
+            current = current.model_copy(
+                update={"status": "failed", "status_version": 1}
+            )
+            return False
+
+    governed = CanonicalResearchWorkflowNodes(
+        nodes([], coverage={"stage": "coverage_complete"}), Store()
+    ).wrapped()
+
+    with pytest.raises(ResearchWorkflowConflict, match="Official research status"):
+        asyncio.run(governed.plan_topics(workflow_state))
+
+
+def test_resumed_node_records_required_intermediate_status() -> None:
+    workflow_state = initial_state()
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=workflow_state["run_id"],
+        question=workflow_state["question"],
+        status="acquiring",
+        status_version=2,
+        created_at=now,
+        updated_at=now,
+    )
+    transitions: list[tuple[str, str]] = []
+
+    class Store:
+        async def get_run(self, *_):
+            return current
+
+        async def transition_status(self, *args, **_kwargs):
+            nonlocal current
+            transitions.append((args[1], args[3]))
+            current = current.model_copy(
+                update={"status": args[3], "status_version": current.status_version + 1}
+            )
+            return True
+
+    governed = CanonicalResearchWorkflowNodes(
+        nodes([], coverage={"stage": "coverage_complete"}), Store()
+    ).wrapped()
+
+    update = asyncio.run(governed.evaluate_relevance(workflow_state))
+
+    assert transitions == [
+        ("acquiring", "evaluating_relevance"),
+        ("evaluating_relevance", "summarizing"),
+    ]
+    assert update["canonical_status"] == "summarizing"
+
+
 def test_complete_coverage_runs_each_research_stage_once() -> None:
     visited: list[str] = []
     workflow = build_research_workflow(
@@ -413,3 +634,25 @@ def test_review_required_evidence_stops_before_report_generation() -> None:
     assert result["stage"] == "awaiting_review"
     assert "generate_final_report" not in visited
     assert "complete_research" not in visited
+
+
+def test_durable_interrupt_resumes_same_checkpointed_thread() -> None:
+    visited: list[str] = []
+    workflow = build_research_workflow(
+        nodes(
+            visited,
+            acquisition={"stage": "awaiting_preflight"},
+            coverage={"stage": "coverage_complete", "uncovered_topic_ids": []},
+        )
+    ).compile(checkpointer=InMemorySaver())
+    workflow_state = initial_state()
+    config = ResearchCheckpointLifecycle.graph_config(workflow_state["run_id"])
+
+    interrupted = asyncio.run(workflow.ainvoke(workflow_state, config))
+
+    assert interrupted["stage"] == "awaiting_preflight"
+    assert interrupted["__interrupt__"][0].value["wait_type"] == "candidate_preflight"
+    resumed = asyncio.run(workflow.ainvoke(Command(resume={"status": "completed"}), config))
+    assert resumed["stage"] == "completed"
+    assert visited.count("plan_topics") == 1
+    assert visited.count("evaluate_relevance") == 1

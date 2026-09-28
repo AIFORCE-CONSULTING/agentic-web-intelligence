@@ -3,6 +3,7 @@
 import asyncio
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import Any
 from uuid import uuid4
@@ -11,12 +12,16 @@ import pytest
 
 import app.agent_runtime.research_workflow as research_workflow_module
 from app.agent_runtime.research_workflow import (
+    CheckpointReadiness,
     ResearchCheckpointLifecycle,
     ResearchWorkflowNodes,
     ResearchWorkflowState,
+    ResearchWorkflowUnavailable,
+    UnifiedResearchWorkflowEntry,
     build_research_workflow,
 )
 from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
+from app.web_research.contracts import ResearchRun
 
 
 class FakeCleanupStore:
@@ -259,6 +264,81 @@ def test_obsolete_checkpoint_cleanup_uses_official_thread_deletion_once() -> Non
 
     assert deleted == 2
     assert saver.deleted == ["old-a", "old-b"]
+
+
+def test_workflow_entry_reuses_canonical_run_and_stable_checkpoint_identity() -> None:
+    workspace_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="planning",
+        created_at=now,
+        updated_at=now,
+    )
+    graph_calls: list[tuple] = []
+    assignments: list[tuple] = []
+
+    class Store:
+        async def get_or_create_run(self, *_):
+            return run, False
+
+        async def get_run(self, *_):
+            return run
+
+    class Runtime:
+        async def ensure_research_assignment(self, *args):
+            assignments.append(args)
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+    class Graph:
+        async def ainvoke(self, state, config):
+            graph_calls.append((state, config))
+            return state
+
+    async def temporal_ready() -> bool:
+        return True
+
+    entry = UnifiedResearchWorkflowEntry(
+        Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+    )
+
+    persisted, created = asyncio.run(
+        entry.start_or_resume(workspace_id, "agent identity", 20)
+    )
+
+    assert persisted == run
+    assert created is False
+    assert assignments == [(workspace_id, run_id, "agent identity")]
+    assert graph_calls[0][1] == ResearchCheckpointLifecycle.graph_config(run_id)
+    assert graph_calls[0][0]["source_limit"] == 20
+
+
+def test_workflow_entry_fails_before_record_creation_when_temporal_is_unavailable() -> None:
+    class Store:
+        async def get_or_create_run(self, *_):
+            raise AssertionError("Readiness must pass before a record is created.")
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+    async def temporal_ready() -> bool:
+        return False
+
+    entry = UnifiedResearchWorkflowEntry(
+        Store(), object(), Checkpoints(), object(), temporal_ready
+    )
+
+    with pytest.raises(ResearchWorkflowUnavailable, match="Durable execution"):
+        asyncio.run(entry.start_or_resume(uuid4(), "agent identity", 20))
 
 
 def test_complete_coverage_runs_each_research_stage_once() -> None:

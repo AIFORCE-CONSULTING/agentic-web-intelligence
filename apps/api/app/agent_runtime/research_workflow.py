@@ -16,10 +16,91 @@ from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
 from app.settings import get_settings
+from app.web_research.contracts import ResearchRun
 from app.web_research.store import ResearchStore
 
 MAX_GAP_SEARCH_ROUNDS = 2
 CHECKPOINT_STARTUP_CLEANUP_LIMIT = 100
+
+
+class ResearchWorkflowUnavailable(RuntimeError):
+    """Raised when required workflow infrastructure cannot start or resume research."""
+
+
+class ResearchWorkflowEntry(Protocol):
+    """Thin application boundary used by the existing Discover Sources route."""
+
+    async def start_or_resume(
+        self,
+        workspace_id: UUID,
+        question: str,
+        source_limit: int,
+    ) -> tuple[ResearchRun, bool]: ...
+
+
+class CompiledResearchGraph(Protocol):
+    """Minimal async interface supplied by a compiled LangGraph."""
+
+    async def ainvoke(
+        self, state: dict[str, Any], config: dict[str, Any]
+    ) -> dict[str, Any]: ...
+
+
+class ResearchAssignmentService(Protocol):
+    async def ensure_research_assignment(
+        self, workspace_id: UUID, research_run_id: UUID, goal: str
+    ) -> Any: ...
+
+
+class UnifiedResearchWorkflowEntry:
+    """Start or resume the one checkpointed graph for a canonical research task."""
+
+    def __init__(
+        self,
+        store: ResearchStore,
+        runtime_service: ResearchAssignmentService,
+        checkpoints: "ResearchCheckpointLifecycle",
+        graph: CompiledResearchGraph,
+        temporal_ready: Callable[[], Awaitable[bool]],
+    ) -> None:
+        self._store = store
+        self._runtime_service = runtime_service
+        self._checkpoints = checkpoints
+        self._graph = graph
+        self._temporal_ready = temporal_ready
+
+    async def start_or_resume(
+        self,
+        workspace_id: UUID,
+        question: str,
+        source_limit: int,
+    ) -> tuple[ResearchRun, bool]:
+        checkpoint_status = await self._checkpoints.readiness()
+        if not checkpoint_status.ready:
+            raise ResearchWorkflowUnavailable(checkpoint_status.detail)
+        if not await self._temporal_ready():
+            raise ResearchWorkflowUnavailable("Durable execution is unavailable.")
+        run, created = await self._store.get_or_create_run(workspace_id, question)
+        await self._runtime_service.ensure_research_assignment(
+            workspace_id, run.id, question
+        )
+        if run.status != "completed":
+            await self._graph.ainvoke(
+                {
+                    "workspace_id": workspace_id,
+                    "run_id": run.id,
+                    "question": question,
+                    "source_limit": source_limit,
+                    "stage": run.status,
+                },
+                self._checkpoints.graph_config(run.id),
+            )
+        persisted = await self._store.get_run(workspace_id, run.id)
+        if persisted is None:
+            raise ResearchWorkflowUnavailable(
+                "The research record could not be reloaded after workflow execution."
+            )
+        return persisted, created
 
 
 class CheckpointCleanupStore(Protocol):

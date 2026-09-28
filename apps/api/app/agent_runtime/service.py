@@ -180,6 +180,13 @@ class RuntimeService:
             source_limit=source_limit,
         )
 
+    async def discovered_source_topic(
+        self, research_run_id: UUID, source_url: str
+    ) -> str | None:
+        """Load topic scope from the authority store rather than the caller."""
+
+        return await self._store.discovered_source_topic(research_run_id, source_url)
+
     async def begin_gap_search_round(self, research_run_id: UUID) -> int | None:
         """Reserve one of the two stored missing-topic search rounds."""
 

@@ -1,7 +1,14 @@
 """Typed LangGraph nodes backed by the platform's existing research services."""
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
+from typing import Any, Protocol, cast
+from uuid import UUID, uuid4
 
+from app.agent_runtime.contracts import (
+    CapabilityRequest,
+    McpExecutionCorrelation,
+    RuntimeRun,
+)
 from app.agent_runtime.research_workflow import (
     ResearchNode,
     ResearchWorkflowNodes,
@@ -9,15 +16,18 @@ from app.agent_runtime.research_workflow import (
     topic_planning_node,
 )
 from app.agentic_research.contracts import TopicSourceAssociation
-from app.agentic_research.control import AgenticResearchControlService
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.evidence_summaries.service import EvidenceSummaryAutomation
-from app.web_research.contracts import SearchResponse, SourceCandidate
+from app.web_research.contracts import (
+    Evidence,
+    SearchResponse,
+    SourceCandidate,
+    ToolProviderError,
+)
 from app.web_research.store import ResearchStore
-from app.web_research.workflow import run_search_workflow
 from app.web_trust.preflight import (
     DIRECT_PREFLIGHT_SOURCE_LIMIT,
     CandidatePreflightService,
@@ -27,29 +37,135 @@ from app.web_trust.preflight import (
 Search = Callable[[str, int], Awaitable[SearchResponse]]
 
 
+class ResearchAuthority(Protocol):
+    """RuntimeService operations used by governed research nodes."""
+
+    async def ensure_research_assignment(
+        self, workspace_id: UUID, research_run_id: UUID, goal: str
+    ) -> RuntimeRun: ...
+
+    async def authorize_request(self, request: CapabilityRequest) -> Any: ...
+
+    async def register_discovered_source(
+        self, research_run_id: UUID, topic_id: str, source_url: str, source_limit: int
+    ) -> bool: ...
+
+    async def begin_gap_search_round(self, research_run_id: UUID) -> int | None: ...
+
+
+class GovernedMcpInvoker(Protocol):
+    """Governed MCP invocation used after RuntimeService authorization."""
+
+    async def invoke_authorized(
+        self,
+        correlation: McpExecutionCorrelation,
+        arguments: Mapping[str, Any],
+        authority: Any,
+    ) -> SearchResponse | Evidence: ...
+
+
+async def _authorized_search(
+    state: ResearchWorkflowState,
+    topic_id: str,
+    query: str,
+    max_results: int,
+    purpose: str,
+    authority: ResearchAuthority,
+    mcp: GovernedMcpInvoker,
+    research_store: ResearchStore,
+) -> SearchResponse | None:
+    research = await research_store.get_run(state["workspace_id"], state["run_id"])
+    if research is None:
+        raise KeyError(state["run_id"])
+    assignment = await authority.ensure_research_assignment(
+        state["workspace_id"], state["run_id"], state["question"]
+    )
+    step = next(
+        (
+            item
+            for item in assignment.steps
+            if item.role == "researcher" and item.status == "active"
+        ),
+        None,
+    )
+    if step is None:
+        raise RuntimeError("The research assignment has no active researcher step.")
+    request_id = uuid4()
+    arguments: dict[str, object] = {"query": query, "max_results": max_results}
+    request = CapabilityRequest(
+        workspace_id=state["workspace_id"],
+        runtime_run_id=assignment.id,
+        runtime_step_id=step.id,
+        research_run_id=state["run_id"],
+        research_status=research.status,
+        research_status_version=research.status_version,
+        topic_id=topic_id,
+        action="web.search",
+        resource_type="research_query",
+        resource_id=query,
+        arguments=arguments,
+        request_id=request_id,
+        purpose=purpose,
+    )
+    decision = await authority.authorize_request(request)
+    if decision.decision != "allow":
+        return None
+    try:
+        result = await mcp.invoke_authorized(
+            McpExecutionCorrelation(
+                workspace_id=request.workspace_id,
+                research_run_id=request.research_run_id,
+                runtime_run_id=request.runtime_run_id,
+                runtime_step_id=request.runtime_step_id,
+                authorization_decision_id=decision.id,
+                request_id=request.request_id,
+                tool_name=request.action,
+                resource_type=request.resource_type,
+                resource_id=request.resource_id,
+            ),
+            arguments,
+            authority,
+        )
+    except ToolProviderError:
+        await research_store.transition_status(
+            state["run_id"],
+            research.status,
+            research.status_version,
+            "failed",
+            uuid4(),
+            "The governed web-search provider is unavailable.",
+            failed_stage=research.status,
+            failure_code="search_unavailable",
+            failure_explanation="The web-search provider is temporarily unavailable.",
+            retryable=True,
+        )
+        raise
+    return cast(SearchResponse, result)
+
+
 def topic_search_node(
-    control: AgenticResearchControlService,
+    authority: ResearchAuthority,
+    mcp: GovernedMcpInvoker,
     research_store: ResearchStore,
     agentic_store: AgenticResearchStore,
-    search: Search = run_search_workflow,
 ) -> ResearchNode:
     """Search every planned topic and store at most the task-wide source limit."""
 
     async def search_topics(state: ResearchWorkflowState) -> ResearchWorkflowState:
         pools: list[tuple[str, SearchResponse]] = []
         for topic in state["topics"]:
-            decision = await control.consider_request(
-                state["workspace_id"],
-                state["run_id"],
+            response = await _authorized_search(
+                state,
                 topic.topic_id,
-                "web.search",
-                {"query": topic.search_query, "max_results": state["source_limit"]},
-                {"web.search"},
+                topic.search_query,
+                state["source_limit"],
+                "initial",
+                authority,
+                mcp,
+                research_store,
             )
-            if decision.decision == "accepted":
-                pools.append(
-                    (topic.topic_id, await search(topic.search_query, state["source_limit"]))
-                )
+            if response is not None:
+                pools.append((topic.topic_id, response))
 
         selected: list[tuple[str, object, int]] = []
         seen: set[str] = set()
@@ -86,6 +202,18 @@ def topic_search_node(
             for result_rank, result in enumerate(response.results, start=1)
             if result.url in stored_urls
         ]
+        registered_urls: set[tuple[str, str]] = set()
+        for association in associations:
+            identity = (association.topic_id, association.source_url)
+            if identity in registered_urls:
+                continue
+            registered_urls.add(identity)
+            await authority.register_discovered_source(
+                state["run_id"],
+                association.topic_id,
+                association.source_url,
+                state["source_limit"],
+            )
         await agentic_store.record_discovered_sources(
             state["workspace_id"], state["run_id"], associations
         )
@@ -102,6 +230,8 @@ def topic_search_node(
 def evidence_acquisition_node(
     direct: CandidatePreflightService,
     temporal: CandidatePreflightTemporalBoundary,
+    authority: ResearchAuthority,
+    mcp: GovernedMcpInvoker,
 ) -> ResearchNode:
     """Apply the existing direct-versus-Temporal preflight boundary."""
 
@@ -110,7 +240,9 @@ def evidence_acquisition_node(
         if not urls:
             return {"stage": "evidence_acquired"}
         if len(urls) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
-            await direct.preflight_run(state["workspace_id"], state["run_id"], urls)
+            await direct.preflight_run_authorized(
+                state["workspace_id"], state["run_id"], authority, mcp, urls
+            )
             return {"stage": "evidence_acquired"}
         await temporal.schedule(state["run_id"], urls)
         return {"stage": "awaiting_preflight"}
@@ -203,19 +335,17 @@ def topic_coverage_node(
 
 
 def missing_topic_search_node(
-    control: AgenticResearchControlService,
+    authority: ResearchAuthority,
+    mcp: GovernedMcpInvoker,
     research_store: ResearchStore,
     agentic_store: AgenticResearchStore,
     reporting: ResearchReportingService,
-    search: Search = run_search_workflow,
 ) -> ResearchNode:
     """Use one reserved gap round to search the first uncovered planned topic."""
 
     async def search_gap(state: ResearchWorkflowState) -> ResearchWorkflowState:
-        control_state = await control.begin_gap_search_round(
-            state["workspace_id"], state["run_id"]
-        )
-        if control_state is None:
+        gap_round = await authority.begin_gap_search_round(state["run_id"])
+        if gap_round is None:
             return {"gap_search_rounds": 2, "new_source_urls": []}
         remaining_capacity = max(
             0,
@@ -223,7 +353,7 @@ def missing_topic_search_node(
         )
         if remaining_capacity == 0:
             return {
-                "gap_search_rounds": control_state.gap_search_rounds,
+                "gap_search_rounds": gap_round,
                 "new_source_urls": [],
             }
         topic_id = state["uncovered_topic_ids"][0]
@@ -232,14 +362,18 @@ def missing_topic_search_node(
         query = await reporting.missing_topic_query(
             state["workspace_id"], topic, prior_queries
         )
-        decision = await control.consider_request(
-            state["workspace_id"], state["run_id"], topic_id, "web.search",
-            {"query": query, "max_results": remaining_capacity}, {"web.search"},
-            purpose="gap",
+        response = await _authorized_search(
+            state,
+            topic_id,
+            query,
+            remaining_capacity,
+            "gap",
+            authority,
+            mcp,
+            research_store,
         )
-        if decision.decision != "accepted":
-            return {"gap_search_rounds": control_state.gap_search_rounds, "new_source_urls": []}
-        response = await search(query, remaining_capacity)
+        if response is None:
+            return {"gap_search_rounds": gap_round, "new_source_urls": []}
         candidates = [
             SourceCandidate(rank=index, **result.model_dump())
             for index, result in enumerate(response.results, start=1)
@@ -251,11 +385,15 @@ def missing_topic_search_node(
             TopicSourceAssociation(topic_id=topic_id, source_url=item.url, result_rank=item.rank)
             for item in stored
         ]
+        for association in associations:
+            await authority.register_discovered_source(
+                state["run_id"], topic_id, association.source_url, state["source_limit"]
+            )
         await agentic_store.record_discovered_sources(
             state["workspace_id"], state["run_id"], associations
         )
         return {
-            "gap_search_rounds": control_state.gap_search_rounds,
+            "gap_search_rounds": gap_round,
             "new_source_urls": [item.url for item in stored],
             "discovered_source_count": state.get("discovered_source_count", 0) + len(stored),
             "source_topics": associations,
@@ -288,7 +426,8 @@ def completion_node() -> ResearchNode:
 def platform_research_nodes(
     *,
     topic_planning: TopicPlanningService,
-    control: AgenticResearchControlService,
+    authority: ResearchAuthority,
+    mcp: GovernedMcpInvoker,
     research_store: ResearchStore,
     agentic_store: AgenticResearchStore,
     preflight: CandidatePreflightService,
@@ -296,21 +435,22 @@ def platform_research_nodes(
     relevance: TopicRelevanceService,
     summaries: EvidenceSummaryAutomation,
     reporting: ResearchReportingService,
-    search: Search = run_search_workflow,
 ) -> ResearchWorkflowNodes:
     """Bind the canonical graph to the platform's existing service owners."""
 
     return ResearchWorkflowNodes(
         plan_topics=topic_planning_node(topic_planning),
-        search_topics=topic_search_node(control, research_store, agentic_store, search),
-        acquire_evidence=evidence_acquisition_node(preflight, preflight_temporal),
+        search_topics=topic_search_node(authority, mcp, research_store, agentic_store),
+        acquire_evidence=evidence_acquisition_node(
+            preflight, preflight_temporal, authority, mcp
+        ),
         evaluate_relevance=topic_relevance_node(
             research_store, agentic_store, relevance
         ),
         summarize_evidence=evidence_summary_node(summaries),
         assess_topic_coverage=topic_coverage_node(research_store, agentic_store),
         search_missing_topic=missing_topic_search_node(
-            control, research_store, agentic_store, reporting, search
+            authority, mcp, research_store, agentic_store, reporting
         ),
         generate_final_report=final_report_node(reporting),
         complete_research=completion_node(),

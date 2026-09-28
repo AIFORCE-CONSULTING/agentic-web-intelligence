@@ -5,10 +5,18 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
+import pytest
+
 from app.agent_runtime.research_workflow import build_research_workflow
 from app.agentic_research.contracts import ResearchTopic, TopicCoverage, TopicPlan
 from app.agentic_research.workflow_nodes import platform_research_nodes
-from app.web_research.contracts import ResearchRun, SearchResponse, SearchResult, SourceCandidate
+from app.web_research.contracts import (
+    ResearchRun,
+    SearchResponse,
+    SearchResult,
+    SourceCandidate,
+    ToolProviderError,
+)
 
 
 class Harness:
@@ -33,6 +41,14 @@ class Harness:
         self.preflight_scheduled = False
         self.summary_urls: list[str] = []
         self.report_created = False
+        self.runtime_run_id = uuid4()
+        self.runtime_step_id = uuid4()
+        self.authorization_requests = []
+        self.authorization_decisions = {}
+        self.mcp_calls = []
+        self.provider_calls = 0
+        self.fail_search = False
+        self.failures = []
 
     async def plan(self, *_: object) -> TopicPlan:
         return TopicPlan(
@@ -50,19 +66,50 @@ class Harness:
             ]
         )
 
-    async def consider_request(self, *args: object, **kwargs: object) -> object:
-        arguments = args[4]
-        query = str(arguments["query"])
-        if query in self.search_queries:
-            return SimpleNamespace(decision="denied")
-        self.search_queries.add(query)
-        return SimpleNamespace(decision="accepted")
+    async def ensure_research_assignment(self, *_: object) -> object:
+        return SimpleNamespace(
+            id=self.runtime_run_id,
+            steps=[
+                SimpleNamespace(
+                    id=self.runtime_step_id,
+                    role="researcher",
+                    status="active",
+                )
+            ],
+        )
 
-    async def begin_gap_search_round(self, *_: object) -> object | None:
+    async def authorize_request(self, request: object) -> object:
+        self.authorization_requests.append(request)
+        query = str(request.arguments["query"])
+        if query in self.search_queries:
+            return SimpleNamespace(id=uuid4(), decision="deny")
+        self.search_queries.add(query)
+        decision = SimpleNamespace(id=uuid4(), decision="allow")
+        self.authorization_decisions[decision.id] = request
+        return decision
+
+    async def invoke_authorized(
+        self, correlation: object, arguments: object, authority: object
+    ) -> SearchResponse:
+        assert authority is self
+        request = self.authorization_decisions[correlation.authorization_decision_id]
+        assert correlation.request_id == request.request_id
+        assert correlation.runtime_run_id == request.runtime_run_id
+        assert correlation.runtime_step_id == request.runtime_step_id
+        self.mcp_calls.append(correlation)
+        self.provider_calls += 1
+        if self.fail_search:
+            raise ToolProviderError("provider offline")
+        return await self.search(str(arguments["query"]), int(arguments["max_results"]))
+
+    async def register_discovered_source(self, *_: object) -> bool:
+        return True
+
+    async def begin_gap_search_round(self, *_: object) -> int | None:
         if self.gap_rounds >= 2:
             return None
         self.gap_rounds += 1
-        return SimpleNamespace(gap_search_rounds=self.gap_rounds)
+        return self.gap_rounds
 
     async def search(self, query: str, limit: int) -> SearchResponse:
         slug = "identity" if "identity" in query else "provenance"
@@ -92,7 +139,7 @@ class Harness:
     async def list_discovered_sources(self, *_: object):
         return self.associations
 
-    async def preflight_run(self, *_: object) -> None:
+    async def preflight_run_authorized(self, *_: object) -> None:
         for url in _[-1]:
             source = self.sources[url]
             status = "review_required" if url in self.blocked else "ready_to_extract"
@@ -112,11 +159,15 @@ class Harness:
         return ResearchRun(
             id=self.run_id,
             question="Research identity and provenance",
-            status="ready",
+            status="discovering",
             created_at=now,
             updated_at=now,
             sources=list(self.sources.values()),
         )
+
+    async def transition_status(self, *args: object, **kwargs: object) -> bool:
+        self.failures.append((args, kwargs))
+        return True
 
     async def evaluate(
         self, _workspace: object, _run: object, topic_id: str, url: str, _hash: str
@@ -164,7 +215,8 @@ class Harness:
 def run(harness: Harness, source_limit: int = 5) -> dict[str, object]:
     nodes = platform_research_nodes(
         topic_planning=harness,
-        control=harness,
+        authority=harness,
+        mcp=harness,
         research_store=harness,
         agentic_store=harness,
         preflight=harness,
@@ -172,7 +224,6 @@ def run(harness: Harness, source_limit: int = 5) -> dict[str, object]:
         relevance=harness,
         summaries=harness,
         reporting=harness,
-        search=harness.search,
     )
     return asyncio.run(
         build_research_workflow(nodes).compile().ainvoke(
@@ -233,3 +284,58 @@ def test_replay_does_not_duplicate_sources() -> None:
 
     assert set(harness.sources) == first_urls
     assert len(harness.sources) == len(first_urls)
+
+
+def test_every_mcp_search_has_one_matching_prior_allow_decision() -> None:
+    harness = Harness(source_count=1)
+
+    run(harness, source_limit=2)
+
+    assert harness.mcp_calls
+    assert len(harness.mcp_calls) == len(harness.authorization_decisions)
+    for correlation in harness.mcp_calls:
+        request = harness.authorization_decisions[
+            correlation.authorization_decision_id
+        ]
+        assert correlation.request_id == request.request_id
+        assert correlation.research_run_id == request.research_run_id
+        assert correlation.tool_name == request.action
+
+
+def test_mismatched_authorization_stops_before_provider_invocation() -> None:
+    harness = Harness(source_count=1)
+
+    async def reject_mismatch(correlation, _arguments, _authority):
+        request = harness.authorization_decisions[correlation.authorization_decision_id]
+        assert correlation.request_id == request.request_id
+        raise RuntimeError("No matching stored allow decision exists.")
+
+    harness.invoke_authorized = reject_mismatch
+
+    with pytest.raises(RuntimeError, match="matching stored allow"):
+        run(harness, source_limit=2)
+
+    assert harness.provider_calls == 0
+
+
+def test_search_provider_outage_records_retryable_dependency_failure() -> None:
+    harness = Harness(source_count=1)
+    harness.fail_search = True
+
+    with pytest.raises(ToolProviderError, match="provider offline"):
+        run(harness, source_limit=2)
+
+    assert harness.failures
+    _, failure = harness.failures[0]
+    assert failure["failure_code"] == "search_unavailable"
+    assert failure["failed_stage"] == "discovering"
+    assert failure["retryable"] is True
+
+
+def test_empty_search_result_is_not_a_provider_failure() -> None:
+    harness = Harness(source_count=0)
+
+    result = run(harness, source_limit=2)
+
+    assert result["stage"] == "completed"
+    assert harness.failures == []

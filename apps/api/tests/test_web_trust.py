@@ -17,7 +17,7 @@ from app.evidence_summaries.service import (
 )
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
-from app.web_research.contracts import Evidence, SourceCandidate, ToolPolicyError
+from app.web_research.contracts import Evidence, ResearchRun, SourceCandidate, ToolPolicyError
 from app.web_trust.contracts import EvidenceTrustEvaluation, TrustRuleOutcome
 from app.web_trust.preflight import CandidatePreflightService
 from app.web_trust.service import EvidenceTrustService
@@ -308,6 +308,84 @@ def test_candidate_preflight_evaluates_captured_checking_evidence_without_refetc
 
     assert store.saved == []
     assert store.results[0][2] == "ready_to_extract"
+
+
+def test_candidate_preflight_requires_matching_runtime_authorization_before_extract() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    source = SourceCandidate(rank=1, title="Authorized", url="https://example.com/source")
+    now = datetime.now(UTC)
+
+    class Store:
+        def __init__(self) -> None:
+            self.saved: list[Evidence] = []
+            self.results: list[tuple[object, ...]] = []
+
+        async def get_run(self, *_: object):
+            return ResearchRun(
+                id=run_id,
+                question="agent identity",
+                status="acquiring",
+                created_at=now,
+                updated_at=now,
+                sources=[source],
+            )
+
+        async def mark_candidate_checking(self, *_: object) -> None:
+            return None
+
+        async def save_evidence(self, _run_id: object, value: Evidence) -> None:
+            self.saved.append(value)
+
+        async def record_candidate_preflight(self, *args: object, **kwargs: object) -> None:
+            self.results.append((*args, kwargs))
+
+        async def complete_candidate_preflight(self, *_: object) -> None:
+            return None
+
+    class Authority:
+        def __init__(self) -> None:
+            self.runtime_id, self.step_id, self.decision_id = uuid4(), uuid4(), uuid4()
+            self.request = None
+
+        async def ensure_research_assignment(self, *_: object):
+            return SimpleNamespace(
+                id=self.runtime_id,
+                steps=[
+                    SimpleNamespace(id=self.step_id, role="researcher", status="active")
+                ],
+            )
+
+        async def discovered_source_topic(self, *_: object) -> str:
+            return "identity"
+
+        async def authorize_request(self, request):
+            self.request = request
+            return SimpleNamespace(id=self.decision_id, decision="allow")
+
+    class Mcp:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def invoke_authorized(self, correlation, arguments, authority):
+            self.called = True
+            assert correlation.authorization_decision_id == authority.decision_id
+            assert correlation.request_id == authority.request.request_id
+            assert arguments == {"url": source.url}
+            return evidence(url=source.url)
+
+    store, authority, mcp = Store(), Authority(), Mcp()
+    asyncio.run(
+        CandidatePreflightService(
+            store, EvidenceTrustService(FakeTrustStore())
+        ).preflight_run_authorized(
+            workspace_id, run_id, authority, mcp, [source.url]
+        )
+    )
+
+    assert mcp.called is True
+    assert authority.request.action == "web.extract"
+    assert authority.request.topic_id == "identity"
+    assert [item.url for item in store.saved] == [source.url]
 
 
 def test_summary_automation_batches_eligible_candidates_within_execution_limit(

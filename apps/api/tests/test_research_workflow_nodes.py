@@ -1,6 +1,7 @@
 """Focused contracts for production-backed research workflow nodes."""
 
 import asyncio
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -9,7 +10,7 @@ from app.agentic_research.workflow_nodes import (
     evidence_acquisition_node,
     topic_search_node,
 )
-from app.web_research.contracts import SearchResponse, SearchResult
+from app.web_research.contracts import ResearchRun, SearchResponse, SearchResult
 
 
 def state(**updates: object) -> dict[str, object]:
@@ -38,9 +39,39 @@ def state(**updates: object) -> dict[str, object]:
     return values
 
 
-class AcceptingControl:
-    async def consider_request(self, *args: object, **kwargs: object) -> object:
-        return SimpleNamespace(decision="accepted")
+class Authority:
+    def __init__(self) -> None:
+        self.runtime_run_id = uuid4()
+        self.runtime_step_id = uuid4()
+        self.requests = []
+        self.decisions = {}
+
+    async def ensure_research_assignment(self, *_: object) -> object:
+        return SimpleNamespace(
+            id=self.runtime_run_id,
+            steps=[SimpleNamespace(id=self.runtime_step_id, role="researcher", status="active")],
+        )
+
+    async def authorize_request(self, request: object) -> object:
+        self.requests.append(request)
+        decision = SimpleNamespace(id=uuid4(), decision="allow")
+        self.decisions[decision.id] = request
+        return decision
+
+    async def register_discovered_source(self, *_: object) -> bool:
+        return True
+
+
+class Mcp:
+    def __init__(self, authority: Authority, search: object) -> None:
+        self.authority = authority
+        self.search = search
+
+    async def invoke_authorized(self, correlation, arguments, authority):
+        assert authority is self.authority
+        request = self.authority.decisions[correlation.authorization_decision_id]
+        assert request.request_id == correlation.request_id
+        return await self.search(arguments["query"], arguments["max_results"])
 
 
 class ResearchStore:
@@ -51,6 +82,16 @@ class ResearchStore:
         self.saved = sources
         assert len(sources) <= limit
         return sources
+
+    async def get_run(self, _workspace_id: object, run_id: object) -> ResearchRun:
+        now = datetime.now(UTC)
+        return ResearchRun(
+            id=run_id,
+            question="Compare identity and provenance",
+            status="discovering",
+            created_at=now,
+            updated_at=now,
+        )
 
 
 class AgenticStore:
@@ -72,9 +113,11 @@ def test_topic_search_round_robins_unique_results_with_one_total_limit() -> None
         unique = SearchResult(title=query, url=f"https://example.com/{query.split()[1]}")
         return SearchResponse(query=query, results=[shared, unique][:limit])
 
+    authority = Authority()
+
     update = asyncio.run(
         topic_search_node(
-            AcceptingControl(), research_store, agentic_store, search
+            authority, Mcp(authority, search), research_store, agentic_store
         )(state())
     )
 
@@ -88,7 +131,7 @@ class DirectPreflight:
     def __init__(self) -> None:
         self.called = False
 
-    async def preflight_run(self, *args: object) -> None:
+    async def preflight_run_authorized(self, *args: object) -> None:
         self.called = True
 
 
@@ -105,7 +148,7 @@ def test_acquisition_uses_direct_service_for_two_sources() -> None:
     temporal = TemporalPreflight()
 
     update = asyncio.run(
-        evidence_acquisition_node(direct, temporal)(
+        evidence_acquisition_node(direct, temporal, object(), object())(
             state(new_source_urls=["https://a.example", "https://b.example"])
         )
     )
@@ -120,7 +163,7 @@ def test_acquisition_pauses_after_temporal_accepts_larger_batch() -> None:
     temporal = TemporalPreflight()
 
     update = asyncio.run(
-        evidence_acquisition_node(direct, temporal)(
+        evidence_acquisition_node(direct, temporal, object(), object())(
             state(
                 new_source_urls=[
                     "https://a.example",

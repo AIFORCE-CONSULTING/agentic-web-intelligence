@@ -361,6 +361,21 @@ class RuntimeStore:
                 )
             )
 
+    async def discovered_source_topic(
+        self, research_run_id: UUID, source_url: str
+    ) -> str | None:
+        """Return the stored topic scope for one discovered source."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return await connection.fetchval(
+                """SELECT topic_id FROM agent_runtime_discovered_sources
+                   WHERE research_run_id = $1 AND source_url = $2
+                   ORDER BY created_at LIMIT 1""",
+                research_run_id,
+                source_url,
+            )
+
     async def transition_run(self, run_id: UUID, next_status: str) -> RuntimeRun | None:
         """Perform a server-validated state transition and append its audit event."""
 

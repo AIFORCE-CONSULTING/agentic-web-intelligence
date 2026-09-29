@@ -26,6 +26,7 @@ redis-data/
 .vscode/*.local.json
 .idea/
 *.log
+artifacts/agent-evaluations/
 ~$*
 
 # User-provided reference materials and internal review artifacts

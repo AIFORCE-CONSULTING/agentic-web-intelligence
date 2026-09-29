@@ -1,5 +1,5 @@
 import asyncio
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
 from uuid import uuid4
 
@@ -17,7 +17,7 @@ from app.evidence_summaries.service import (
 )
 from app.identity.contracts import AuthenticatedUser
 from app.main import create_app
-from app.web_research.contracts import Evidence, SourceCandidate, ToolPolicyError
+from app.web_research.contracts import Evidence, ResearchRun, SourceCandidate, ToolPolicyError
 from app.web_trust.contracts import EvidenceTrustEvaluation, TrustRuleOutcome
 from app.web_trust.preflight import CandidatePreflightService
 from app.web_trust.service import EvidenceTrustService
@@ -59,6 +59,7 @@ def authenticated_app(app):
 class FakeTrustStore:
     def __init__(self) -> None:
         self.current: EvidenceTrustEvaluation | None = None
+        self.accept_calls = 0
 
     async def latest_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
         return self.current
@@ -87,6 +88,7 @@ class FakeTrustStore:
         return [self.current] if self.current else []
 
     async def accept_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
+        self.accept_calls += 1
         assert self.current is not None
         self.current = self.current.model_copy(
             update={
@@ -130,6 +132,65 @@ def test_unsupported_content_requires_human_review_and_can_be_accepted() -> None
     assert accepted is not None
     assert accepted.disposition == "eligible"
     assert accepted.override_reason == "Reviewed"
+
+    repeated = asyncio.run(
+        service.accept(
+            workspace_id,
+            run_id,
+            result.source_url,
+            result.content_hash,
+            uuid4(),
+            "Repeated request",
+            None,
+        )
+    )
+
+    assert repeated == accepted
+    assert store.accept_calls == 1
+
+
+def test_review_acceptance_expiry_must_be_in_the_future() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    with pytest.raises(ValueError, match="Acceptance expiry must be in the future"):
+        asyncio.run(
+            service.accept(
+                workspace_id,
+                run_id,
+                result.source_url,
+                result.content_hash,
+                uuid4(),
+                "The source is appropriate for this research.",
+                datetime.now(UTC) - timedelta(minutes=1),
+            )
+        )
+
+
+def test_review_acceptance_expiry_must_include_a_timezone() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    with pytest.raises(ValueError, match="Acceptance expiry must include a timezone"):
+        asyncio.run(
+            service.accept(
+                workspace_id,
+                run_id,
+                result.source_url,
+                result.content_hash,
+                uuid4(),
+                "The source is appropriate for this research.",
+                datetime.now(),
+            )
+        )
 
 
 def test_large_extracted_text_requires_human_review() -> None:
@@ -266,6 +327,84 @@ def test_candidate_preflight_evaluates_captured_checking_evidence_without_refetc
     assert store.results[0][2] == "ready_to_extract"
 
 
+def test_candidate_preflight_requires_matching_runtime_authorization_before_extract() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    source = SourceCandidate(rank=1, title="Authorized", url="https://example.com/source")
+    now = datetime.now(UTC)
+
+    class Store:
+        def __init__(self) -> None:
+            self.saved: list[Evidence] = []
+            self.results: list[tuple[object, ...]] = []
+
+        async def get_run(self, *_: object):
+            return ResearchRun(
+                id=run_id,
+                question="agent identity",
+                status="acquiring",
+                created_at=now,
+                updated_at=now,
+                sources=[source],
+            )
+
+        async def mark_candidate_checking(self, *_: object) -> None:
+            return None
+
+        async def save_evidence(self, _run_id: object, value: Evidence) -> None:
+            self.saved.append(value)
+
+        async def record_candidate_preflight(self, *args: object, **kwargs: object) -> None:
+            self.results.append((*args, kwargs))
+
+        async def complete_candidate_preflight(self, *_: object) -> None:
+            return None
+
+    class Authority:
+        def __init__(self) -> None:
+            self.runtime_id, self.step_id, self.decision_id = uuid4(), uuid4(), uuid4()
+            self.request = None
+
+        async def ensure_research_assignment(self, *_: object):
+            return SimpleNamespace(
+                id=self.runtime_id,
+                steps=[
+                    SimpleNamespace(id=self.step_id, role="researcher", status="active")
+                ],
+            )
+
+        async def discovered_source_topic(self, *_: object) -> str:
+            return "identity"
+
+        async def authorize_request(self, request):
+            self.request = request
+            return SimpleNamespace(id=self.decision_id, decision="allow")
+
+    class Mcp:
+        def __init__(self) -> None:
+            self.called = False
+
+        async def invoke_authorized(self, correlation, arguments, authority):
+            self.called = True
+            assert correlation.authorization_decision_id == authority.decision_id
+            assert correlation.request_id == authority.request.request_id
+            assert arguments == {"url": source.url}
+            return evidence(url=source.url)
+
+    store, authority, mcp = Store(), Authority(), Mcp()
+    asyncio.run(
+        CandidatePreflightService(
+            store, EvidenceTrustService(FakeTrustStore())
+        ).preflight_run_authorized(
+            workspace_id, run_id, authority, mcp, [source.url]
+        )
+    )
+
+    assert mcp.called is True
+    assert authority.request.action == "web.extract"
+    assert authority.request.topic_id == "identity"
+    assert [item.url for item in store.saved] == [source.url]
+
+
 def test_summary_automation_batches_eligible_candidates_within_execution_limit(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -390,19 +529,32 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
             return user
 
     class FakeTrustService:
+        resume_records: list[tuple[object, ...]] = []
+
         async def accept(self, *_: object) -> EvidenceTrustEvaluation:
             return review.model_copy(
                 update={"disposition": "eligible", "override_reason": "Reviewed"}
             )
 
+        async def record_workflow_resume(self, *args: object) -> None:
+            self.resume_records.append(args)
+
     app.state.identity_service = FakeIdentityService()
     app.state.web_trust_service = FakeTrustService()
 
-    class FakeSummaryAutomation:
-        async def start_for_urls(self, *_: object) -> None:
-            return None
+    class FakeResearchStore:
+        async def get_run(self, *_: object) -> object:
+            return SimpleNamespace(status_version=4)
 
-    app.state.evidence_summary_automation = FakeSummaryAutomation()
+    resumed: list[tuple[object, ...]] = []
+
+    class FakeWorkflowEntry:
+        async def resume_after_review(self, *args: object) -> object:
+            resumed.append(args)
+            return SimpleNamespace(status="evaluating_relevance")
+
+    app.state.research_store = FakeResearchStore()
+    app.state.research_workflow_entry = FakeWorkflowEntry()
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -421,3 +573,7 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
     assert response.status_code == 200
     assert response.json()["disposition"] == "eligible"
     assert response.json()["override_reason"] == "Reviewed"
+    assert len(app.state.web_trust_service.resume_records) == 1
+    assert resumed == [
+        (user.workspace_id, run_id, review.source_url, review.content_hash)
+    ]

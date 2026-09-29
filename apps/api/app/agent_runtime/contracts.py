@@ -8,6 +8,38 @@ from pydantic import BaseModel, ConfigDict, Field
 
 RuntimeRole = Literal["orchestrator", "planner", "researcher", "reviewer"]
 RuntimeCapability = Literal["web.search", "web.extract"]
+AUTHORITY_POLICY_VERSION = "research-authority:v1"
+ResearchStage = Literal[
+    "planning",
+    "discovering",
+    "acquiring",
+    "awaiting_review",
+    "evaluating_relevance",
+    "summarizing",
+    "assessing_coverage",
+    "reporting",
+    "completed",
+    "failed",
+]
+AuthorizationDecisionReason = Literal[
+    "allowed",
+    "unknown_action",
+    "run_inactive",
+    "step_inactive",
+    "capability_not_granted",
+    "wrong_workspace",
+    "wrong_research_task",
+    "invalid_stage",
+    "resource_out_of_scope",
+    "source_not_discovered",
+    "source_limit_exhausted",
+    "attempt_limit_exhausted",
+    "retry_limit_exhausted",
+    "gap_limit_exhausted",
+    "human_decision_missing",
+    "malformed_context",
+    "stale_authorization",
+]
 ReviewOutcome = Literal["accepted", "revision_requested", "needs_attention"]
 RunStatus = Literal[
     "requested",
@@ -30,6 +62,71 @@ class RuntimeRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     goal: str = Field(min_length=1, max_length=512)
+
+
+class CapabilityRequest(BaseModel):
+    """A model proposal containing identities and arguments, never authority."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID
+    runtime_run_id: UUID
+    runtime_step_id: UUID
+    research_run_id: UUID
+    research_status: ResearchStage
+    research_status_version: int = Field(ge=0)
+    topic_id: str = Field(min_length=1, max_length=128)
+    action: RuntimeCapability
+    resource_type: Literal["research_query", "source"]
+    resource_id: str = Field(min_length=1, max_length=2_048)
+    arguments: dict[str, object] = Field(default_factory=dict)
+    request_id: UUID
+    purpose: str = Field(min_length=1, max_length=512)
+
+
+class AuthorizationDecision(BaseModel):
+    """Persisted default-deny decision made from canonical platform records."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: UUID
+    workspace_id: UUID
+    runtime_run_id: UUID
+    runtime_step_id: UUID
+    research_run_id: UUID
+    action: RuntimeCapability
+    resource_type: Literal["research_query", "source"]
+    resource_id: str
+    decision: Literal["allow", "deny"]
+    reason_code: AuthorizationDecisionReason
+    explanation: str = Field(min_length=1, max_length=512)
+    authority_policy_version: str
+    request_facts: dict[str, object] = Field(default_factory=dict)
+    request_id: UUID
+    research_status_version: int = Field(ge=0)
+    created_at: datetime
+
+
+class AuthorizationDecisionList(BaseModel):
+    """Bounded, safe authority decisions for workspace audit review."""
+
+    decisions: list[AuthorizationDecision]
+
+
+class McpExecutionCorrelation(BaseModel):
+    """Identity link required before an agent-triggered MCP invocation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    workspace_id: UUID
+    research_run_id: UUID
+    runtime_run_id: UUID
+    runtime_step_id: UUID
+    authorization_decision_id: UUID
+    request_id: UUID
+    tool_name: RuntimeCapability
+    resource_type: Literal["research_query", "source"]
+    resource_id: str
 
 
 class RuntimeTransitionRequest(BaseModel):
@@ -130,6 +227,8 @@ class RuntimeRun(BaseModel):
     created_at: datetime
     updated_at: datetime
     workspace_id: UUID | None = None
+    research_run_id: UUID | None = None
+    authority_policy_version: str = AUTHORITY_POLICY_VERSION
     steps: list[RuntimeStep] = Field(default_factory=list)
     handoffs: list[RuntimeHandoff] = Field(default_factory=list)
     memories: list[RuntimeMemory] = Field(default_factory=list)

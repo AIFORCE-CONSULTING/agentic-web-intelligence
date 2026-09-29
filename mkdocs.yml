@@ -66,6 +66,10 @@ nav:
       - Dependency management: dependency-management.md
   - Architecture:
       - Platform architecture: architecture.md
+      - Current platform architecture: current-platform-architecture.md
+      - Architecture diagram glossary: architecture-glossary.md
+      - Cerbos and RuntimeService evaluation: cerbos-runtime-service-evaluation.md
+      - Architecture constitution: architecture-constitution.md
       - Architecture diagrams: diagrams/index.md
       - Repository organization: repositories.md
       - Decisions (ADRs): decisions.md
@@ -84,6 +88,7 @@ nav:
       - ADR 0013 — Durable execution: adr/0013-governed-durable-execution-contract.md
       - ADR 0014 — Local-model provider: adr/0014-governed-local-model-provider.md
       - ADR 0015 — Local web trust: adr/0015-local-policy-controlled-web-trust.md
+      - ADR 0016 — Agentic research workflow: adr/0016-governed-local-agent-capability-requests.md
   - Web research: governed-web-research.md
   - Agent runtime: agent-runtime.md
   - Durable execution: durable-execution.md

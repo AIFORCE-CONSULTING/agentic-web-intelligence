@@ -67,13 +67,10 @@ summaries and page-level keywords.
 - Validate local quality, model-unavailable behavior, prompt-injection
   resistance, workspace isolation, and direct-versus-durable routing.
 
-## Phase 7
+## Phase 7 (complete)
 
-### Refactoring
+#### Refactoring
 
-- [ ] Use the existing keyword groups to generate a cross-source synthesis for
-  each shared keyword. Each synthesis identifies what the linked source
-  summaries have in common, where they differ, and their relevant caveats.
 - [x] Keep one canonical research run for each normalized web-search target. A
   repeated **Discover sources** action performs a fresh provider search but
   never creates a duplicate target container.
@@ -92,7 +89,7 @@ summaries and page-level keywords.
   sentence from its source summary, and source summaries record the fixed
   prompt version used to create them.
 
-### Local Policy-Controlled Web Trust
+#### Local Policy-Controlled Web Trust
 
 Add a browser-agnostic control point that determines whether a captured web
 evidence version may enter the platform's evidence and AI workflows. This phase
@@ -122,25 +119,211 @@ truthfulness or replace browser safety protections.
   prevent evidence requiring review or blocked evidence from automated model
   context.
 
-#### Open work
+- [x] Add a review experience for evidence requiring review. A human acceptance
+  records its identity, reason, exact evidence-version scope, and optional expiry
+  independently of the UI and execution mechanism.
 
-- [ ] Add a review experience for evidence requiring review. A human acceptance or
-  override records its identity, reason, scope, and expiry independently of the
-  UI and execution mechanism.
-- [ ] Re-evaluate evidence after refresh or an applicable policy change. The
-  platform uses direct execution for one ordinary evaluation and automatically
-  uses its mandatory Temporal infrastructure when workload, retry, or review
-  thresholds require durable execution.
-- [ ] Validate C2PA provenance for supported file assets while recording ordinary
-  HTML as a distinct case, not as invalid solely because it has no asset-level
-  provenance manifest.
-- [ ] Validate policy enforcement, policy changes, refresh, overrides, workspace
-  isolation, prompt-injection resistance, and direct-versus-durable routing.
+## Phase 7.5 - Architecture Refactoring
+
+Close the architecture gaps identified while introducing the agentic research
+workflow. Preserve `RuntimeService` as the single boundary that determines what
+an agent, reviewer, and human operator may do. LangGraph coordinates research,
+but it does not grant authority. The governed MCP host executes only authorized
+tool requests, EvidenceTrustService controls whether evidence may enter model
+context, Temporal makes qualifying work durable, and PostgreSQL remains the
+official record.
+
+Implementation proceeds in this order:
+
+1. [x] **Define the unified workflow state and graph structure.** The LangGraph
+   working state carries the research run and workspace identifiers, operator
+   question, total source limit, planned topics, source progress, uncovered
+   topics, gap-search count, workflow stage, and failure information. The graph
+   coordinates topic planning, searches, acquisition, relevance, summaries,
+   coverage, no more than two missing-topic search rounds, final reporting, and
+   waits for human or durable work. This is temporary execution context;
+   PostgreSQL remains the official business and audit record.
+2. [x] **Authorize from canonical stored authority.** Replace the narrow
+   object-based capability check with a RuntimeService request containing stable
+   workspace, run, step, action, resource, and bounded-context identifiers.
+   RuntimeService reloads the stored run, active step, role, and capability grant
+   before deciding. A LangGraph node cannot authorize itself by supplying a
+   `RuntimeStep` object or a capability collection.
+3. [x] **Evaluate the complete capability request.** In addition to the stored
+   role grant, RuntimeService verifies that the run and step are active, the
+   resource belongs to the same workspace and research task, the requested URL
+   was discovered for that task, the current workflow stage permits the action,
+   and applicable source, attempt, retry, and gap-search limits remain. Evidence
+   review and trust decisions remain owned by their existing services and become
+   bounded authorization facts, not caller assertions.
+4. [x] **Version the authority policy.** Give the RuntimeService rules an
+   explicit version and persist that version with every runtime run and
+   capability decision. Changing role grants, handoffs, human gates, or
+   authorization conditions creates a new version so historical decisions remain
+   explainable without reconstructing them from Git history.
+5. [x] **Return and retain structured authorization decisions.** Every
+   capability request produces `allow` or `deny`, a stable reason code, a safe
+   human-readable explanation, the authority-policy version, and bounded request
+   facts. Persist both allowed and denied decisions before any allowed action is
+   sent to the governed MCP host. Never retain credentials, secrets, or raw page
+   content in these records.
+6. [x] **Add a complete authorization test matrix.** Prove the expected decision
+   for every role and protected capability across active, inactive, terminal,
+   wrong-workspace, wrong-run, undiscovered-source, exhausted-limit,
+   missing-human-approval, malformed-context, and unknown-action cases. Every
+   combination without an explicit allow must demonstrate default deny.
+7. [x] **Consolidate the duplicate agent-authority path.** Move the useful query
+   reservation, source-attempt, source-scope, and gap-search checks currently in
+   `AgenticResearchControlService` under RuntimeService's strengthened authority
+   boundary. Update LangGraph to request decisions from RuntimeService using the
+   stored agent assignment. Remove hardcoded node-supplied grants and retire
+   `AgenticResearchControlService` only after its callers, records, and tests have
+   migrated.
+8. [x] **Finish connecting existing services through typed graph nodes.** The
+   topic-planning, search, acquisition, trust, relevance, summary, coverage, and
+   reporting nodes exist, but their authority connection is incomplete. Finish
+   the nodes using RuntimeService for authority and the established service owner
+   for each business operation, without copying policy or creating replacement
+   stores.
+9. [x] **Complete end-to-end integration tests after authority consolidation.**
+   Existing tests already cover much of the research sequence. Extend and rerun
+   them through RuntimeService to prove task-wide source limits, known-URL reuse,
+   direct and Temporal-backed work, exclusion of blocked and review-required
+   evidence, safe relevance failures, two-round gap limits, retry
+   de-duplication, and reports grounded only in eligible, relevant stored
+   evidence.
+10. [x] **Connect the existing Discover Sources action to LangGraph.** Preserve
+    the current operator workflow: enter a question, choose the total source
+    count, and click **Discover Sources**. Refactor `POST /v1/research/runs` so it
+    authenticates and validates the request, finds or creates the research
+    record, creates the RuntimeService-controlled agent assignment, starts the
+    unified graph, and returns stored status. The route no longer owns the
+    detailed sequence, and no additional start button or agent interface is
+    introduced.
+11. [x] **Verify UI polling and durable continuation under the clean-start
+    policy.** The UI displays canonical research progress while Temporal
+    completes qualifying work and returns control to the correct LangGraph
+    stage. Obsolete test-era runtime, checkpoint, and Temporal history was
+    removed rather than carried through a compatibility layer. Preserve
+    `CandidatePreflightWorkflow` and `EvidenceSummaryWorkflow`; neither the model
+    nor the operator chooses the execution mechanism.
+12. [x] **Remove the standalone plain-Python agentic router.** Its useful typed
+    stages, bounded transitions, human-review wait, gap-search limit, and
+    incomplete-report behavior belong in the unified LangGraph and established
+    services. Transfer remaining useful tests before deleting the second
+    workflow path. Keep the offline model evaluation as an independent test
+    suite.
+13. [x] **Retire the obsolete earlier executor and durable workflow.** All
+    callers use the unified graph. The old deterministic planner, first-result
+    executor, reviewer cycle, unused scheduling boundary and activities,
+    `GovernedRuntimeWorkflow`, and obsolete test data have been removed.
+    `RuntimeService` and the RuntimeStore records needed by the unified workflow
+    remain. The Admin **Durable Work** view now provides read-only visibility
+    from current preflight and summary stores.
+14. [x] **Update the architecture records and close the refactor.** Update the
+    architecture diagram, glossary, ADR 0016, runtime documentation, and caller
+    descriptions to show one LangGraph coordination path and one RuntimeService
+    authority path. Record what was migrated or retired and mark Phase 7.5
+    complete only after the implementation and tests agree with those records.
+
+## Phase 8 - Agentic Research Workflow
+
+Build a local research agent that can carry out a bounded web-research task.
+The operator owns the research question. The agent identifies useful research
+steps, while platform code validates and performs each search, evidence, trust,
+storage, and execution action.
+
+#### Foundations already completed
+
+- [x] Define the general capability boundary in ADR 0016. A local model may
+  request an approved platform capability, but platform code remains responsible
+  for validating, executing, recording, and routing the request.
+- [x] Complete a narrow offline evaluation of `qwen3:1.7b` requesting a future
+  public cookie-preference capability. Retain the result as preliminary evidence
+  about that one request. It does not establish that the model can complete the
+  full research workflow.
+
+#### Research-agent design and evaluation
+
+- [x] Rewrite ADR 0016 around the complete agentic research workflow, including
+  topic planning, source research, evidence eligibility, topic coverage, bounded
+  gap searches, final reporting, platform authority, and human review.
+- [x] Update ADR 0014 so the existing evidence summarizer remains a separate,
+  no-tool model role while ADR 0016 governs the research agent.
+- [x] Define and validate the topic-planning response. For one operator question,
+  the model may propose no more than three focused topics. Each topic contains a
+  stable `topic_id`, a plain-language topic description, and one web-search query.
+- [x] Store topic coverage separately from source keywords. Evidence counts
+  toward a topic only after the platform has acquired usable content, allowed it
+  through the trust workflow, accepted it as relevant to that topic, and stored
+  its summary and keywords.
+- [x] Add a strict topic-relevance decision using the topic description and a
+  bounded excerpt from an eligible evidence version. Accept only an exact `YES`
+  or `NO`; record every malformed response as a model failure instead of
+  silently interpreting it as approval.
+- [x] Define the agent's initial research capability catalog. It begins with
+  bounded search and evidence-acquisition requests through the existing governed
+  runtime and MCP host. Cookie-preference handling may be added only after that
+  capability is separately implemented and approved.
+- [x] Keep request validation, source reuse and de-duplication, trust-policy
+  enforcement, database writes, retry limits, loop counters, and audit records
+  in platform code. The model may suggest the next research action, but the
+  application checks whether it is allowed, prevents repeated searches, limits
+  evidence-acquisition attempts, and stops additional missing-evidence searches
+  after two rounds. These decisions and counts are stored in the database so a
+  restart cannot erase them. Existing application components continue to reuse
+  evidence, prevent duplicate sources, apply the trust policy, save records, and
+  retain the history of accepted and denied requests.
+- [x] Build a versioned offline evaluation for the complete workflow. Cover topic
+  planning, relevance decisions, duplicate sources, eligible, blocked, and
+  review-required evidence, malformed model responses, hostile webpage
+  instructions, missing-topic searches, loop limits, and final-report grounding.
+- [x] Run every evaluation case repeatedly with fixed model settings. Record the
+  model version, prompt version, test version, expected result, actual result,
+  and resource use.
+- [x] Select `qwen3:1.7b` for the bounded research workflow after it passed all
+  20 complete-workflow evaluation cases in five repeated attempts. Fourteen of
+  15 topic plans passed on the first response; the remaining response omitted
+  the website perspective and passed after the one permitted correction. Keep
+  prompt and response validation, one bounded correction, and fail-closed
+  handling as required parts of the selected system. This decision prioritizes
+  useful local research on modest hardware without requiring a paid cloud model.
+  It clears the model-evaluation gate but does not by itself enable live research
+  capabilities.
 
 ## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
+
+- **Monitor Cerbos for future authorization needs** — the documented initial
+  Cerbos and `RuntimeService` evaluation recommends retaining `RuntimeService`
+  and incorporating several authorization
+  practices without adding Cerbos today. Revisit Cerbos as a possible policy
+  evaluator behind `RuntimeService` when the platform has substantially more
+  roles, tools, resource types, tenant-specific policies, or policy changes that
+  must be managed independently of application releases. Monitoring Cerbos is
+  not approval to replace the current authority boundary or create another live
+  capability path.
+- **Trust-policy re-evaluation after refresh or policy change** — re-evaluate
+  evidence when governed refresh functionality or an applicable policy change
+  exists. Use direct execution for one ordinary evaluation and mandatory
+  Temporal infrastructure when workload, retry, or review thresholds require
+  durable execution.
+- **C2PA provenance validation** — validate C2PA provenance for supported file
+  assets while recording ordinary HTML as a distinct case, not as invalid solely
+  because it has no asset-level provenance manifest.
+- **Expanded trust-policy validation** — validate policy enforcement, policy
+  changes, refresh, overrides, workspace isolation, prompt-injection resistance,
+  and direct-versus-durable routing.
+
+- **Topic-plan feedback** — add optional thumbs-up and thumbs-down feedback to
+  the operator's topic-plan view. For negative feedback, record a simple reason
+  such as a missing subject, irrelevant topic, overlapping topics, weak search
+  query, or unsuitable topic count, with optional comments. Associate feedback
+  with the research task, plan, model artifact, and prompt version so recurring
+  failures can become new offline evaluation cases. Do not automatically train
+  or change the model from an individual response.
 
 - **Trust-policy management** — design a separately authorized workflow for
   changing local trust-policy rules, potentially through a purpose-built MCP

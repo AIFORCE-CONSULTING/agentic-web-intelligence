@@ -1,25 +1,30 @@
 """HTTP entry point for Agentic Web Intelligence."""
 
 import asyncio
+from contextlib import asynccontextmanager
 from typing import Literal
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+from temporalio.client import Client
 
-from app.agent_runtime.contracts import (
-    RuntimeRun,
-    RuntimeRunList,
-    RuntimeStoreUnavailable,
+from app.agent_runtime.contracts import AuthorizationDecisionList, RuntimeStoreUnavailable
+from app.agent_runtime.research_workflow import (
+    ResearchCheckpointLifecycle,
+    ResearchWorkflowConflict,
+    ResearchWorkflowUnavailable,
+    UnifiedResearchWorkflowEntry,
+    compile_research_workflow,
 )
-from app.agent_runtime.service import RuntimePlanError, RuntimeService
+from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.durable_execution.service import (
-    DurableExecutionPolicyError,
-    DurableExecutionUnavailable,
-    TemporalRuntimeBoundary,
-)
+from app.agentic_research.relevance import TopicRelevanceService
+from app.agentic_research.reporting import ResearchReportingService
+from app.agentic_research.store import AgenticResearchStore
+from app.agentic_research.topic_planning import TopicPlanningService
+from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
@@ -88,6 +93,11 @@ from app.prompt_templates import (
     governed_research_template_info,
     render_governed_research_prompt,
 )
+from app.research_durable_work import (
+    ResearchDurableWork,
+    ResearchDurableWorkList,
+    ResearchDurableWorkService,
+)
 from app.secrets import DeploymentSecrets, SecretName, SecretStatusList
 from app.settings import get_settings
 from app.web_research.contracts import (
@@ -103,7 +113,6 @@ from app.web_research.contracts import (
     ResearchStoreUnavailable,
     SearchRequest,
     SearchResponse,
-    SourceCandidate,
     ToolPolicyError,
     ToolProviderError,
     ToolRetrievalError,
@@ -118,10 +127,8 @@ from app.web_trust.contracts import (
     EvidenceTrustEvaluationList,
 )
 from app.web_trust.preflight import (
-    DIRECT_PREFLIGHT_SOURCE_LIMIT,
     CandidatePreflightService,
     CandidatePreflightTemporalBoundary,
-    CandidatePreflightUnavailable,
 )
 from app.web_trust.service import EvidenceTrustService
 from app.web_trust.store import WebTrustStore, WebTrustStoreUnavailable
@@ -166,21 +173,51 @@ def create_app() -> FastAPI:
 
     settings = get_settings()
     settings.validate_runtime_configuration()
+    @asynccontextmanager
+    async def lifespan(application: FastAPI):
+        checkpoint_lifecycle = application.state.research_checkpoint_lifecycle
+        try:
+            saver = await checkpoint_lifecycle.start()
+            graph = compile_research_workflow(
+                application.state.research_workflow_nodes,
+                application.state.research_store,
+                saver,
+            )
+            application.state.research_workflow_graph = graph
+            application.state.research_workflow_entry = UnifiedResearchWorkflowEntry(
+                application.state.research_store,
+                application.state.runtime_service,
+                checkpoint_lifecycle,
+                graph,
+                application.state.research_temporal_ready,
+            )
+        except RuntimeError:
+            # Health and research entry points expose the unavailable dependency.
+            application.state.research_workflow_graph = None
+            application.state.research_workflow_entry = None
+        try:
+            yield
+        finally:
+            await checkpoint_lifecycle.stop()
+
     app = FastAPI(
         title="Agentic Web Intelligence API",
         version="0.1.0",
         description="Gateway and orchestration boundary for enterprise AI agent capabilities.",
+        lifespan=lifespan,
     )
     app.state.deployment_secrets = DeploymentSecrets(settings)
     app.state.research_store = ResearchStore(
         settings.database_url, app.state.deployment_secrets.redact
     )
+    app.state.research_checkpoint_lifecycle = ResearchCheckpointLifecycle(
+        settings.database_url, app.state.research_store
+    )
     app.state.runtime_store = RuntimeStore(
         settings.database_url, app.state.deployment_secrets.redact
     )
-    app.state.runtime_service = RuntimeService(app.state.runtime_store)
-    app.state.temporal_runtime = TemporalRuntimeBoundary(
-        settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
+    app.state.runtime_service = RuntimeService(
+        app.state.runtime_store, app.state.research_store
     )
     app.state.identity_store = IdentityStore(settings.database_url)
     app.state.security_audit_store = SecurityAuditStore(
@@ -200,6 +237,7 @@ def create_app() -> FastAPI:
     app.state.local_model_provider = LocalModelProviderService(
         LocalModelProviderStore(settings.database_url)
     )
+    app.state.agentic_research_store = AgenticResearchStore(settings.database_url)
     app.state.evidence_summary_store = EvidenceSummaryStore(settings.database_url)
     app.state.web_trust_store = WebTrustStore(
         settings.database_url, app.state.deployment_secrets.redact
@@ -230,7 +268,64 @@ def create_app() -> FastAPI:
         app.state.research_store,
         app.state.evidence_summary_temporal,
     )
-    app.state.mcp_host = GovernedWebMcpHost(deployment_secrets=app.state.deployment_secrets)
+    app.state.research_durable_work = ResearchDurableWorkService(
+        app.state.research_store,
+        app.state.evidence_summary_store,
+    )
+    async def record_correlated_mcp_event(correlation, outcome, details) -> None:
+        await app.state.research_store.record_mcp_tool_event(
+            correlation.workspace_id,
+            str(correlation.request_id),
+            correlation.tool_name,
+            outcome,
+            details,
+            research_run_id=correlation.research_run_id,
+            runtime_run_id=correlation.runtime_run_id,
+            runtime_step_id=correlation.runtime_step_id,
+            authorization_decision_id=correlation.authorization_decision_id,
+            resource_type=correlation.resource_type,
+            resource_id=correlation.resource_id,
+        )
+
+    app.state.mcp_host = GovernedWebMcpHost(
+        correlated_audit_recorder=record_correlated_mcp_event,
+        deployment_secrets=app.state.deployment_secrets,
+    )
+    app.state.research_workflow_nodes = platform_research_nodes(
+        topic_planning=TopicPlanningService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+        authority=app.state.runtime_service,
+        mcp=app.state.mcp_host,
+        research_store=app.state.research_store,
+        agentic_store=app.state.agentic_research_store,
+        preflight=app.state.candidate_preflight_service,
+        preflight_temporal=app.state.candidate_preflight_temporal,
+        relevance=TopicRelevanceService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+        trust=app.state.web_trust_service,
+        summaries=app.state.evidence_summary_automation,
+        reporting=ResearchReportingService(
+            app.state.agentic_research_store, app.state.local_model_provider
+        ),
+    )
+
+    async def research_temporal_ready() -> bool:
+        if not settings.temporal_address:
+            return False
+        try:
+            await Client.connect(
+                settings.temporal_address,
+                namespace=settings.temporal_namespace,
+            )
+        except Exception:
+            return False
+        return True
+
+    app.state.research_temporal_ready = research_temporal_ready
+    app.state.research_workflow_graph = None
+    app.state.research_workflow_entry = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -347,14 +442,6 @@ def create_app() -> FastAPI:
         """Restrict external Project changes to authenticated human administrators or operators."""
 
         identity = await require_workspace_permission(http_request, "github.projects.manage")
-        if not isinstance(identity, AuthenticatedUser):
-            raise HTTPException(status_code=403, detail="A human operator is required.")
-        return identity
-
-    async def require_human_runtime_operator(http_request: Request) -> AuthenticatedUser:
-        """Allow durable controls only to a human administrator or operator."""
-
-        identity = await require_workspace_permission(http_request, "runtime.execute")
         if not isinstance(identity, AuthenticatedUser):
             raise HTTPException(status_code=403, detail="A human operator is required.")
         return identity
@@ -845,7 +932,21 @@ def create_app() -> FastAPI:
                 detail="The internal search provider is available through the governed boundary.",
             )
 
-        services = await asyncio.gather(persistence_health(), discovery_health())
+        async def checkpoint_health() -> DependencyHealth:
+            status = await http_request.app.state.research_checkpoint_lifecycle.readiness()
+            return DependencyHealth(
+                name="Research workflow checkpoints",
+                status=(
+                    "ready"
+                    if status.ready
+                    else "unavailable" if settings.database_url else "unconfigured"
+                ),
+                detail=status.detail,
+            )
+
+        services = await asyncio.gather(
+            persistence_health(), discovery_health(), checkpoint_health()
+        )
         return ServiceHealthResponse(
             status=(
                 "ready" if all(service.status == "ready" for service in services) else "degraded"
@@ -872,223 +973,6 @@ def create_app() -> FastAPI:
         host: GovernedWebMcpHost = http_request.app.state.mcp_host
         return host.registry()
 
-    @app.get("/v1/runtime/runs/{run_id}", response_model=RuntimeRun, tags=["runtime"])
-    async def get_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Inspect a runtime run without exposing mutation of its authority fields."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_workspace_permission(http_request, "runtime.read")
-        store: RuntimeStore = http_request.app.state.runtime_store
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        if run is None:
-            raise HTTPException(status_code=404, detail="Runtime run was not found.")
-        return run
-
-    @app.get("/v1/runtime/runs", response_model=RuntimeRunList, tags=["runtime"])
-    async def list_runtime_runs(
-        http_request: Request, limit: int = Query(default=25, ge=1, le=50)
-    ) -> RuntimeRunList:
-        """List bounded runtime state for operator inspection."""
-
-        user = await require_workspace_permission(http_request, "runtime.read")
-        store: RuntimeStore = http_request.app.state.runtime_store
-        try:
-            return RuntimeRunList(runs=await store.list_runs(limit, user.workspace_id))
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/approval/approve",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def approve_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Record a human approval; scheduler selection remains server-side."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            approved = await service.record_human_approval(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.approval.approved",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return approved
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/approval/reject",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def reject_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Record a human rejection; no scheduler signal is involved."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            rejected = await service.reject_human_approval(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.approval.rejected",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return rejected
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/attention/approve-revision",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def approve_runtime_revision(run_id: str, http_request: Request) -> RuntimeRun:
-        """Approve one bounded exception revision; it never changes plan authority."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            revised = await service.approve_exception_revision(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.review.exception_revision.approved",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return revised
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/attention/close",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def close_runtime_attention(run_id: str, http_request: Request) -> RuntimeRun:
-        """Close one unresolved attention wait without restarting a run."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            closed = await service.close_attention_run(parsed_run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.attention.closed",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return closed
-
-    @app.post(
-        "/v1/runtime/runs/{run_id}/durable-execution/cancel",
-        response_model=RuntimeRun,
-        tags=["runtime"],
-    )
-    async def cancel_durable_runtime_run(run_id: str, http_request: Request) -> RuntimeRun:
-        """Cancel only a nonterminal workspace-owned run and its fixed workflow ID."""
-
-        from uuid import UUID
-
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        user = await require_human_runtime_operator(http_request)
-        store: RuntimeStore = http_request.app.state.runtime_store
-        service: RuntimeService = http_request.app.state.runtime_service
-        boundary: TemporalRuntimeBoundary = http_request.app.state.temporal_runtime
-        try:
-            run = await store.get_run(parsed_run_id, user.workspace_id)
-            if run is None:
-                raise HTTPException(status_code=404, detail="Runtime run was not found.")
-            await service.require_durable_execution_scheduled(parsed_run_id)
-            cancelled = await service.cancel_run(parsed_run_id)
-            await boundary.cancel_scheduled_run(run_id)
-        except RuntimeStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except DurableExecutionUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        except (DurableExecutionPolicyError, RuntimePlanError) as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
-        await record_security_event(
-            http_request,
-            "runtime.durable_execution.cancelled",
-            "succeeded",
-            actor=user,
-            details={"run_id": run_id},
-        )
-        return cancelled
-
     @app.get("/v1/mcp/audit", response_model=McpToolAuditList, tags=["mcp"])
     async def list_mcp_tool_audit(
         http_request: Request, limit: int = Query(default=25, ge=1, le=100)
@@ -1103,6 +987,26 @@ def create_app() -> FastAPI:
             )
         except ResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/authorization-decisions",
+        response_model=AuthorizationDecisionList,
+        tags=["research"],
+    )
+    async def list_research_authorization_decisions(
+        http_request: Request, limit: int = Query(default=25, ge=1, le=100)
+    ) -> AuthorizationDecisionList:
+        """Expose safe allow and denial reasons without raw evidence or secrets."""
+
+        user = await require_workspace_permission(http_request, "security.audit.read")
+        store: RuntimeStore = http_request.app.state.runtime_store
+        try:
+            decisions = await store.list_authorization_decisions(
+                user.workspace_id, limit
+            )
+        except RuntimeStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        return AuthorizationDecisionList(decisions=decisions)
 
     @app.get("/v1/audit/security", response_model=SecurityAuditEventList, tags=["audit"])
     async def list_security_audit(
@@ -1186,48 +1090,80 @@ def create_app() -> FastAPI:
     async def create_research_run(
         request: ResearchRunRequest, http_request: Request, response: Response
     ) -> ResearchRun:
-        """Persist a discovery run and its source provenance as one durable record."""
+        """Start or resume the one governed research workflow."""
 
         user = await require_workspace_permission(http_request, "research.write")
-        store: ResearchStore = http_request.app.state.research_store
+        entry: UnifiedResearchWorkflowEntry | None = (
+            http_request.app.state.research_workflow_entry
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
         try:
-            run, created = await store.get_or_create_run(user.workspace_id, request.question)
-            try:
-                search = await run_search_workflow(request.question, request.max_results)
-            except ToolProviderError as error:
-                if created:
-                    await store.mark_failed(run.id, str(error))
-                raise HTTPException(status_code=503, detail=str(error)) from error
-            sources = [
-                SourceCandidate(rank=index, **result.model_dump())
-                for index, result in enumerate(search.results, start=1)
-            ]
-            new_sources = await store.save_new_sources(run.id, sources, request.max_results)
-            new_urls = [source.url for source in new_sources]
-            if new_sources and len(new_sources) <= DIRECT_PREFLIGHT_SOURCE_LIMIT:
-                await http_request.app.state.candidate_preflight_service.preflight_run(
-                    user.workspace_id, run.id, new_urls
-                )
-                automation: EvidenceSummaryAutomation = (
-                    http_request.app.state.evidence_summary_automation
-                )
-                await automation.start_for_discovered_candidates(
-                    user.workspace_id, run.id, new_urls
-                )
-            elif new_sources:
-                try:
-                    await http_request.app.state.candidate_preflight_temporal.schedule(
-                        run.id, new_urls
-                    )
-                except CandidatePreflightUnavailable as error:
-                    await store.fail_candidate_preflight(run.id, str(error))
-            persisted_run = await store.get_run(user.workspace_id, run.id)
-            assert persisted_run is not None
+            persisted_run, created = await entry.start_or_resume(
+                user.workspace_id,
+                request.question,
+                request.max_results,
+            )
             if not created:
                 response.status_code = 200
             return persisted_run
-        except (ResearchStoreUnavailable, WebTrustStoreUnavailable) as error:
+        except (ResearchWorkflowUnavailable, ResearchStoreUnavailable) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+        except ResearchWorkflowConflict as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/durable-work",
+        response_model=ResearchDurableWorkList,
+        tags=["research"],
+    )
+    async def list_research_durable_work(
+        http_request: Request,
+        limit: int = Query(default=25, ge=1, le=50),
+    ) -> ResearchDurableWorkList:
+        """List workspace research operations from their owning application stores."""
+
+        user = await require_workspace_permission(http_request, "runtime.read")
+        service: ResearchDurableWorkService = (
+            http_request.app.state.research_durable_work
+        )
+        try:
+            return ResearchDurableWorkList(
+                items=await service.list_for_workspace(user.workspace_id, limit)
+            )
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/runs/{run_id}/durable-work",
+        response_model=ResearchDurableWork,
+        tags=["research"],
+    )
+    async def get_research_durable_work(
+        run_id: str, http_request: Request
+    ) -> ResearchDurableWork:
+        """Inspect read-only durable operations for one workspace research record."""
+
+        from uuid import UUID
+
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        user = await require_workspace_permission(http_request, "runtime.read")
+        service: ResearchDurableWorkService = (
+            http_request.app.state.research_durable_work
+        )
+        try:
+            item = await service.get(user.workspace_id, parsed_run_id)
+        except (ResearchStoreUnavailable, EvidenceSummaryStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if item is None:
+            raise HTTPException(status_code=404, detail="Research run was not found.")
+        return item
 
     @app.get("/v1/research/runs/{run_id}", response_model=ResearchRun, tags=["research"])
     async def get_research_run(run_id: str, http_request: Request) -> ResearchRun:
@@ -1324,17 +1260,41 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
         if evaluation is None:
             raise HTTPException(status_code=404, detail="Evidence trust evaluation was not found.")
+        entry: UnifiedResearchWorkflowEntry | None = (
+            http_request.app.state.research_workflow_entry
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
         try:
-            await http_request.app.state.evidence_summary_automation.start_for_urls(
-                identity.workspace_id, parsed_run_id, [request.source_url]
+            run = await http_request.app.state.research_store.get_run(
+                identity.workspace_id, parsed_run_id
+            )
+            if run is None:
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            await service.record_workflow_resume(
+                identity.workspace_id,
+                parsed_run_id,
+                request.source_url,
+                request.content_hash,
+                run.status_version,
+            )
+            await entry.resume_after_review(
+                identity.workspace_id,
+                parsed_run_id,
+                request.source_url,
+                request.content_hash,
             )
         except (
             ResearchStoreUnavailable,
-            EvidenceSummaryStoreUnavailable,
             WebTrustStoreUnavailable,
-            EvidenceSummaryUnavailable,
+            ResearchWorkflowUnavailable,
         ) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
+        except (ResearchWorkflowConflict, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
         return evaluation
 
     @app.get("/v1/research/runs", response_model=ResearchRunList, tags=["research"])

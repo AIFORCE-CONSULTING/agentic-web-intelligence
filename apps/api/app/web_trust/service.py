@@ -1,6 +1,6 @@
 """Deterministic, browser-independent evidence eligibility evaluation."""
 
-from datetime import datetime
+from datetime import UTC, datetime
 from urllib.parse import urlsplit
 from uuid import UUID
 
@@ -69,12 +69,42 @@ class EvidenceTrustService:
             return None
         if evaluation.base_disposition != "review_required":
             raise ValueError("Only evidence requiring review can be accepted.")
+        if evaluation.override_id is not None:
+            return evaluation
+        if expires_at is not None:
+            if expires_at.tzinfo is None:
+                raise ValueError("Acceptance expiry must include a timezone.")
+            if expires_at <= datetime.now(UTC):
+                raise ValueError("Acceptance expiry must be in the future.")
         return await self._store.accept_evaluation(
             workspace_id, run_id, source_url, content_hash, actor_user_id, reason, expires_at
         )
 
     async def list_for_run(self, workspace_id: UUID, run_id: UUID) -> list[EvidenceTrustEvaluation]:
         return await self._store.list_latest_evaluations(workspace_id, run_id)
+
+    async def record_workflow_resume(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        source_url: str,
+        content_hash: str,
+        status_version: int,
+    ) -> None:
+        """Audit the graph continuation requested for one accepted evidence version."""
+
+        recorded = await self._store.record_workflow_resume(
+            workspace_id,
+            run_id,
+            source_url,
+            content_hash,
+            str(run_id),
+            status_version,
+        )
+        if not recorded:
+            raise ValueError(
+                "An active human acceptance is required before workflow continuation."
+            )
 
     @classmethod
     def effective_policy(cls) -> EffectiveWebTrustPolicy:

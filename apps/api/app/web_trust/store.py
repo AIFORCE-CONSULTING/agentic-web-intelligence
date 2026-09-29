@@ -39,12 +39,21 @@ CREATE TABLE IF NOT EXISTS web_evidence_trust_overrides (
     actor_user_id UUID NOT NULL REFERENCES platform_users(id) ON DELETE RESTRICT,
     reason TEXT NOT NULL,
     expires_at TIMESTAMPTZ,
+    workflow_thread_id TEXT,
+    workflow_status_version INTEGER,
+    workflow_resume_requested_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS web_evidence_trust_evaluations_lookup_idx
     ON web_evidence_trust_evaluations(run_id, source_url, content_hash, created_at DESC);
 CREATE INDEX IF NOT EXISTS web_evidence_trust_overrides_active_idx
     ON web_evidence_trust_overrides(evaluation_id, created_at DESC);
+ALTER TABLE web_evidence_trust_overrides
+    ADD COLUMN IF NOT EXISTS workflow_thread_id TEXT;
+ALTER TABLE web_evidence_trust_overrides
+    ADD COLUMN IF NOT EXISTS workflow_status_version INTEGER;
+ALTER TABLE web_evidence_trust_overrides
+    ADD COLUMN IF NOT EXISTS workflow_resume_requested_at TIMESTAMPTZ;
 """
 
 
@@ -163,7 +172,8 @@ class WebTrustStore:
                    FROM research_sources AS candidate
                    JOIN LATERAL (
                        SELECT * FROM web_evidence_trust_evaluations
-                       WHERE workspace_id = $1 AND source_url = candidate.url
+                       WHERE workspace_id = $1
+                         AND source_url = COALESCE(candidate.preflight_final_url, candidate.url)
                          AND content_hash = candidate.preflight_content_hash
                        ORDER BY created_at DESC LIMIT 1
                    ) AS evaluation ON TRUE
@@ -203,6 +213,45 @@ class WebTrustStore:
                 uuid4(), evaluation.id, workspace_id, actor_user_id, reason, expires_at,
             )
         return await self.latest_evaluation(workspace_id, run_id, source_url, content_hash)
+
+    async def record_workflow_resume(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        source_url: str,
+        content_hash: str,
+        thread_id: str,
+        status_version: int,
+    ) -> bool:
+        """Link one exact human acceptance to its trusted graph-resume request."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            result = await connection.execute(
+                """UPDATE web_evidence_trust_overrides AS override
+                   SET workflow_thread_id = $5, workflow_status_version = $6,
+                       workflow_resume_requested_at = COALESCE(
+                           workflow_resume_requested_at, now()
+                       )
+                   WHERE override.id = (
+                       SELECT active.id
+                       FROM web_evidence_trust_overrides AS active
+                       JOIN web_evidence_trust_evaluations AS evaluation
+                         ON evaluation.id = active.evaluation_id
+                       WHERE evaluation.workspace_id = $1 AND evaluation.run_id = $2
+                         AND evaluation.source_url = $3 AND evaluation.content_hash = $4
+                         AND (active.expires_at IS NULL OR active.expires_at > now())
+                       ORDER BY active.created_at DESC
+                       LIMIT 1
+                   )""",
+                workspace_id,
+                run_id,
+                source_url,
+                content_hash,
+                thread_id,
+                status_version,
+            )
+        return result == "UPDATE 1"
 
     @staticmethod
     def _to_evaluation(row: asyncpg.Record) -> EvidenceTrustEvaluation:

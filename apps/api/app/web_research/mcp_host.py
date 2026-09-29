@@ -8,10 +8,11 @@ HTTP clients, and Trafilatura remain implementation details behind this boundary
 import json
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Protocol
 
 from pydantic import BaseModel, Field, ValidationError
 
+from app.agent_runtime.contracts import McpExecutionCorrelation
 from app.identity.authorization import WorkspacePermission
 from app.secrets import DeploymentSecrets, SecretName
 from app.settings import Settings
@@ -34,6 +35,15 @@ class McpToolCallError(ValueError):
 
 
 AuditRecorder = Callable[[str | None, str, str, dict[str, object]], Awaitable[None]]
+CorrelatedAuditRecorder = Callable[
+    [McpExecutionCorrelation, str, dict[str, object]], Awaitable[None]
+]
+
+
+class AgentAuthorityVerifier(Protocol):
+    """Structural boundary for execution-time stored-authority verification."""
+
+    async def verify_execution(self, correlation: McpExecutionCorrelation) -> object: ...
 
 
 class ToolRegistryEntry(BaseModel):
@@ -175,10 +185,12 @@ class GovernedWebMcpHost:
         self,
         policy: GovernedWebToolPolicy | None = None,
         audit_recorder: AuditRecorder | None = None,
+        correlated_audit_recorder: CorrelatedAuditRecorder | None = None,
         deployment_secrets: DeploymentSecrets | None = None,
     ) -> None:
         self._policy = policy or GovernedWebToolPolicy()
         self._audit_recorder = audit_recorder
+        self._correlated_audit_recorder = correlated_audit_recorder
         self._deployment_secrets = deployment_secrets or DeploymentSecrets(Settings())
 
     def list_tools(self) -> list[dict[str, Any]]:
@@ -199,6 +211,34 @@ class GovernedWebMcpHost:
         """Return the full safe governance inventory for administrators."""
 
         return self._policy.registry()
+
+    async def invoke_authorized(
+        self,
+        correlation: McpExecutionCorrelation,
+        arguments: Mapping[str, Any],
+        authority: AgentAuthorityVerifier,
+    ) -> SearchResponse | Evidence:
+        """Invoke a provider only after rechecking one matching stored allow decision."""
+
+        await authority.verify_execution(correlation)
+        if self._correlated_audit_recorder is None:
+            raise McpToolCallError("The correlated MCP execution audit is unavailable.")
+        try:
+            result = await self._policy.call(
+                correlation.tool_name, arguments, self._deployment_secrets
+            )
+        except (McpToolCallError, ToolPolicyError, ToolProviderError, ToolRetrievalError) as error:
+            outcome = (
+                "denied" if isinstance(error, McpToolCallError | ToolPolicyError) else "failed"
+            )
+            await self._correlated_audit_recorder(
+                correlation, outcome, self._failure_details(arguments, error)
+            )
+            raise
+        await self._correlated_audit_recorder(
+            correlation, "succeeded", self._success_details(result)
+        )
+        return result
 
     async def handle(self, payload: Mapping[str, Any]) -> dict[str, Any]:
         """Handle the MCP methods needed by Phase 2's tool-only server."""

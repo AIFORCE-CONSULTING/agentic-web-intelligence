@@ -23,9 +23,15 @@ type Evidence = {
 type EvidenceTrustEvaluation = {
   id: string; source_url: string; content_hash: string; policy_version: string;
   disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
-  override_reason?: string | null;
+  base_disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
+  rule_outcomes: TrustRuleOutcome[]; component_version: string; created_at: string;
+  override_reason?: string | null; override_expires_at?: string | null;
+};
+type TrustRuleOutcome = {
+  rule: string; outcome: "passed" | "notice" | "review_required" | "blocked"; detail: string;
 };
 type EvidenceTrustEvaluationList = { evaluations: EvidenceTrustEvaluation[] };
+type ReviewFormState = { evidence: Evidence; evaluation: EvidenceTrustEvaluation };
 type EffectiveWebTrustPolicy = {
   version: string;
   rules: Record<string, string | number | string[]>;
@@ -33,11 +39,13 @@ type EffectiveWebTrustPolicy = {
 type AuditEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
 type ResearchRun = {
   id: string; question: string; status: string; sources: Source[]; evidence: Evidence[];
-  audit_events: AuditEvent[];
+  audit_events: AuditEvent[]; failed_stage?: string | null; failure_code?: string | null;
+  failure_explanation?: string | null; retryable: boolean; failed_at?: string | null;
 };
 type ResearchRunSummary = {
   id: string; question: string; status: string; created_at: string; updated_at: string;
-  source_count: number; evidence_count: number;
+  source_count: number; evidence_count: number; failed_stage?: string | null;
+  failure_code?: string | null; failure_explanation?: string | null; retryable: boolean;
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
 type EvidenceSummaryBatch = {
@@ -100,16 +108,16 @@ type LocalModelProviderReadiness = {
   mode: "unconfigured" | "ready" | "unavailable" | "invalid";
   provider: "ollama"; endpoint_url?: string | null; model_name?: string | null; detail: string;
 };
-type RuntimeEvent = { event_type: string; occurred_at: string; details: Record<string, unknown> };
-type RuntimeStep = {
-  id: string; role: string; title: string; status: string; allowed_capabilities: string[];
-  attempt_count: number; timeout_seconds: number;
+type ResearchDurableOperation = {
+  id: string; operation_type: "candidate_preflight" | "evidence_summary";
+  route: "direct" | "temporal"; status: string; updated_at: string;
+  failure_code?: string | null; failure_explanation?: string | null;
 };
-type RuntimeRunSummary = {
-  id: string; goal: string; status: string; created_at: string; updated_at: string; step_count: number;
+type ResearchDurableWork = {
+  research_run_id: string; question: string; research_status: string; updated_at: string;
+  operations: ResearchDurableOperation[];
 };
-type RuntimeRunList = { runs: RuntimeRunSummary[] };
-type RuntimeRun = RuntimeRunSummary & { steps: RuntimeStep[]; events: RuntimeEvent[] };
+type ResearchDurableWorkList = { items: ResearchDurableWork[] };
 
 const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:8000";
 const isDeveloperRoute = window.location.pathname === "/developer";
@@ -167,7 +175,7 @@ function DeveloperHub({
           <a className="developer-card" href={`${apiBaseUrl}/openapi.json`} target="_blank" rel="noreferrer"><strong>OpenAPI schema</strong><span>Use the machine-readable API contract for integrations.</span><small>{apiBaseUrl}/openapi.json</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/tools`} target="_blank" rel="noreferrer"><strong>MCP tool catalog</strong><span>Inspect the only agent-visible, read-only web tools.</span><small>{apiBaseUrl}/v1/mcp/tools</small></a>
           <a className="developer-card" href={`${apiBaseUrl}/v1/mcp/audit`} target="_blank" rel="noreferrer"><strong>MCP execution audit</strong><span>Review bounded, durable outcomes from direct MCP calls.</span><small>{apiBaseUrl}/v1/mcp/audit</small></a>
-          <a className="developer-card" href="/admin"><strong>Durable workflow controls</strong><span>Inspect workspace-owned runtime work and perform authorized approval actions.</span><small>localhost:3000/admin</small></a>
+          <a className="developer-card" href="/admin"><strong>Durable research work</strong><span>Inspect direct and Temporal-backed research operations from their stored platform records.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="/admin"><strong>Platform administration</strong><span>Sign in locally and inspect your workspace identity and security audit trail.</span><small>localhost:3000/admin</small></a>
           <a className="developer-card" href="http://localhost:8001" target="_blank" rel="noreferrer"><strong>Platform documentation</strong><span>Read architecture, web-research, and prompt-template guides.</span><small>localhost:8001 · included with the web-research stack</small></a>
         </div>
@@ -195,9 +203,9 @@ function AdminConsole() {
   const [draftTitle, setDraftTitle] = useState("");
   const [draftBody, setDraftBody] = useState("");
   const [draftPriority, setDraftPriority] = useState("");
-  const [runtimeRuns, setRuntimeRuns] = useState<RuntimeRunSummary[]>([]);
-  const [selectedRuntimeRun, setSelectedRuntimeRun] = useState<RuntimeRun | null>(null);
-  const [runtimeError, setRuntimeError] = useState<string | null>(null);
+  const [durableWork, setDurableWork] = useState<ResearchDurableWork[]>([]);
+  const [selectedDurableWork, setSelectedDurableWork] = useState<ResearchDurableWork | null>(null);
+  const [durableWorkError, setDurableWorkError] = useState<string | null>(null);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [bootstrapSecret, setBootstrapSecret] = useState("");
@@ -211,13 +219,13 @@ function AdminConsole() {
     setRoadmapError(null);
     if (currentUser.role === "administrator" || currentUser.role === "operator") {
       try {
-        const runtime = await apiRequest<RuntimeRunList>("/v1/runtime/runs");
-        setRuntimeRuns(runtime.runs);
-        setRuntimeError(null);
+        const work = await apiRequest<ResearchDurableWorkList>("/v1/research/durable-work");
+        setDurableWork(work.items);
+        setDurableWorkError(null);
       } catch (reason) {
-        setRuntimeRuns([]);
-        setSelectedRuntimeRun(null);
-        setRuntimeError(reason instanceof Error ? reason.message : "Unable to load durable work.");
+        setDurableWork([]);
+        setSelectedDurableWork(null);
+        setDurableWorkError(reason instanceof Error ? reason.message : "Unable to load durable work.");
       }
       const status = await apiRequest<GitHubProjectStatus>("/v1/github/projects/status");
       setGithubStatus(status);
@@ -244,9 +252,9 @@ function AdminConsole() {
       setGithubStatus(null);
       setGithubProject(null);
       setDraftItems([]);
-      setRuntimeRuns([]);
-      setSelectedRuntimeRun(null);
-      setRuntimeError(null);
+      setDurableWork([]);
+      setSelectedDurableWork(null);
+      setDurableWorkError(null);
     }
     if (currentUser.role !== "administrator") {
       setEvents([]);
@@ -336,40 +344,13 @@ function AdminConsole() {
     }
   }
 
-  async function inspectRuntimeRun(runId: string) {
+  async function inspectDurableWork(runId: string) {
     setBusy(true);
     setError(null);
     try {
-      setSelectedRuntimeRun(await apiRequest<RuntimeRun>(`/v1/runtime/runs/${encodeURIComponent(runId)}`));
+      setSelectedDurableWork(await apiRequest<ResearchDurableWork>(`/v1/research/runs/${encodeURIComponent(runId)}/durable-work`));
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to inspect durable work.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  async function controlRuntimeRun(
-    runId: string,
-    action: "approve" | "reject" | "cancel" | "approve-revision" | "close-attention",
-  ) {
-    setBusy(true);
-    setError(null);
-    try {
-      const encodedRunId = encodeURIComponent(runId);
-      const path = action === "cancel"
-        ? `/v1/runtime/runs/${encodedRunId}/durable-execution/cancel`
-        : action === "approve-revision"
-          ? `/v1/runtime/runs/${encodedRunId}/attention/approve-revision`
-          : action === "close-attention"
-            ? `/v1/runtime/runs/${encodedRunId}/attention/close`
-            : `/v1/runtime/runs/${encodedRunId}/approval/${action}`;
-      await apiRequest<RuntimeRun>(path, {
-        method: "POST",
-      });
-      await loadAdminData();
-      await inspectRuntimeRun(runId);
-    } catch (reason) {
-      setError(reason instanceof Error ? reason.message : "Unable to update durable work.");
     } finally {
       setBusy(false);
     }
@@ -380,8 +361,8 @@ function AdminConsole() {
       setUser(null);
       setEvents([]);
       setPosture(null);
-      setRuntimeRuns([]);
-      setSelectedRuntimeRun(null);
+      setDurableWork([]);
+      setSelectedDurableWork(null);
       if (reason instanceof Error && reason.message !== "Authentication is required.") {
         setError(reason.message);
       }
@@ -497,10 +478,10 @@ function AdminConsole() {
         </section>}
         {(user.role === "administrator" || user.role === "operator") && <section aria-labelledby="durable-work-heading">
           <div className="section-heading"><div><p className="eyebrow">Human-operated workflow</p><h2 id="durable-work-heading">Durable work</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
-          <p className="hint">This is the platform record of workspace work. Human approval is runtime-owned; Temporal is used only when trusted platform code selects durable execution.</p>
-          {runtimeError && <p className="error" role="alert">{runtimeError}</p>}
-          {runtimeRuns.length ? <ol className="runtime-runs">{runtimeRuns.map((run) => <li key={run.id}><button type="button" className="runtime-run" onClick={() => void inspectRuntimeRun(run.id)} disabled={busy}><span><strong>{run.goal}</strong><small>Updated {new Date(run.updated_at).toLocaleString()} · {run.step_count} steps</small></span><span className={`runtime-status ${run.status}`}>{run.status.replaceAll("_", " ")}</span></button></li>)}</ol> : !runtimeError && <p>No durable runtime work has been recorded for this workspace.</p>}
-          {selectedRuntimeRun && <DurableRunDetail run={selectedRuntimeRun} busy={busy} onControl={controlRuntimeRun} />}
+          <p className="hint">Read-only research operations composed from their owning platform records. Temporal execution history is not used as business status.</p>
+          {durableWorkError && <p className="error" role="alert">{durableWorkError}</p>}
+          {durableWork.length ? <ol className="runtime-runs">{durableWork.map((work) => <li key={work.research_run_id}><button type="button" className="runtime-run" onClick={() => void inspectDurableWork(work.research_run_id)} disabled={busy}><span><strong>{work.question}</strong><small>Updated {new Date(work.updated_at).toLocaleString()} · {work.operations.length} operations</small></span><span className={`runtime-status ${work.research_status}`}>{work.research_status.replaceAll("_", " ")}</span></button></li>)}</ol> : !durableWorkError && <p>No durable research work has been recorded for this workspace.</p>}
+          {selectedDurableWork && <DurableResearchDetail work={selectedDurableWork} />}
         </section>}
         {user.role === "administrator" && posture && <section aria-labelledby="security-posture-heading">
           <div className="section-heading"><div><p className="eyebrow">Deployment controls</p><h2 id="security-posture-heading">Security posture</h2></div><button type="button" className="secondary" onClick={() => void loadAdminData()} disabled={busy}>Refresh</button></div>
@@ -536,35 +517,12 @@ function AdminConsole() {
   );
 }
 
-function DurableRunDetail({
-  run,
-  busy,
-  onControl,
-}: {
-  run: RuntimeRun;
-  busy: boolean;
-  onControl: (runId: string, action: "approve" | "reject" | "cancel" | "approve-revision" | "close-attention") => Promise<void>;
-}) {
-  const scheduled = run.events.some((event) => event.event_type === "runtime.durable_execution.scheduled");
-  const approved = run.events.some((event) => event.event_type === "runtime.approval.approved");
-  const waitingForDecision = run.status === "awaiting_approval" && !approved;
-  const reviewAttention = run.status === "needs_attention" && run.events.some((event) => event.event_type === "runtime.review.needs_attention") && !run.events.some((event) => event.event_type === "runtime.durable_execution.needs_attention");
-  const exceptionApprovals = run.events.filter((event) => event.event_type === "runtime.review.exception_revision.approved").length;
-  const canApproveRevision = reviewAttention && exceptionApprovals < 3;
-  const canCancel = scheduled && !["completed", "rejected", "failed", "cancelled", "needs_attention"].includes(run.status);
-
-  return <article className="runtime-detail" aria-label="Selected durable runtime work">
-    <div className="section-heading"><div><p className="eyebrow">Selected work</p><h3>{run.goal}</h3></div><span className={`runtime-status ${run.status}`}>{run.status.replaceAll("_", " ")}</span></div>
-    <p className="hint">{waitingForDecision ? "Waiting for an authorized human decision. No execution path can begin yet." : canApproveRevision ? `Routine review attempts are exhausted. An operator may approve exception revision ${exceptionApprovals + 1} of 3 using the same approved roles and tools.` : reviewAttention ? "The operator revision budget is exhausted. This work can only be closed." : approved && run.status === "awaiting_approval" ? "Approval is recorded. Trusted platform code may now choose direct or durable execution based on the work." : "All actions remain bound to this stored run and workspace."}</p>
-    <div className="runtime-actions">
-      {waitingForDecision && <><button type="button" onClick={() => void onControl(run.id, "approve")} disabled={busy}>Approve plan</button><button type="button" className="secondary" onClick={() => void onControl(run.id, "reject")} disabled={busy}>Reject</button></>}
-      {canApproveRevision && <button type="button" onClick={() => void onControl(run.id, "approve-revision")} disabled={busy}>Approve exception revision</button>}
-      {reviewAttention && <button type="button" className="secondary" onClick={() => void onControl(run.id, "close-attention")} disabled={busy}>Close work</button>}
-      {canCancel && <button type="button" className="secondary" onClick={() => void onControl(run.id, "cancel")} disabled={busy}>Cancel</button>}
-    </div>
+function DurableResearchDetail({ work }: { work: ResearchDurableWork }) {
+  return <article className="runtime-detail" aria-label="Selected durable research work">
+    <div className="section-heading"><div><p className="eyebrow">Selected research</p><h3>{work.question}</h3></div><span className={`runtime-status ${work.research_status}`}>{work.research_status.replaceAll("_", " ")}</span></div>
+    <p className="hint">The research status comes from the canonical research record. Each operation below comes from the application store that owns it.</p>
     <div className="runtime-detail-grid">
-      <article><h4>Approved steps</h4><ul>{run.steps.map((step) => <li key={step.id}><strong>{step.role}</strong><span>{step.status} · attempt {step.attempt_count + 1}</span><small>{step.title}{step.allowed_capabilities.length ? ` · ${step.allowed_capabilities.join(", ")}` : " · no tools"}</small></li>)}</ul></article>
-      <article><h4>Lifecycle</h4><ul>{run.events.slice(-8).reverse().map((event, index) => <li key={`${event.event_type}-${event.occurred_at}-${index}`}><strong>{event.event_type}</strong><span>{new Date(event.occurred_at).toLocaleString()}</span></li>)}</ul></article>
+      <article><h4>Operations</h4><ul>{work.operations.map((operation) => <li key={operation.id}><strong>{operation.operation_type.replaceAll("_", " ")}</strong><span>{operation.status.replaceAll("_", " ")} · {operation.route}</span><small>Updated {new Date(operation.updated_at).toLocaleString()}</small>{operation.failure_explanation && <small className="warning-text">{operation.failure_code ? `${operation.failure_code}: ` : ""}{operation.failure_explanation}</small>}</li>)}</ul></article>
     </div>
   </article>;
 }
@@ -581,6 +539,10 @@ export function App() {
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
   const [trustPolicy, setTrustPolicy] = useState<EffectiveWebTrustPolicy | null>(null);
+  const [reviewForm, setReviewForm] = useState<ReviewFormState | null>(null);
+  const [reviewReason, setReviewReason] = useState("");
+  const [reviewExpiresAt, setReviewExpiresAt] = useState("");
+  const [candidateStatusFilter, setCandidateStatusFilter] = useState<Source["preflight_status"] | "all">("all");
   const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -640,11 +602,11 @@ export function App() {
   }, [summaryBatch]);
 
   useEffect(() => {
-    if (!run || run.status !== "preflighting") return;
+    if (!run || ["completed", "failed", "awaiting_review"].includes(run.status)) return;
     const timer = window.setInterval(() => {
       void apiRequest<ResearchRun>(`/v1/research/runs/${run.id}`).then((refreshed) => {
         setRun(refreshed);
-        if (refreshed.status === "ready") {
+        if (["completed", "failed", "awaiting_review"].includes(refreshed.status)) {
           void refreshRunLibrary();
           void loadSummaryBatch(refreshed.id);
         }
@@ -662,6 +624,8 @@ export function App() {
       await refreshTrustEvaluations(reopened.id);
       setSelectedAuditIndex(null);
       setSelectedSummaryUrl(null);
+      setReviewForm(null);
+      setCandidateStatusFilter("all");
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
       await loadWorkspaceSummaries();
@@ -689,6 +653,8 @@ export function App() {
       setTrustEvaluations([]);
       setSelectedAuditIndex(null);
       setSelectedSummaryUrl(null);
+      setReviewForm(null);
+      setCandidateStatusFilter("all");
       setSummaryBatch(null);
       await loadSummaryBatch(created.id);
       await loadWorkspaceSummaries();
@@ -737,13 +703,27 @@ export function App() {
     }
   }
 
-  async function acceptEvidenceForReview(
-    evidence: Evidence,
-    evaluation: EvidenceTrustEvaluation,
-  ) {
-    if (!run) return;
-    const reason = window.prompt("Why should this evidence be accepted for automated use?");
-    if (!reason?.trim()) return;
+  function openEvidenceReview(evidence: Evidence, evaluation: EvidenceTrustEvaluation) {
+    setReviewForm({ evidence, evaluation });
+    setReviewReason("");
+    setReviewExpiresAt("");
+  }
+
+  function closeEvidenceReview() {
+    setReviewForm(null);
+    setReviewReason("");
+    setReviewExpiresAt("");
+  }
+
+  async function acceptEvidenceForReview(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!run || !reviewForm || !reviewReason.trim()) return;
+    const expiresAt = reviewExpiresAt ? new Date(reviewExpiresAt) : null;
+    if (expiresAt && (Number.isNaN(expiresAt.valueOf()) || expiresAt <= new Date())) {
+      setError("Acceptance expiry must be in the future.");
+      return;
+    }
+    if (!window.confirm("Accept this exact captured evidence version for automated use and start its summary?")) return;
     setBusy(true);
     setError(null);
     try {
@@ -753,14 +733,16 @@ export function App() {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
-            source_url: evidence.url,
-            content_hash: evidence.content_hash,
-            reason: reason.trim(),
+            source_url: reviewForm.evidence.url,
+            content_hash: reviewForm.evidence.content_hash,
+            reason: reviewReason.trim(),
+            ...(expiresAt ? { expires_at: expiresAt.toISOString() } : {}),
           }),
         },
       );
       await refreshTrustEvaluations(run.id);
       await loadSummaryBatch(run.id);
+      closeEvidenceReview();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to accept the evidence.");
     } finally {
@@ -786,6 +768,12 @@ export function App() {
     }
   }
   const keywordCards = [...keywordGroups.values()].sort((left, right) => left.label.localeCompare(right.label));
+  const candidateStatuses = run
+    ? [...new Set(run.sources.map((source) => source.preflight_status))].sort()
+    : [];
+  const visibleCandidates = run
+    ? run.sources.filter((source) => candidateStatusFilter === "all" || source.preflight_status === candidateStatusFilter)
+    : [];
   const selectedSummary = workspaceSummaries.find((source) => source.url === selectedSummaryUrl) ?? null;
   const sourceTitle = (source: WorkspaceSummaryArtifact) => source.title || source.url;
 
@@ -819,6 +807,7 @@ export function App() {
       </section>
 
       {error && <p className="error" role="alert">{error}</p>}
+      {run?.status === "failed" && <p className="error" role="alert">{run.failure_explanation ?? "Research processing failed."}{run.failed_stage ? ` Failed during ${run.failed_stage.replaceAll("_", " ")}.` : ""}{run.retryable ? " Select Discover sources to retry this research run." : ""}</p>}
 
       <section aria-labelledby="library-heading">
         <div className="section-heading"><div><p className="eyebrow">Persistent resources</p><h2 id="library-heading">Research run library</h2></div><button type="button" className="secondary" onClick={() => void refreshRunLibrary()} disabled={busy || !health}>Refresh</button></div>
@@ -836,17 +825,38 @@ export function App() {
           <dl className="trust-policy-details">{Object.entries(trustPolicy.rules).map(([rule, value]) => <div key={rule}><dt>{rule.replaceAll("_", " ")}</dt><dd>{Array.isArray(value) ? value.join(", ") : String(value)}</dd></div>)}</dl>
         </section>}
         <section aria-labelledby="sources-heading">
-          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><span className="badge">{run.status.replaceAll("_", " ")}</span></div>
-          {run.sources.length ? <ol className="sources">{run.sources.map((source) => (
+          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><div className="candidate-controls"><label>Status<select value={candidateStatusFilter} onChange={(event) => setCandidateStatusFilter(event.target.value as Source["preflight_status"] | "all")} aria-label="Filter candidate preflight by status"><option value="all">All statuses ({run.sources.length})</option>{candidateStatuses.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")} ({run.sources.filter((source) => source.preflight_status === status).length})</option>)}</select></label><span className="badge">{run.status.replaceAll("_", " ")}</span></div></div>
+          {run.sources.length ? visibleCandidates.length ? <ol className="sources">{visibleCandidates.map((source) => (
             <li className="source-candidate" key={`${source.rank}-${source.url}`}><div className="source">
               <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_redirect_result ? ` · retrieval ${source.preflight_redirect_result.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small>{source.preflight_final_url && source.preflight_final_url !== source.url && <small>Captured from: {source.preflight_final_url}</small>}</span>
             </div><a className="source-link" href={source.url} target="_blank" rel="noreferrer" aria-label={`Open ${source.title} in a new tab`}>{source.url}<span aria-hidden="true"> ↗</span></a>{(() => {
               const evidence = run.evidence.find((item) => item.content_hash === source.preflight_content_hash && (item.requested_url === source.url || item.url === source.preflight_final_url || item.url === source.url));
               const evaluation = evidence && trustEvaluations.find((candidate) => candidate.source_url === evidence.url && candidate.content_hash === evidence.content_hash);
               if (!evidence || evaluation?.disposition !== "review_required") return null;
-              return <div className="candidate-review"><button type="button" className="secondary" onClick={() => void acceptEvidenceForReview(evidence, evaluation)} disabled={busy}>Accept for automated use</button></div>;
+              const reviewing = reviewForm?.evidence.url === evidence.url
+                && reviewForm.evidence.content_hash === evidence.content_hash;
+              return <div className="candidate-review">
+                <button type="button" className="secondary" onClick={() => reviewing ? closeEvidenceReview() : openEvidenceReview(evidence, evaluation)} disabled={busy}>{reviewing ? "Close review" : "Review evidence"}</button>
+                {reviewing && <form className="evidence-review" onSubmit={(event) => void acceptEvidenceForReview(event)}>
+                  <div className="section-heading"><div><p className="eyebrow">Human review required</p><h3>Review before automated use</h3></div><span className="badge">{evaluation.policy_version}</span></div>
+                  <p className="hint">Acceptance applies only to this captured evidence version. It will start the platform-owned summary workflow after the decision is recorded.</p>
+                  <dl className="review-details">
+                    <div><dt>Requested URL</dt><dd>{evidence.requested_url ?? source.url}</dd></div>
+                    <div><dt>Final evidence URL</dt><dd>{evidence.url}</dd></div>
+                    <div><dt>Captured</dt><dd>{new Date(evidence.retrieved_at).toLocaleString()}</dd></div>
+                    <div><dt>Evidence version</dt><dd>{evidence.content_hash}</dd></div>
+                    <div><dt>Content type</dt><dd>{evidence.content_type}</dd></div>
+                    <div><dt>Extracted characters</dt><dd>{evidence.text.length.toLocaleString()}</dd></div>
+                  </dl>
+                  <div className="review-rules"><strong>Policy evaluation</strong><ul>{evaluation.rule_outcomes.map((rule) => <li key={rule.rule} className={rule.outcome}><span>{rule.rule.replaceAll("_", " ")}</span><small>{rule.detail}</small></li>)}</ul></div>
+                  <details className="review-evidence"><summary>Captured evidence</summary><pre>{evidence.text}</pre></details>
+                  <label>Acceptance reason<textarea value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} minLength={3} maxLength={500} required /></label>
+                  <label>Acceptance expiry <span className="field-note">Optional. Leave blank for no expiry.</span><input type="datetime-local" value={reviewExpiresAt} onChange={(event) => setReviewExpiresAt(event.target.value)} /></label>
+                  <div className="review-actions"><button type="submit" disabled={busy || !reviewReason.trim()}>Accept evidence and start summary</button><button type="button" className="secondary" onClick={closeEvidenceReview} disabled={busy}>Cancel</button></div>
+                </form>}
+              </div>;
             })()}</li>
-          ))}</ol> : <p>No public source candidates were returned for this question.</p>}
+          ))}</ol> : <p className="hint">No candidates have the selected preflight status.</p> : <p>No public source candidates were returned for this question.</p>}
         </section>
 
         <section aria-labelledby="keywords-heading">

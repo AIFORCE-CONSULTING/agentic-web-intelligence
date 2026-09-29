@@ -22,7 +22,14 @@ CREATE TABLE IF NOT EXISTS research_runs (
     id UUID PRIMARY KEY,
     workspace_id UUID,
     question TEXT NOT NULL,
-    status TEXT NOT NULL CHECK (status IN ('searching', 'ready', 'failed')),
+    status TEXT NOT NULL DEFAULT 'planning',
+    status_version INTEGER NOT NULL DEFAULT 0 CHECK (status_version >= 0),
+    failed_stage TEXT,
+    workflow_version TEXT NOT NULL DEFAULT 'unified-research:v1',
+    failure_code TEXT,
+    failure_explanation TEXT,
+    retryable BOOLEAN NOT NULL DEFAULT FALSE,
+    failed_at TIMESTAMPTZ,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
@@ -77,6 +84,36 @@ CREATE TABLE IF NOT EXISTS research_audit_events (
     occurred_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     details JSONB NOT NULL DEFAULT '{}'::jsonb
 );
+CREATE TABLE IF NOT EXISTS research_status_transitions (
+    id UUID PRIMARY KEY,
+    research_run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    prior_status TEXT NOT NULL,
+    next_status TEXT NOT NULL,
+    prior_status_version INTEGER NOT NULL CHECK (prior_status_version >= 0),
+    next_status_version INTEGER NOT NULL CHECK (next_status_version > 0),
+    workflow_version TEXT NOT NULL,
+    transition_id UUID NOT NULL UNIQUE,
+    reason TEXT NOT NULL,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS research_checkpoint_cleanups (
+    id UUID PRIMARY KEY,
+    research_run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    outcome TEXT NOT NULL CHECK (outcome IN ('succeeded', 'failed')),
+    explanation TEXT,
+    occurred_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE TABLE IF NOT EXISTS research_workflow_continuations (
+    idempotency_key TEXT PRIMARY KEY,
+    research_run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    execution_id TEXT NOT NULL,
+    wait_type TEXT NOT NULL CHECK (wait_type IN ('candidate_preflight', 'evidence_summary')),
+    outcome TEXT NOT NULL CHECK (outcome IN ('completed', 'failed')),
+    status TEXT NOT NULL CHECK (status IN ('accepted', 'completed', 'stale', 'failed')),
+    explanation TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
 CREATE TABLE IF NOT EXISTS mcp_tool_audit_events (
     id UUID PRIMARY KEY,
     workspace_id UUID,
@@ -93,7 +130,21 @@ CREATE INDEX IF NOT EXISTS research_audit_events_run_id_idx
 CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_occurred_at_idx
     ON mcp_tool_audit_events(occurred_at DESC);
 ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS workspace_id UUID;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS status_version INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS failed_stage TEXT;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS workflow_version TEXT NOT NULL
+    DEFAULT 'unified-research:v1';
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS failure_code TEXT;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS failure_explanation TEXT;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS retryable BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE research_runs ADD COLUMN IF NOT EXISTS failed_at TIMESTAMPTZ;
 ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS workspace_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS research_run_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS runtime_run_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS runtime_step_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS authorization_decision_id UUID;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS resource_type TEXT;
+ALTER TABLE mcp_tool_audit_events ADD COLUMN IF NOT EXISTS resource_id TEXT;
 ALTER TABLE research_sources
     ADD COLUMN IF NOT EXISTS preflight_status TEXT NOT NULL DEFAULT 'pending';
 ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_reason TEXT;
@@ -106,9 +157,21 @@ ALTER TABLE research_sources ADD COLUMN IF NOT EXISTS preflight_trust_dispositio
 ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS requested_url TEXT;
 ALTER TABLE research_evidence ADD COLUMN IF NOT EXISTS redirect_result TEXT;
 ALTER TABLE research_runs DROP CONSTRAINT IF EXISTS research_runs_status_check;
+UPDATE research_runs SET status = CASE status
+    WHEN 'searching' THEN 'discovering'
+    WHEN 'preflighting' THEN 'acquiring'
+    WHEN 'ready' THEN 'completed'
+    ELSE status
+END;
 ALTER TABLE research_runs ADD CONSTRAINT research_runs_status_check CHECK (
-    status IN ('searching', 'preflighting', 'ready', 'failed')
+    status IN ('planning', 'discovering', 'acquiring', 'awaiting_review',
+               'evaluating_relevance', 'summarizing', 'assessing_coverage',
+               'reporting', 'completed', 'failed')
 );
+CREATE INDEX IF NOT EXISTS research_status_transitions_run_idx
+    ON research_status_transitions(research_run_id, occurred_at);
+CREATE INDEX IF NOT EXISTS research_checkpoint_cleanups_run_idx
+    ON research_checkpoint_cleanups(research_run_id, occurred_at DESC);
 CREATE INDEX IF NOT EXISTS research_runs_workspace_updated_at_idx
     ON research_runs(workspace_id, updated_at DESC);
 INSERT INTO research_target_keys (workspace_id, normalized_question, run_id)
@@ -122,6 +185,30 @@ ON CONFLICT (workspace_id, normalized_question) DO NOTHING;
 CREATE INDEX IF NOT EXISTS mcp_tool_audit_events_workspace_occurred_at_idx
     ON mcp_tool_audit_events(workspace_id, occurred_at DESC);
 """
+
+RESEARCH_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
+    "planning": frozenset({"discovering", "failed"}),
+    "discovering": frozenset({
+        "acquiring", "evaluating_relevance", "assessing_coverage", "failed"
+    }),
+    "acquiring": frozenset({
+        "awaiting_review", "evaluating_relevance", "assessing_coverage", "failed"
+    }),
+    "awaiting_review": frozenset({"evaluating_relevance", "assessing_coverage", "failed"}),
+    "evaluating_relevance": frozenset({"summarizing", "assessing_coverage", "failed"}),
+    "summarizing": frozenset({"assessing_coverage", "failed"}),
+    "assessing_coverage": frozenset({"discovering", "reporting", "failed"}),
+    "reporting": frozenset({"completed", "failed"}),
+    "completed": frozenset(),
+    "failed": frozenset({
+        "planning", "discovering", "acquiring", "awaiting_review",
+        "evaluating_relevance", "summarizing", "assessing_coverage", "reporting"
+    }),
+}
+
+
+class ResearchStatusTransitionError(ValueError):
+    """Raised when a caller requests a transition outside the approved table."""
 
 
 class ResearchStore:
@@ -204,7 +291,7 @@ class ResearchStore:
                 f"{workspace_id}:{normalized_question}",
             )
             existing = await connection.fetchrow(
-                """SELECT runs.id, runs.question, runs.status, runs.created_at, runs.updated_at
+                """SELECT runs.*
                    FROM research_target_keys AS target
                    JOIN research_runs AS runs ON runs.id = target.run_id
                    WHERE target.workspace_id = $1 AND target.normalized_question = $2""",
@@ -215,8 +302,8 @@ class ResearchStore:
                 return ResearchRun(**dict(existing)), False
             row = await connection.fetchrow(
                 """INSERT INTO research_runs (id, workspace_id, question, status)
-                   VALUES ($1, $2, $3, 'searching')
-                   RETURNING id, question, status, created_at, updated_at""",
+                   VALUES ($1, $2, $3, 'planning')
+                   RETURNING *""",
                 run_id,
                 workspace_id,
                 question,
@@ -240,6 +327,96 @@ class ResearchStore:
         async with pool.acquire() as connection:
             await connection.fetchval("SELECT 1")
 
+    async def transition_status(
+        self,
+        run_id: UUID,
+        expected_status: str,
+        expected_version: int,
+        next_status: str,
+        transition_id: UUID,
+        reason: str,
+        *,
+        failed_stage: str | None = None,
+        failure_code: str | None = None,
+        failure_explanation: str | None = None,
+        retryable: bool = False,
+    ) -> bool:
+        """Advance official status once; stale writers leave it unchanged."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            prior = await connection.fetchrow(
+                "SELECT status, status_version, failed_stage, workflow_version "
+                "FROM research_runs "
+                "WHERE id = $1 FOR UPDATE",
+                run_id,
+            )
+            if prior is None:
+                raise KeyError(run_id)
+            existing = await connection.fetchval(
+                "SELECT 1 FROM research_status_transitions WHERE transition_id = $1",
+                transition_id,
+            )
+            if existing:
+                return True
+            if prior["status"] != expected_status or prior["status_version"] != expected_version:
+                await self._append_audit(
+                    connection,
+                    run_id,
+                    "research.status.conflict",
+                    {
+                        "expected_status": expected_status,
+                        "expected_version": expected_version,
+                        "actual_status": prior["status"],
+                        "actual_version": prior["status_version"],
+                        "requested_status": next_status,
+                        "transition_id": str(transition_id),
+                    },
+                )
+                return False
+            allowed = RESEARCH_STATUS_TRANSITIONS.get(expected_status, frozenset())
+            if next_status not in allowed:
+                raise ResearchStatusTransitionError(
+                    f"Cannot transition research from {expected_status} to {next_status}."
+                )
+            if expected_status == "failed" and next_status != prior["failed_stage"]:
+                raise ResearchStatusTransitionError(
+                    "A failed research run may resume only from its stored failed stage."
+                )
+            next_version = expected_version + 1
+            await connection.execute(
+                """UPDATE research_runs
+                   SET status = $2, status_version = $3, failed_stage = $4,
+                       failure_code = $5, failure_explanation = $6, retryable = $7,
+                       failed_at = CASE WHEN $2 = 'failed' THEN now() ELSE NULL END,
+                       updated_at = now()
+                   WHERE id = $1""",
+                run_id,
+                next_status,
+                next_version,
+                failed_stage,
+                failure_code,
+                failure_explanation,
+                retryable,
+            )
+            await connection.execute(
+                """INSERT INTO research_status_transitions
+                   (id, research_run_id, prior_status, next_status,
+                    prior_status_version, next_status_version, workflow_version,
+                    transition_id, reason)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)""",
+                uuid4(),
+                run_id,
+                expected_status,
+                next_status,
+                expected_version,
+                next_version,
+                prior["workflow_version"],
+                transition_id,
+                reason,
+            )
+        return True
+
     async def record_mcp_tool_event(
         self,
         workspace_id: UUID,
@@ -247,6 +424,13 @@ class ResearchStore:
         tool_name: str,
         outcome: str,
         details: dict[str, object],
+        *,
+        research_run_id: UUID | None = None,
+        runtime_run_id: UUID | None = None,
+        runtime_step_id: UUID | None = None,
+        authorization_decision_id: UUID | None = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
     ) -> None:
         """Append one direct MCP execution outcome without creating a research run."""
 
@@ -254,14 +438,126 @@ class ResearchStore:
         async with pool.acquire() as connection:
             await connection.execute(
                 """INSERT INTO mcp_tool_audit_events
-                   (id, workspace_id, request_id, tool_name, outcome, details)
-                   VALUES ($1, $2, $3, $4, $5, $6::jsonb)""",
+                   (id, workspace_id, request_id, tool_name, outcome, details,
+                    research_run_id, runtime_run_id, runtime_step_id,
+                    authorization_decision_id, resource_type, resource_id)
+                   VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11, $12)""",
                 uuid4(),
                 workspace_id,
                 request_id,
                 tool_name,
                 outcome,
                 json.dumps(self._redact(details)),
+                research_run_id,
+                runtime_run_id,
+                runtime_step_id,
+                authorization_decision_id,
+                resource_type,
+                resource_id,
+            )
+
+    async def record_checkpoint_cleanup(
+        self, run_id: UUID, outcome: str, explanation: str | None = None
+    ) -> None:
+        """Audit checkpoint cleanup without changing the business outcome."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO research_checkpoint_cleanups
+                   (id, research_run_id, outcome, explanation)
+                   VALUES ($1, $2, $3, $4)""",
+                uuid4(),
+                run_id,
+                outcome,
+                explanation,
+            )
+
+    async def claim_workflow_continuation(
+        self,
+        idempotency_key: str,
+        research_run_id: UUID,
+        execution_id: str,
+        wait_type: str,
+        outcome: str,
+    ) -> bool:
+        """Claim one Temporal completion once without changing research status."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                idempotency_key,
+            )
+            existing = await connection.fetchval(
+                "SELECT status FROM research_workflow_continuations WHERE idempotency_key = $1",
+                idempotency_key,
+            )
+            if existing is not None:
+                return existing == "accepted"
+            await connection.execute(
+                """INSERT INTO research_workflow_continuations
+                   (idempotency_key, research_run_id, execution_id, wait_type,
+                    outcome, status)
+                   VALUES ($1, $2, $3, $4, $5, 'accepted')""",
+                idempotency_key,
+                research_run_id,
+                execution_id,
+                wait_type,
+                outcome,
+            )
+        return True
+
+    async def finish_workflow_continuation(
+        self, idempotency_key: str, status: str, explanation: str | None = None
+    ) -> None:
+        """Record a bounded continuation result without becoming business authority."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """UPDATE research_workflow_continuations
+                   SET status = $2, explanation = $3, updated_at = now()
+                   WHERE idempotency_key = $1""",
+                idempotency_key,
+                status,
+                explanation,
+            )
+
+    async def checkpoint_cleanup_candidates(self, limit: int = 100) -> list[UUID]:
+        """Return oldest completed runs without a successful cleanup audit."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT runs.id
+                   FROM research_runs AS runs
+                   WHERE runs.status = 'completed'
+                     AND NOT EXISTS (
+                         SELECT 1 FROM research_checkpoint_cleanups AS cleanup
+                         WHERE cleanup.research_run_id = runs.id
+                           AND cleanup.outcome = 'succeeded'
+                     )
+                   ORDER BY runs.updated_at
+                   LIMIT $1""",
+                limit,
+            )
+        return [row["id"] for row in rows]
+
+    async def checkpoint_cleanup_backlog(self) -> int:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            return int(
+                await connection.fetchval(
+                    """SELECT COUNT(*)
+                       FROM research_runs AS runs
+                       WHERE runs.status = 'completed'
+                         AND NOT EXISTS (
+                             SELECT 1 FROM research_checkpoint_cleanups AS cleanup
+                             WHERE cleanup.research_run_id = runs.id
+                               AND cleanup.outcome = 'succeeded'
+                         )"""
+                )
             )
 
     async def list_mcp_tool_events(
@@ -272,7 +568,9 @@ class ResearchStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT id, request_id, tool_name, outcome, occurred_at, details
+                """SELECT id, request_id, research_run_id, runtime_run_id,
+                          runtime_step_id, authorization_decision_id, resource_type,
+                          resource_id, tool_name, outcome, occurred_at, details
                    FROM mcp_tool_audit_events WHERE workspace_id = $1
                    ORDER BY occurred_at DESC LIMIT $2""",
                 workspace_id,
@@ -356,17 +654,6 @@ class ResearchStore:
                     "new_source_urls": [source.url for source in persisted_sources],
                 },
             )
-            if persisted_sources:
-                await connection.execute(
-                    """UPDATE research_runs SET status = 'preflighting', updated_at = now()
-                       WHERE id = $1""",
-                    run_id,
-                )
-            elif not known_urls:
-                await connection.execute(
-                    "UPDATE research_runs SET status = 'ready', updated_at = now() WHERE id = $1",
-                    run_id,
-                )
         return persisted_sources
 
     async def mark_candidate_checking(self, run_id: UUID, url: str) -> None:
@@ -413,6 +700,7 @@ class ResearchStore:
                 redirect_result,
                 trust_disposition,
             )
+
             await self._append_audit(
                 connection,
                 run_id,
@@ -429,6 +717,20 @@ class ResearchStore:
             )
             await connection.execute(
                 "UPDATE research_runs SET updated_at = now() WHERE id = $1", run_id
+            )
+
+    async def record_candidate_preflight_route(
+        self, run_id: UUID, route: str, source_count: int
+    ) -> None:
+        """Record the platform-selected execution route without using Temporal history."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.candidate.preflight.routed",
+                {"route": route, "source_count": source_count},
             )
 
     async def complete_candidate_preflight(self, run_id: UUID) -> None:
@@ -449,7 +751,8 @@ class ResearchStore:
                 connection, run_id, "research.candidate.preflight.finished", dict(counts)
             )
             await connection.execute(
-                "UPDATE research_runs SET status = 'ready', updated_at = now() WHERE id = $1",
+                "UPDATE research_runs SET status = 'assessing_coverage', "
+                "updated_at = now() WHERE id = $1",
                 run_id,
             )
 
@@ -736,7 +1039,9 @@ class ResearchStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT runs.id, runs.question, runs.status, runs.created_at, runs.updated_at,
+                """SELECT runs.id, runs.question, runs.status, runs.status_version,
+                          runs.failed_stage, runs.failure_code, runs.failure_explanation,
+                          runs.retryable, runs.failed_at, runs.created_at, runs.updated_at,
                           COUNT(DISTINCT sources.id)::integer AS source_count,
                           COUNT(DISTINCT evidence.id)::integer AS evidence_count
                    FROM research_runs AS runs

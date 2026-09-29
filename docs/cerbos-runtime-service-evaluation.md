@@ -1,5 +1,11 @@
 # Cerbos and RuntimeService Evaluation
 
+> **Implementation outcome (2026-09-29):** Phase 7.5 retained RuntimeService
+> and implemented the recommended canonical-context authorization, complete
+> request evaluation, policy versioning, structured decision records, and test
+> matrix. The overlapping `AgenticResearchControlService` was retired. This
+> document remains the historical evaluation that informed those changes.
+
 ## Purpose
 
 This evaluation uses the open-source Cerbos authorization model as a benchmark
@@ -94,7 +100,7 @@ Cerbos does not replace these workflow and human-authority responsibilities.
 
 ### 1. Capability authorization trusts too much caller-supplied state
 
-`RuntimeService.authorize_capability` currently receives a `RuntimeStep` object
+At the time of evaluation, `RuntimeService.authorize_capability` received a `RuntimeStep` object
 and checks whether a capability name appears in that object's
 `allowed_capabilities` list. It does not reload the step and run from the
 canonical store or independently confirm:
@@ -143,7 +149,8 @@ Membership in a role's capability list answers whether a researcher may ever
 request `web.extract`; it does not answer whether this researcher may extract
 this URL for this task at this time. The newer research-control code separately
 checks discovered URLs, duplicate queries, source attempts, and gap-search
-limits, which is why it began to overlap RuntimeService.
+limits, which is why it began to overlap RuntimeService. That overlap has since
+been consolidated under RuntimeService.
 
 **Recommendation:** preserve those useful checks but place their authority under
 RuntimeService. The authorization request should include bounded context needed
@@ -183,7 +190,7 @@ the current integration problem between LangGraph and RuntimeService.
 
 ## Recommendation
 
-Keep RuntimeService as the platform's single agent-authority and workflow-state
+Keep RuntimeService as the platform's single agent-authority and research-status reader
 boundary. Improve it using the five practices above, then connect the unified
 LangGraph through that strengthened boundary. Move the unique source-scope and
 budget checks from `AgenticResearchControlService` beneath RuntimeService and
@@ -194,4 +201,3 @@ Continue monitoring Cerbos. Reconsider using it as the policy evaluator behind
 RuntimeService when the platform has substantially more roles, tools, resource
 types, tenant-specific policies, or policy changes that must be managed
 independently of application releases.
-

@@ -1,163 +1,139 @@
 # Current Platform Architecture
 
-This diagram is the current-state architecture reference for design reviews. It
-shows active production paths, implemented but disconnected components,
-overlapping authority, older runtime infrastructure, and missing durable
-continuation links. Update it whenever one of these relationships changes.
+This is the production architecture after Phase 7.5 consolidation. It uses
+large-print text diagrams so it remains readable in the documentation viewer.
+See the [architecture glossary](architecture-glossary.md) for each component's
+purpose, inputs, outputs, and connections.
 
-See the [Architecture Diagram Glossary](architecture-glossary.md) for the
-purpose, inputs, outputs, and connections of every entity shown below.
+## Operator path
 
-```mermaid
-flowchart TB
-    USER["Operator"]
-
-    subgraph UI["User Interfaces"]
-        RESEARCH_UI["Research UI<br/>Question + source limit + Discover Sources"]
-        ADMIN_UI["Admin UI<br/>Durable Work inspection and controls"]
-    end
-
-    subgraph API["FastAPI Application"]
-        RESEARCH_ROUTE["POST /v1/research/runs<br/>Currently owns the active research sequence"]
-        RESEARCH_READ["Research status and evidence APIs"]
-        RUNTIME_API["Runtime inspection and control APIs<br/>No runtime creation endpoint"]
-
-        subgraph ACTIVE_RESEARCH["Active Research Path"]
-            INLINE["Inline orchestration in main.py<br/>Search → save → preflight → summarize"]
-            RESEARCH_STORE["ResearchStore<br/>Research runs, sources, evidence, audit"]
-        end
-
-        subgraph NEW_AGENTIC["New Agentic Research Path"]
-            UNIFIED_GRAPH["Unified LangGraph<br/>Topics → search → trust → relevance<br/>→ summaries → coverage → report"]
-            AGENT_CONTROL["AgenticResearchControlService<br/>Capability checks, query reservations,<br/>attempt limits, gap-search limits"]
-            AGENT_STORE["AgenticResearchStore<br/>Topics, relevance, coverage,<br/>capability audits, reports"]
-        end
-
-        subgraph OLD_RUNTIME["Earlier Governed Runtime"]
-            RUNTIME_SERVICE["RuntimeService<br/>Roles, capability grants, transitions,<br/>human gates, runtime audit"]
-            RUNTIME_STORE["RuntimeStore<br/>Runtime runs, steps, memory, events"]
-            OLD_GRAPH["Old LangGraph executor<br/>Search full goal and extract first result"]
-        end
-
-        subgraph WEB_SERVICES["Governed Web and Evidence Services"]
-            MCP["Governed MCP Host<br/>web.search + web.extract"]
-            SEARCH["SearXNG search provider"]
-            EXTRACT["Governed web extractor"]
-            PREFLIGHT["CandidatePreflightService"]
-            TRUST["EvidenceTrustService<br/>Local trust-policy authority"]
-            TRUST_STORE["WebTrustStore<br/>Evaluations, policy version, overrides"]
-            RELEVANCE["TopicRelevanceService"]
-            SUMMARY["EvidenceSummaryService"]
-            SUMMARY_STORE["EvidenceSummaryStore"]
-            REPORT["ResearchReportingService"]
-            OLLAMA["Local Ollama model<br/>qwen3:1.7b"]
-        end
-    end
-
-    subgraph TEMPORAL["Temporal Durable Execution"]
-        WORKER["Temporal worker"]
-        PREFLIGHT_WF["CandidatePreflightWorkflow"]
-        SUMMARY_WF["EvidenceSummaryWorkflow"]
-        OLD_RUNTIME_WF["GovernedRuntimeWorkflow"]
-    end
-
-    DB[("PostgreSQL<br/>Canonical persisted state")]
-
-    USER --> RESEARCH_UI
-    USER --> ADMIN_UI
-
-    RESEARCH_UI -->|"Discover Sources"| RESEARCH_ROUTE
-    RESEARCH_UI -->|"Poll and review"| RESEARCH_READ
-    ADMIN_UI --> RUNTIME_API
-
-    RESEARCH_ROUTE --> INLINE
-    INLINE --> RESEARCH_STORE
-    INLINE --> SEARCH
-    INLINE --> PREFLIGHT
-    INLINE --> SUMMARY
-
-    RESEARCH_ROUTE -. "NOT CONNECTED" .-> UNIFIED_GRAPH
-
-    UNIFIED_GRAPH --> AGENT_CONTROL
-    UNIFIED_GRAPH --> AGENT_STORE
-    UNIFIED_GRAPH --> SEARCH
-    UNIFIED_GRAPH --> PREFLIGHT
-    UNIFIED_GRAPH --> RELEVANCE
-    UNIFIED_GRAPH --> SUMMARY
-    UNIFIED_GRAPH --> REPORT
-
-    AGENT_CONTROL -. "DUPLICATED AGENT AUTHORITY" .-> RUNTIME_SERVICE
-
-    RUNTIME_API --> RUNTIME_SERVICE
-    RUNTIME_SERVICE --> RUNTIME_STORE
-    OLD_RUNTIME_WF --> OLD_GRAPH
-    OLD_GRAPH --> RUNTIME_SERVICE
-    OLD_GRAPH --> MCP
-
-    RUNTIME_SERVICE -. "NO ACTIVE CREATION OR SCHEDULING CALLER" .-> OLD_RUNTIME_WF
-
-    MCP --> SEARCH
-    MCP --> EXTRACT
-    PREFLIGHT --> EXTRACT
-    PREFLIGHT --> TRUST
-    RELEVANCE --> TRUST
-    RELEVANCE --> OLLAMA
-    SUMMARY --> TRUST
-    SUMMARY --> OLLAMA
-    REPORT --> OLLAMA
-
-    PREFLIGHT -->|"More than 2 sources"| PREFLIGHT_WF
-    SUMMARY -->|"Durable summary threshold"| SUMMARY_WF
-    PREFLIGHT_WF --> WORKER
-    SUMMARY_WF --> WORKER
-    OLD_RUNTIME_WF --> WORKER
-
-    PREFLIGHT_WF -. "COMPLETION DOES NOT RESUME<br/>UNIFIED LANGGRAPH" .-> UNIFIED_GRAPH
-    SUMMARY_WF -. "COMPLETION DOES NOT RESUME<br/>UNIFIED LANGGRAPH" .-> UNIFIED_GRAPH
-
-    RESEARCH_STORE --> DB
-    AGENT_STORE --> DB
-    RUNTIME_STORE --> DB
-    TRUST_STORE --> DB
-    SUMMARY_STORE --> DB
-    TRUST --> TRUST_STORE
-    SUMMARY --> SUMMARY_STORE
-
-    classDef active fill:#dcfce7,stroke:#15803d,color:#14532d;
-    classDef ui fill:#dbeafe,stroke:#2563eb,color:#1e3a8a;
-    classDef duplicate fill:#fee2e2,stroke:#dc2626,color:#7f1d1d;
-    classDef disconnected fill:#fef3c7,stroke:#d97706,color:#78350f;
-    classDef durable fill:#ede9fe,stroke:#7c3aed,color:#4c1d95;
-    classDef legacy fill:#e5e7eb,stroke:#6b7280,color:#1f2937;
-    classDef data fill:#cffafe,stroke:#0891b2,color:#164e63;
-
-    class USER,RESEARCH_UI,ADMIN_UI ui;
-    class RESEARCH_ROUTE,RESEARCH_READ,INLINE,RESEARCH_STORE,MCP,SEARCH,EXTRACT,PREFLIGHT,TRUST,TRUST_STORE,RELEVANCE,SUMMARY,SUMMARY_STORE,REPORT,OLLAMA active;
-    class UNIFIED_GRAPH,AGENT_STORE disconnected;
-    class AGENT_CONTROL,RUNTIME_SERVICE duplicate;
-    class RUNTIME_API,RUNTIME_STORE,OLD_GRAPH,OLD_RUNTIME_WF legacy;
-    class TEMPORAL,WORKER,PREFLIGHT_WF,SUMMARY_WF durable;
-    class DB data;
+```text
+[Operator]
+    |
+    v
+[Research UI: question + source count + Discover Sources]
+    |
+    v
+[POST /v1/research/runs]
+Authenticate, validate, find or create the research record
+    |
+    v
+[UnifiedResearchWorkflowEntry]
+    |
+    v
+[ONE LANGGRAPH WORKFLOW]
+Topics -> Search -> Acquire and trust -> Relevance -> Summaries
+       -> Coverage -> Missing-topic search (maximum two rounds)
+       -> Grounded report -> Complete
 ```
 
-## Legend
+The API route is a thin trigger. The graph owns the sequence, but it does not
+grant itself authority or replace the services that own business decisions.
 
-- **Green:** active production path or established service.
-- **Yellow:** implemented but not connected to the operator workflow.
-- **Red:** overlapping agent-authority responsibilities requiring consolidation.
-- **Gray:** earlier runtime infrastructure without an active creation path.
-- **Purple:** Temporal durable execution.
-- **Dotted lines:** missing connection, inactive path, or architectural conflict.
+## Governed capability path
 
-## Reconciliation points
+```text
+[LangGraph node proposes a bounded action]
+    |
+    v
+[RuntimeService]
+Reload stored assignment, role, grant, stage, resource, workspace and limits
+    |
+    +-- deny --> [RuntimeStore: decision + reason + policy version]
+    |
+    +-- allow -> [RuntimeStore: decision + correlation identity]
+                     |
+                     v
+                 [Governed MCP Host]
+                 Verify stored allow, then execute only a registered tool
+                     |
+                     +--> [SearXNG]
+                     +--> [Governed web extractor]
+```
 
-1. **Discover Sources still uses inline orchestration**, not the unified
-   LangGraph.
-2. **`AgenticResearchControlService` and `RuntimeService` overlap** in capability
-   and workflow authority.
-3. **Temporal completion cannot resume the unified graph**, while the current
-   preflight worker can still start summaries outside the new relevance stage.
+RuntimeService is the authorization boundary. The MCP host is the execution
+boundary. A model can propose an action but cannot call a provider, manufacture
+an allow decision, change a limit, or write platform state.
 
-The Local Trust Policy is not duplicated. `EvidenceTrustService` remains its
-independent authority and is used by both the active and proposed research
-paths.
+## Evidence and model path
+
+```text
+[Captured source]
+    |
+    v
+[CandidatePreflightService] -> [EvidenceTrustService] -> [WebTrustStore]
+                                      |
+                     eligible only --+
+                                      v
+                           [TopicRelevanceService]
+                                      |
+                         relevant only+
+                                      v
+                           [EvidenceSummaryService]
+                                      |
+                                      v
+                          [EvidenceSummaryStore]
+                                      |
+                                      v
+                         [ResearchReportingService]
+```
+
+The local model supports bounded planning, relevance, summarization, keyword,
+missing-topic, and reporting decisions. Its output remains untrusted until the
+owning service validates it. Blocked or review-required evidence never enters
+automated model context unless an authorized human acceptance exists for that
+exact review-required evidence version.
+
+## Durable continuation path
+
+```text
+[LangGraph preflight or summary node]
+    |
+    +-- below threshold --> execute directly --> persist result --> next node
+    |
+    +-- durable threshold reached
+            |
+            v
+        [Temporal workflow]
+        CandidatePreflightWorkflow or EvidenceSummaryWorkflow
+            |
+            v
+        [Owning service/store persists business result]
+            |
+            v
+        [continue_unified_research activity]
+            |
+            v
+        [Resume the same LangGraph thread at its next valid stage]
+```
+
+Temporal makes qualifying work restart-safe. It does not decide permission,
+trust, research status, or the next business transition. If scheduling or
+continuation fails, the owning research record shows the typed failure; a
+second workflow path is not started.
+
+## State ownership
+
+| Record | Authorized writer | Readers | Meaning |
+| --- | --- | --- | --- |
+| `research_runs.status` | Unified graph through `ResearchStore` | UI, RuntimeService, APIs | Official operator-facing workflow status |
+| Runtime assignments and decisions | RuntimeService through `RuntimeStore` | Graph, MCP host, Admin view | Who may do what, why, and under which policy version |
+| Topics, relevance, coverage, reports | Unified graph through `AgenticResearchStore` | Graph, APIs, UI | Validated research artifacts |
+| Trust evaluations and human acceptance | Trust and review services through `WebTrustStore` | Graph, summary service, UI | Whether evidence may enter model context |
+| Summary executions and artifacts | EvidenceSummaryService through `EvidenceSummaryStore` | Graph, APIs, UI | Summary work and validated outputs |
+| LangGraph checkpoint | LangGraph checkpointer only | LangGraph | Temporary execution bookmark, never business truth |
+| Temporal history | Temporal only | Worker and operational tools | Durable execution tracking, never business truth |
+
+Stale checkpoints and Temporal histories never override PostgreSQL business
+records. Continuation reloads canonical records and stops on a terminal,
+conflicting, or unauthorized state.
+
+## Retired paths
+
+Phase 7.5 removed the duplicate plain-Python agentic router, the earlier
+first-result LangGraph executor and reviewer cycle,
+`AgenticResearchControlService`, `ResearchOrchestrationService`,
+`TemporalRuntimeBoundary`, `GovernedRuntimeWorkflow`, and `/v1/runtime/runs`.
+Obsolete test-era rows, checkpoints, and workflow histories were removed under
+the approved clean-start policy. None is a fallback or alternate production
+path.

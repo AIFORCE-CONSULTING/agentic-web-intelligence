@@ -4,6 +4,7 @@
 - Date: 2026-09-22
 - Model selection recorded: 2026-09-24
 - Canonical orchestration clarified: 2026-09-24
+- Consolidated implementation recorded: 2026-09-29
 
 ## Context
 
@@ -51,19 +52,18 @@ runtime; it does not create a second orchestration service or state machine.
 `RuntimeService` continues to own run authority, capability grants, allowed
 state transitions, retry boundaries, human gates, and runtime audit events.
 
-The topic-planning, relevance, coverage, gap-search, and final-report stages in
-this ADR will become typed LangGraph nodes in the existing runtime. Deterministic
+The topic-planning, search, acquisition, trust, relevance, summary, coverage,
+gap-search, and final-report stages are typed nodes in one LangGraph workflow. Deterministic
 Python code inside those nodes validates model responses, enforces counters and
 limits, and calls the existing research services. Python helpers may calculate
 a next action, but they are not an independent workflow engine or source of
 runtime state.
 
-The existing deterministic executor currently searches the complete goal and
-extracts only the first result. It is an earlier bounded implementation, not a
-second permanent research workflow. Before the topic-driven workflow becomes
-live, its API and Temporal-worker callers must be moved to the expanded
-LangGraph workflow. The old executor may be removed only after those callers,
-stored-run compatibility, tests, and documentation have been addressed.
+The earlier deterministic first-result executor, reviewer cycle, standalone
+agentic control service, orchestration service, and governed-runtime Temporal
+workflow have been retired. Their callers now enter the unified graph. The
+clean-start migration removed obsolete test-era runtime and checkpoint state;
+no compatibility path remains active.
 
 LangGraph carries bounded execution context. PostgreSQL remains the official
 record described below. Temporal remains the mandatory durable-execution system
@@ -287,12 +287,42 @@ subscriptions, recurring cloud inference charges, or high-end local hardware.
 The platform accepts the bounded correction cost rather than making a larger
 model or cloud account a requirement.
 
-This decision clears the model-evaluation gate only. Live research capabilities
-remain disabled until the orchestration and platform integrations in the
-roadmap are implemented and verified. Re-run the complete evaluation before
+This decision and the completed integration evaluation clear the model for the
+bounded research workflow described here. Capability descriptions do not grant
+authority: every live request still requires a stored RuntimeService allow
+decision before the governed MCP host may execute it. Re-run the complete evaluation before
 adopting a different model artifact, changing a model-owned prompt or contract,
 expanding the workflow's capabilities, or retaining a model after a meaningful
 pattern of production failures.
+
+### Consolidated implementation amendment
+
+The production implementation has one operator trigger and one application
+workflow. `POST /v1/research/runs` authenticates and validates the request,
+finds or creates its research record, and starts or resumes the unified
+LangGraph. The route does not perform the research sequence itself.
+
+`research_runs.status` is the operator-facing workflow status. The unified
+graph is its only writer through `ResearchStore`; the UI and RuntimeService read
+that stored value. RuntimeService owns authorization decisions and their audit
+records through `RuntimeStore`, but it does not own research progress.
+`AgenticResearchStore` owns topics, relevance, coverage, and reports.
+`WebTrustStore` owns evidence-policy evaluations and human acceptances.
+`EvidenceSummaryStore` owns summary work and artifacts.
+
+LangGraph's PostgreSQL checkpoint is an execution bookmark, not a business
+record. Temporal history is durable execution tracking, not workflow status.
+When deterministic thresholds select durable preflight or summary work, the
+corresponding Temporal workflow persists its result through the owning service
+and calls `continue_unified_research` to resume the same graph thread. The model,
+operator, and API route cannot select Temporal directly.
+
+RuntimeService evaluates a request from stored assignment, role, capability,
+resource, workflow-stage, workspace, and budget facts. Both allows and denials
+are recorded with an authority-policy version. An allowed request is correlated
+with the subsequent governed MCP invocation; the MCP host rejects an invocation
+that lacks that stored authorization. Evidence trust and human review remain
+independent decisions and cannot be manufactured by the graph or model.
 
 ## Consequences
 

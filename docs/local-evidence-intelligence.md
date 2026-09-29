@@ -8,8 +8,8 @@ The Phase 6 local model is not an agent. It receives bounded evidence text from
 the platform, returns structured summary data, and has no tools, browser,
 filesystem, database, runtime, credential, or network authority beyond the
 configured local Ollama endpoint. [ADR 0016](adr/0016-governed-local-agent-capability-requests.md)
-defines a future, separately governed local-agent capability boundary; it does
-not change this summary and keyword workflow.
+defines the bounded agent workflow that now coordinates this existing summary
+and keyword service. The agent cannot bypass its eligibility or storage rules.
 
 ## Local web-trust eligibility
 
@@ -98,7 +98,8 @@ Postgres, SearXNG, Temporal, the Temporal UI, and the durable worker. Temporal
 is required platform infrastructure: the operator starts the platform once and
 never chooses an execution mechanism for an individual summary request.
 
-The API applies the routing threshold after a summary request is accepted. It
+The unified LangGraph applies the routing threshold after summary work is
+accepted. It
 executes a one-source, one-chunk request directly; it automatically schedules
 the fixed Temporal workflow for multi-source or multi-chunk work.
 
@@ -124,7 +125,9 @@ metadata only.
 
 Evidence summaries start from a persisted research run:
 
-1. Create or reopen a governed research run.
+1. Enter a question, choose the source count, and select **Discover Sources**.
+   The platform finds or creates the research record and enters the unified
+   LangGraph workflow.
 2. The platform discovers and automatically preflights each returned candidate
    through the bounded retrieval path. Small batches run directly; larger
    batches use Temporal automatically.
@@ -164,9 +167,10 @@ Routing is deterministic platform policy. Model output cannot influence it.
 
 A request runs directly only when exactly one selected source produces exactly
 one chunk. Any multi-source request or multi-chunk page automatically uses the
-dedicated Temporal evidence-summary workflow. Durable execution is used only to
-make an already authorized server job restart-safe; it does not grant the model
-or caller Temporal authority.
+dedicated Temporal evidence-summary workflow. After the owning summary service
+persists the result, `continue_unified_research` resumes the same graph thread.
+Durable execution makes an already authorized job restart-safe; it does not
+grant the model or caller Temporal authority or own research status.
 
 If Temporal is unhealthy or unreachable when a durable route is selected, the
 summary execution fails closed. That is a platform infrastructure failure, not

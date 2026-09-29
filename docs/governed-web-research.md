@@ -5,7 +5,7 @@ Phase 2 provides two read-only web capabilities through the platform API:
 - `POST /v1/research/search` discovers public source candidates.
 - `POST /v1/research/extract` returns bounded text evidence from one public page.
 
-The agent-facing boundary is the MCP host at `POST /mcp`. It implements the
+The agent execution boundary is the MCP host at `POST /mcp`. It implements the
 MCP JSON-RPC methods `initialize`, `tools/list`, and `tools/call` and exposes
 only `web.search` and `web.extract`. `GET /v1/mcp/tools` is a convenient
 operator-readable view of that same allow-listed registry. Provider-specific
@@ -26,7 +26,9 @@ have no credential dependency, are enabled by default, are read-only, and
 require an execution audit. A future connector must be registered with the
 same metadata before it can become callable.
 
-Every direct `tools/call` outcome is stored in Postgres without retaining the
+Every agent-requested `tools/call` must cite a correlated, stored RuntimeService
+allow decision. The host reloads that decision before dispatch; a tool schema
+or model proposal is never treated as permission. Every call outcome is stored in Postgres without retaining the
 retrieved page text. Operators can inspect the 25 most recent outcomes through
 `GET /v1/mcp/audit`; it records the tool, success/failure/denial outcome, and
 safe provenance such as a retrieved URL and content hash.
@@ -34,10 +36,11 @@ safe provenance such as a retrieved URL and content hash.
 The agent-facing contract stays small. SearXNG and Trafilatura are internal
 implementations selected by the platform, not raw tools exposed to a workflow.
 
-Research is durable when it uses the run endpoints. A run keeps the question,
-ranked source candidates, extracted source data, and an append-only audit trail in
-Postgres. This makes results inspectable and reusable without giving agents
-direct database or browser access.
+The operator-facing run endpoint enters the one LangGraph research workflow. A
+run keeps the question, workflow status, source candidates, evidence, derived
+artifacts, and audit trail in Postgres. Temporal is selected automatically for
+qualifying preflight and summary work and resumes that same graph after its
+result is stored.
 
 When a public source rejects automated retrieval—for example, with HTTP 403—the
 platform returns a clear extraction failure instead of saving misleading source
@@ -78,7 +81,8 @@ request, and filters results that point to non-public network destinations.
 
 ## Persistent research run
 
-Create a research run instead of using the transient search endpoint:
+Start the complete governed workflow instead of using the transient developer
+search endpoint:
 
 ~~~powershell
 $run = Invoke-RestMethod -Method Post `
@@ -88,26 +92,19 @@ $run = Invoke-RestMethod -Method Post `
 $run.id
 ~~~
 
-The response contains its sources and audit events. Attach approved extracted
-source data to that same run with:
-
-~~~powershell
-Invoke-RestMethod -Method Post `
-  -Uri "http://localhost:8000/v1/research/runs/$($run.id)/extract" `
-  -ContentType application/json `
-  -Body '{"url":"https://example.com"}'
-~~~
-
-Retrieve it later with `GET /v1/research/runs/{run_id}`. The default local
+The route authenticates and validates the request, finds or creates its research
+record, and starts or resumes the unified LangGraph. Search, acquisition, trust,
+relevance, summaries, coverage, and reporting then proceed through their owning
+services. Retrieve stored progress with `GET /v1/research/runs/{run_id}`. The default local
 `web-research` Compose profile starts Postgres, SearXNG, Temporal, the Temporal
 UI, and the durable worker with the API.
 
 `GET /v1/research/runs` returns the 25 most recently updated runs by default,
 including source and evidence counts but not full evidence text. The operator
 console uses this bounded library to reopen a run without re-running discovery.
-When legacy repeated normalized targets exist, the platform retains the
-target-keyed run and prunes its obsolete predecessor runs together with their
-dependent provenance before it accepts new discovery work.
+When the normalized research target already exists, the platform returns that
+record and reuses its known sources and evidence instead of creating a duplicate
+run or rediscovering stored URLs.
 
 ## Extraction policy
 

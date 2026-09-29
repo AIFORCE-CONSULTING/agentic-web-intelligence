@@ -193,11 +193,11 @@ encountering a contradictory owner or retired active path.
 
 ### Documentation for User Story 5
 
-- [ ] T057 [P] [US5] Amend ADR 0016 with the consolidated RuntimeService, LangGraph, MCP, PostgreSQL-checkpoint, and Temporal-continuation decisions in `docs/adr/0016-governed-local-agent-capability-requests.md`
-- [ ] T058 [P] [US5] Replace the current-state architecture record with the tested target path and clearly identify checkpoint versus business state in `docs/current-platform-architecture.md`
-- [ ] T059 [P] [US5] Update every affected entity's purpose, inputs, outputs, and connections in `docs/architecture-glossary.md`
-- [ ] T060 [P] [US5] Update runtime, durable-execution, local-evidence, and MCP documentation under `docs/` to match the consolidated callers and ownership boundaries
-- [ ] T061 [US5] Update Phase 7.5 completion boxes and retirement notes only after implementation and tests agree in `./ROADMAP.md`
+- [x] T057 [P] [US5] Amend ADR 0016 with the consolidated RuntimeService, LangGraph, MCP, PostgreSQL-checkpoint, and Temporal-continuation decisions in `docs/adr/0016-governed-local-agent-capability-requests.md`
+- [x] T058 [P] [US5] Replace the current-state architecture record with the tested target path and clearly identify checkpoint versus business state in `docs/current-platform-architecture.md`
+- [x] T059 [P] [US5] Update every affected entity's purpose, inputs, outputs, and connections in `docs/architecture-glossary.md`
+- [x] T060 [P] [US5] Update runtime, durable-execution, local-evidence, and MCP documentation under `docs/` to match the consolidated callers and ownership boundaries
+- [x] T061 [US5] Update Phase 7.5 completion boxes and retirement notes only after implementation and tests agree in `./ROADMAP.md`
 
 **Checkpoint**: Documentation and running architecture agree.
 

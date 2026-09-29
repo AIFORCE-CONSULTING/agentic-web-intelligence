@@ -9,11 +9,13 @@ from typing import Any
 from uuid import uuid4
 
 import pytest
+from asyncpg.pgproto.pgproto import UUID as AsyncpgUUID
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
 import app.agent_runtime.research_workflow as research_workflow_module
 from app.agent_runtime.research_workflow import (
+    CHECKPOINT_ALLOWED_MSGPACK_MODULES,
     CanonicalResearchWorkflowNodes,
     CheckpointReadiness,
     ResearchCheckpointLifecycle,
@@ -22,8 +24,10 @@ from app.agent_runtime.research_workflow import (
     ResearchWorkflowState,
     ResearchWorkflowUnavailable,
     UnifiedResearchWorkflowEntry,
+    _route_from_canonical_status,
     build_research_workflow,
 )
+from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningUnavailable
 from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
 from app.web_research.contracts import ResearchRun
@@ -47,6 +51,34 @@ class FakeCleanupStore:
         self, run_id, outcome: str, explanation: str | None = None
     ) -> None:
         self.records.append((run_id, outcome, explanation))
+
+
+@pytest.mark.parametrize(
+    ("status", "node"),
+    [
+        ("requested", "plan_topics"),
+        ("planning", "plan_topics"),
+        ("discovering", "search_topics"),
+        ("acquiring", "acquire_evidence"),
+        ("evaluating_relevance", "evaluate_relevance"),
+        ("summarizing", "summarize_evidence"),
+        ("assessing_coverage", "assess_topic_coverage"),
+        ("reporting", "generate_final_report"),
+    ],
+)
+def test_graph_entry_routes_from_canonical_research_status(
+    status: str, node: str
+) -> None:
+    assert _route_from_canonical_status(
+        {"stage": status, "canonical_status": status}  # type: ignore[typeddict-item]
+    ) == node
+
+
+def test_graph_entry_rejects_non_resumable_status() -> None:
+    with pytest.raises(ResearchWorkflowUnavailable, match="cannot start"):
+        _route_from_canonical_status(
+            {"stage": "failed", "canonical_status": "failed"}
+        )
 
 
 class FakeSaver:
@@ -239,6 +271,40 @@ def test_default_checkpoint_serializer_disables_pickle_fallback(
 
     assert captured["connection_string"] == "postgresql://checkpoint-test"
     assert captured["serde"].pickle_fallback is False
+    assert captured["serde"]._allowed_msgpack_modules == set(
+        CHECKPOINT_ALLOWED_MSGPACK_MODULES
+    )
+
+
+def test_checkpoint_serializer_round_trips_only_approved_graph_types() -> None:
+    serializer = research_workflow_module.JsonPlusSerializer(
+        pickle_fallback=False,
+        allowed_json_modules=(),
+        allowed_msgpack_modules=CHECKPOINT_ALLOWED_MSGPACK_MODULES,
+    )
+    run_id = AsyncpgUUID(str(uuid4()))
+    state = {
+        "run_id": run_id,
+        "topics": [
+            ResearchTopic(
+                topic_id="durable-trust",
+                topic="Durable research trust",
+                search_query="durable research trust",
+            )
+        ],
+        "source_topics": [
+            TopicSourceAssociation(
+                topic_id="durable-trust",
+                source_url="https://example.com/research",
+                result_rank=1,
+            )
+        ],
+    }
+
+    encoded = serializer.dumps_typed(state)
+    restored = serializer.loads_typed(encoded)
+
+    assert restored == state
 
 
 def test_checkpoint_cleanup_failure_is_audited_and_keeps_degraded_readiness() -> None:

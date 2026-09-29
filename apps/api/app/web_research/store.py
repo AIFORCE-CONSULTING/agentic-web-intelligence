@@ -654,18 +654,6 @@ class ResearchStore:
                     "new_source_urls": [source.url for source in persisted_sources],
                 },
             )
-            if persisted_sources:
-                await connection.execute(
-                    """UPDATE research_runs SET status = 'acquiring', updated_at = now()
-                       WHERE id = $1""",
-                    run_id,
-                )
-            elif not known_urls:
-                await connection.execute(
-                    "UPDATE research_runs SET status = 'assessing_coverage', "
-                    "updated_at = now() WHERE id = $1",
-                    run_id,
-                )
         return persisted_sources
 
     async def mark_candidate_checking(self, run_id: UUID, url: str) -> None:

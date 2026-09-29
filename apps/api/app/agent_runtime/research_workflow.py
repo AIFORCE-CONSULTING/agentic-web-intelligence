@@ -35,6 +35,11 @@ from app.web_trust.store import WebTrustStoreUnavailable
 
 MAX_GAP_SEARCH_ROUNDS = 2
 CHECKPOINT_STARTUP_CLEANUP_LIMIT = 100
+CHECKPOINT_ALLOWED_MSGPACK_MODULES = (
+    ("asyncpg.pgproto.pgproto", "UUID"),
+    ("app.agentic_research.contracts", "ResearchTopic"),
+    ("app.agentic_research.contracts", "TopicSourceAssociation"),
+)
 WORKFLOW_DEPENDENCY_ERRORS = (
     AgenticResearchStoreUnavailable,
     CandidatePreflightUnavailable,
@@ -386,7 +391,7 @@ class ResearchCheckpointLifecycle:
                 serde=JsonPlusSerializer(
                     pickle_fallback=False,
                     allowed_json_modules=(),
-                    allowed_msgpack_modules=(),
+                    allowed_msgpack_modules=CHECKPOINT_ALLOWED_MSGPACK_MODULES,
                 ),
             )
         )
@@ -798,6 +803,38 @@ def _route_after_relevance(
     )
 
 
+def _route_from_canonical_status(
+    state: ResearchWorkflowState,
+) -> Literal[
+    "plan_topics",
+    "search_topics",
+    "acquire_evidence",
+    "evaluate_relevance",
+    "summarize_evidence",
+    "assess_topic_coverage",
+    "generate_final_report",
+]:
+    """Enter a new or retried invocation at its canonical stored stage."""
+
+    routes = {
+        "requested": "plan_topics",
+        "planning": "plan_topics",
+        "discovering": "search_topics",
+        "acquiring": "acquire_evidence",
+        "evaluating_relevance": "evaluate_relevance",
+        "summarizing": "summarize_evidence",
+        "assessing_coverage": "assess_topic_coverage",
+        "reporting": "generate_final_report",
+    }
+    status = state.get("canonical_status", state.get("stage", "planning"))
+    try:
+        return cast(Any, routes[status])
+    except KeyError as error:
+        raise ResearchWorkflowUnavailable(
+            f"Research cannot start from the stored {status!r} status."
+        ) from error
+
+
 def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     """Build the single topic-driven research graph without executing it."""
 
@@ -863,7 +900,7 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
     graph.add_node("wait_for_review", wait_for_review)
     graph.add_node("wait_for_durable_work", wait_for_durable_work)
 
-    graph.add_edge(START, "plan_topics")
+    graph.add_conditional_edges(START, _route_from_canonical_status)
     graph.add_edge("plan_topics", "search_topics")
     graph.add_edge("search_topics", "acquire_evidence")
     graph.add_conditional_edges(

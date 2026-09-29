@@ -207,10 +207,10 @@ encountering a contradictory owner or retired active path.
 
 **Purpose**: Prove the complete feature and close its requirements checklist.
 
-- [ ] T062 Run Ruff and the complete API test suite in the pinned Python 3.12 environment defined by `apps/api/requirements-dev.lock`
-- [ ] T063 [P] Run the TypeScript and Vite production build defined by `apps/web/package.json`
-- [ ] T064 [P] Run the strict MkDocs build defined by `docs/requirements.lock`
-- [ ] T065 Execute the operator and restart scenarios in `specs/001-consolidate-research-architecture/quickstart.md` against the local Compose platform
+- [x] T062 Run Ruff and the complete API test suite in the pinned Python 3.12 environment defined by `apps/api/requirements-dev.lock`
+- [x] T063 [P] Run the TypeScript and Vite production build defined by `apps/web/package.json`
+- [x] T064 [P] Run the strict MkDocs build defined by `docs/requirements.lock`
+- [x] T065 Execute the operator and restart scenarios in `specs/001-consolidate-research-architecture/quickstart.md` against the local Compose platform
 - [x] T066 Review and resolve every item in `specs/001-consolidate-research-architecture/checklists/architecture.md`, updating source requirements for any failed item
 - [x] T067 Run `/speckit.analyze` against `spec.md`, `plan.md`, and `tasks.md` and resolve all critical or high-severity inconsistencies
 

@@ -1,4 +1,5 @@
 import asyncio
+import inspect
 import ipaddress
 from datetime import UTC, datetime
 from types import SimpleNamespace
@@ -164,6 +165,14 @@ def test_mcp_audit_schema_requires_complete_agent_correlation_fields() -> None:
         "resource_id",
     ):
         assert field in RESEARCH_SCHEMA
+
+
+def test_source_persistence_does_not_write_official_workflow_status() -> None:
+    """Only the unified graph may transition the operator-facing research status."""
+
+    implementation = inspect.getsource(ResearchStore.save_new_sources)
+
+    assert "UPDATE research_runs" not in implementation
 
 
 class FakeResearchTransitionConnection:

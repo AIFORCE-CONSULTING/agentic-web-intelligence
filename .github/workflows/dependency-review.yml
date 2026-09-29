@@ -12,7 +12,38 @@ jobs:
     name: Dependency review
     runs-on: ubuntu-24.04
     steps:
+      - name: Check dependency review availability
+        id: availability
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          response_file="${RUNNER_TEMP}/dependency-review-availability.json"
+          status="$(curl --silent --show-error \
+            --output "${response_file}" \
+            --write-out "%{http_code}" \
+            --header "Accept: application/vnd.github+json" \
+            --header "Authorization: Bearer ${GH_TOKEN}" \
+            --header "X-GitHub-Api-Version: 2022-11-28" \
+            "${GITHUB_API_URL}/repos/${GITHUB_REPOSITORY}/dependency-graph/compare/${BASE_SHA}...${HEAD_SHA}")"
+          case "${status}" in
+            200)
+              echo "supported=true" >> "${GITHUB_OUTPUT}"
+              ;;
+            403|404)
+              echo "supported=false" >> "${GITHUB_OUTPUT}"
+              echo "::notice::Dependency review is unavailable for this repository. Enable the dependency graph and GitHub Advanced Security to run this check on private repositories."
+              ;;
+            *)
+              cat "${response_file}" || true
+              echo "Unexpected dependency review availability response: HTTP ${status}" >&2
+              exit 1
+              ;;
+          esac
+
       - name: Review newly introduced dependencies
+        if: steps.availability.outputs.supported == 'true'
         uses: actions/dependency-review-action@72eb03d02c7872a771aacd928f3123ac62ad6d3a # v4.1.3
         with:
           fail-on-severity: moderate

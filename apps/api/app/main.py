@@ -22,7 +22,8 @@ from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
-from app.agentic_research.store import AgenticResearchStore
+from app.agentic_research.contracts import ResearchReport
+from app.agentic_research.store import AgenticResearchStore, AgenticResearchStoreUnavailable
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.evidence_summaries.contracts import (
@@ -1182,6 +1183,31 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Research run was not found.")
         return run
+
+    @app.get(
+        "/v1/research/runs/{run_id}/report",
+        response_model=ResearchReport,
+        tags=["research"],
+    )
+    async def get_research_report(run_id: str, http_request: Request) -> ResearchReport:
+        """Read the newest grounded report without starting model work."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        try:
+            report = await http_request.app.state.agentic_research_store.get_report(
+                user.workspace_id, parsed_run_id
+            )
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if report is None:
+            raise HTTPException(status_code=404, detail="No final report exists for this run.")
+        return report
 
     @app.get(
         "/v1/web-trust-policy",

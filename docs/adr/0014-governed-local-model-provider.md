@@ -11,6 +11,11 @@
 > provider boundary, but they have different prompts, inputs, outputs, authority,
 > evaluations, and audit records.
 
+> **Amendment, 2026-09-29:** The evidence-summary contract is now
+> `evidence-summary-v2`. It removes model-authored keyword-coverage maps in
+> favor of server-side keyword-presence validation and adds a bounded,
+> recorded corrective attempt for malformed completed responses.
+
 ## Context
 
 The platform's first live language-model capability will generate a summary and
@@ -33,7 +38,7 @@ initial recommended model is Qwen3 1.7B, subject to explicit operator
 installation and local validation. The adapter may support future hosted
 providers without changing the authority or evidence contracts below.
 
-The reusable chunking, output-schema, consolidation, coverage, and deterministic
+The reusable chunking, output-schema, consolidation, and deterministic
 routing logic lives in an internal `evidence_intelligence` package. It exposes
 plain typed input and output only, and must not import platform API, identity,
 database, provider, MCP, Temporal, filesystem, or credential code. Platform
@@ -87,10 +92,22 @@ and source-chunk references so an operator can distinguish derived claims from
 the supporting evidence.
 
 The provider adapter requests a strict structured response for a summary and
-keywords. The platform validates size, schema, provenance references, and
-workspace ownership before it persists or returns an output. Invalid,
-incomplete, provider-authored instructions, or unavailable-model responses are
-treated as typed failures, never as authority-bearing commands.
+keywords. New chunk and consolidation responses contain only `summary` and
+`keywords`; the final source response additionally contains
+`evidence_sufficient`. The platform validates size, schema, keyword count,
+normalized keyword uniqueness, phrase presence in the saved summary, provenance
+references, and workspace ownership before it persists or returns an output.
+
+For each chunk, consolidation group, and final source summary, Postgres reserves
+one model-call slot before the provider is contacted. A malformed completed
+response receives one corrective attempt using the same trusted evidence and a
+safe validation category. The invalid response is never included in the next
+prompt. A second invalid completed response terminally fails only that source
+with `summary_contract_exhausted`; a provider outage or stale reservation uses
+`model_dependency_unavailable`. Attempt records retain the model version, prompt
+version, evidence version, unit identity, outcome, and safe reason, but never
+raw model output. These outcomes are typed failures, never authority-bearing
+commands.
 
 ### Operator-requested regeneration
 
@@ -133,6 +150,12 @@ must state whether the available evidence is sufficient; otherwise the operator
 sees the limitation instead of a fabricated complete answer. The provider sees
 only one chunk at a time during extraction and only the derived chunk summaries
 during consolidation.
+
+An evidence-insufficient final summary is stored and shown to the operator, but
+does not count toward topic coverage or the final report. A report uses only
+eligible, relevant, evidence-sufficient stored summaries. When some sources are
+omitted after recovery is exhausted, trusted platform code adds the omission
+notice outside the model prompt.
 
 ## Consequences
 

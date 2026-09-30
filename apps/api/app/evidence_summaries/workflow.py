@@ -25,7 +25,15 @@ class EvidenceSummaryWorkflow:
                 start_to_close_timeout=timedelta(minutes=20),
                 retry_policy=RetryPolicy(maximum_attempts=1),
             )
-            continuation = request.continuation
+            continuation = (
+                request.continuation
+                if result == "completed"
+                else WorkflowContinuationEnvelope(
+                    wait=request.continuation.wait,
+                    result_record_id=request.continuation.result_record_id,
+                    outcome="failed",
+                )
+            )
         except ActivityError:
             result = "failed"
             continuation = WorkflowContinuationEnvelope(

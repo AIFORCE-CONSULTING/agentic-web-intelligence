@@ -24,7 +24,7 @@ from app.durable_execution.contracts import (
     WorkflowContinuationContext,
     WorkflowThreadReference,
 )
-from app.evidence_summaries.service import EvidenceSummaryAutomation
+from app.evidence_summaries.service import EvidenceSummaryAutomation, EvidenceSummaryUnavailable
 from app.web_research.contracts import (
     Evidence,
     SearchResponse,
@@ -356,6 +356,10 @@ def evidence_summary_node(automation: EvidenceSummaryAutomation) -> ResearchNode
             urls,
             _continuation_context(state),
         )
+        if execution.status == "failed":
+            raise EvidenceSummaryUnavailable(
+                "No evidence-sufficient source summary is available for this research task."
+            )
         return {
             "stage": (
                 "summaries_stored" if execution.status == "completed" else "awaiting_summaries"

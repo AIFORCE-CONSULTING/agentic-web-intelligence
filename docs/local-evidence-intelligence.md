@@ -59,13 +59,13 @@ accepted.
 Generated summaries are derived artifacts. The original extracted source
 evidence remains the source of truth, and Postgres remains the canonical record
 for each summary request, selected URL, route, status, chunk policy, generated
-summary, keywords, keyword coverage, prompt version, sufficiency flag, and
-regeneration attempt. Keyword coverage records one exact sentence from the
-saved summary for each keyword; the platform rejects a model response when a
-keyword has no matching, explanatory sentence in that summary. The fixed
-`evidence-keyword-coverage-v1` prompt contract applies to new summaries and
-regenerations. Existing artifacts remain readable with no retroactive claim of
-coverage or prompt-version provenance.
+summary, keywords, prompt version, sufficiency flag, regeneration cycle, and
+safe model-attempt outcome. New summaries use the fixed `evidence-summary-v2`
+contract: chunks and consolidation groups return a summary and three to five
+keywords; final source summaries return a summary, three to seven keywords, and
+`evidence_sufficient`. Each keyword must occur as a complete normalized phrase
+in the saved summary. Existing `keyword_coverage` data remains readable for
+historical artifacts, but new work neither requests nor writes it.
 
 Only authenticated administrators can configure the local provider. Authenticated
 operators can request summaries for workspace-owned research runs and selected
@@ -152,6 +152,8 @@ The summary API is intentionally narrow:
   recent summary execution for a run.
 - `GET /v1/evidence-summary-artifacts` returns one newest stored summary per
   URL for the current workspace, which powers the workspace keyword view.
+- `GET /v1/research/runs/{run_id}/report` returns the newest stored final
+  report without starting any model work.
 - `POST /v1/evidence-summary-executions/{batch_id}/regenerate` regenerates an
   already completed selection.
 
@@ -188,14 +190,22 @@ keyword set. When consolidation input would exceed the fixed budget, the
 platform recursively records bounded consolidation groups before producing the
 final source summary.
 
-Both the chunk and final prompts require the model to write the summary before
-choosing keywords. A keyword must be a term or short phrase the summary actually
-explains, and the response must provide the exact supporting summary sentence
-for every keyword. Ollama receives the corresponding JSON schema; the API still
-validates the returned data before persisting the final source artifact.
+Both prompts require the model to write the summary before choosing keywords.
+The server validates keyword count, uniqueness, and normalized phrase presence
+after Ollama returns JSON. If a completed response is malformed or fails those
+checks, the platform records a safe validation category and gives that exact
+summary unit one corrective attempt with the same bounded evidence. It never
+passes the invalid response back to the model. A second invalid completed
+response marks only that source `summary_contract_exhausted`; it does not erase
+valid summaries from other sources.
 
 Final summaries include an `evidence_sufficient` flag. When the extracted
-evidence is insufficient, the summary must say so instead of filling gaps.
+evidence is insufficient, the summary must say so instead of filling gaps. That
+source remains visible and reusable, but it does not count toward topic coverage
+or final-report input. The final report uses only stored summaries that are
+eligible under trust policy, relevant to a planned topic, and evidence
+sufficient. The platform appends a plain-language notice for sources omitted
+because their summary failed or was insufficient.
 
 ## Failure behavior
 
@@ -204,11 +214,15 @@ Local evidence intelligence fails closed when:
 - no local model provider is configured;
 - Ollama is unreachable;
 - the configured model is not installed;
-- the provider returns invalid JSON or a schema-invalid result;
+- the provider is unavailable before it completes a response;
 - the research run or selected evidence is unavailable;
 - selected URLs are outside the current workspace-owned run; or
 - Temporal is unhealthy or unavailable for a durably routed request.
 
-Failure records remain inspectable through the summary execution status and
-source failure reasons. Extracted source evidence is retained separately from
-generated summary artifacts.
+Completed invalid model responses are a recoverable source-level problem, not a
+provider outage. Each summary unit has at most two model-call slots in an
+operator-authorized regeneration cycle. Attempt records retain model and prompt
+versions, the unit identity, outcome, and safe validation category, never raw
+model output. Failure records remain inspectable through the summary execution
+status and source failure reasons. Extracted source evidence is retained
+separately from generated summary artifacts.

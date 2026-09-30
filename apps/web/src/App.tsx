@@ -57,7 +57,13 @@ type EvidenceSummaryBatch = {
     evidence_sufficient?: boolean | null;
     artifact_reused?: boolean;
     failure_reason?: string | null;
+    failure_category?: string | null;
+    summary_attempt_count?: number;
+    model_version?: string | null;
   }[];
+};
+type ResearchReport = {
+  run_id: string; markdown: string; model_name: string; prompt_version: string; created_at: string;
 };
 type WorkspaceSummaryArtifact = {
   run_id: string; url: string; title: string; chunk_count?: number | null;
@@ -537,6 +543,7 @@ export function App() {
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
+  const [report, setReport] = useState<ResearchReport | null>(null);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
   const [trustPolicy, setTrustPolicy] = useState<EffectiveWebTrustPolicy | null>(null);
   const [reviewForm, setReviewForm] = useState<ReviewFormState | null>(null);
@@ -594,7 +601,10 @@ export function App() {
       void apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
         .then((updated) => {
           setSummaryBatch(updated);
-          if (updated.status === "completed") void loadWorkspaceSummaries();
+          if (updated.status === "completed") {
+            void loadWorkspaceSummaries();
+            if (run) void loadReport(run.id);
+          }
         })
         .catch(() => undefined);
     }, 3000);
@@ -609,6 +619,7 @@ export function App() {
         if (["completed", "failed", "awaiting_review"].includes(refreshed.status)) {
           void refreshRunLibrary();
           void loadSummaryBatch(refreshed.id);
+          void loadReport(refreshed.id);
         }
       }).catch(() => undefined);
     }, 2000);
@@ -629,6 +640,7 @@ export function App() {
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
       await loadWorkspaceSummaries();
+      await loadReport(reopened.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
     } finally {
@@ -656,8 +668,10 @@ export function App() {
       setReviewForm(null);
       setCandidateStatusFilter("all");
       setSummaryBatch(null);
+      setReport(null);
       await loadSummaryBatch(created.id);
       await loadWorkspaceSummaries();
+      await loadReport(created.id);
       await refreshRunLibrary();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
@@ -685,6 +699,14 @@ export function App() {
       setWorkspaceSummaries(response.artifacts);
     } catch {
       setWorkspaceSummaries([]);
+    }
+  }
+
+  async function loadReport(runId: string) {
+    try {
+      setReport(await apiRequest<ResearchReport>(`/v1/research/runs/${runId}/report`));
+    } catch {
+      setReport(null);
     }
   }
 
@@ -864,6 +886,7 @@ export function App() {
           {summaryBatch && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
             <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
             <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
+            {summaryBatch.sources.filter((source) => source.status === "failed").map((source) => <p key={source.url}><strong>{source.url}</strong>: {source.failure_reason ?? "Summary processing did not complete."} {source.failure_category ? `[${source.failure_category}] ` : ""}{source.summary_attempt_count ? `(${source.summary_attempt_count} attempt${source.summary_attempt_count === 1 ? "" : "s"}${source.model_version ? `, ${source.model_version}` : ""})` : ""}</p>)}
           </aside>}
           {keywordCards.length ? <div className="keyword-grid">{keywordCards.map((keyword) => <article className="keyword-card" key={keyword.label}>
             <h3>{keyword.label}</h3>
@@ -878,6 +901,14 @@ export function App() {
               {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
             </article>}
           </div>
+        </section>
+
+        <section aria-labelledby="report-heading">
+          <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">4. Final report</h2></div>{report && <span className="badge">{report.model_name}</span>}</div>
+          {report ? <article className="source-summary report-markdown">
+            <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.</p>
+            {report.markdown.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+          </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
         </section>
 
         <section aria-labelledby="audit-heading">

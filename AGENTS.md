@@ -63,8 +63,7 @@ for every design and implementation decision.
 For significant feature, workflow, authority, durable-execution, human-approval,
 or external-effect changes, use the Specify workflow in `.agents/skills/`.
 Treat `.specify/memory/constitution.md` as the canonical project constitution.
-The active architecture-consolidation plan is
-`specs/001-consolidate-research-architecture/plan.md`. Read
+The active summary-recovery plan is `specs/002-summary-recovery/plan.md`. Read
 `.specify/feature.json` and the selected feature's current specification, plan,
 and tasks before implementation. Specify artifacts supplement rather than
 replace the architecture reconciliation and approval required above.

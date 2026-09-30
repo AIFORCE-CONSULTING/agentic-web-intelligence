@@ -34,6 +34,9 @@ class EvidenceSummaryExecutionSource(BaseModel):
     evidence_sufficient: bool | None = None
     artifact_reused: bool = False
     failure_reason: str | None = None
+    failure_category: str | None = None
+    summary_attempt_count: int = 0
+    model_version: str | None = None
 
 
 class EvidenceSummaryExecution(BaseModel):

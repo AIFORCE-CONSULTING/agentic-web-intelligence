@@ -8,6 +8,7 @@ import asyncpg
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    EvidenceSummaryWorkSet,
     WorkspaceEvidenceSummaryArtifact,
 )
 
@@ -27,6 +28,22 @@ CREATE TABLE IF NOT EXISTS evidence_summary_executions (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+CREATE TABLE IF NOT EXISTS evidence_summary_work_sets (
+    id UUID PRIMARY KEY,
+    workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
+    run_id UUID NOT NULL REFERENCES research_runs(id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('created', 'waiting', 'completed', 'failed')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    completed_at TIMESTAMPTZ
+);
+CREATE TABLE IF NOT EXISTS evidence_summary_work_set_members (
+    work_set_id UUID NOT NULL REFERENCES evidence_summary_work_sets(id) ON DELETE CASCADE,
+    execution_id UUID NOT NULL REFERENCES evidence_summary_executions(id) ON DELETE CASCADE,
+    PRIMARY KEY (work_set_id, execution_id)
+);
+CREATE INDEX IF NOT EXISTS evidence_summary_work_sets_run_idx
+    ON evidence_summary_work_sets (workspace_id, run_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS evidence_summary_execution_sources (
     execution_id UUID NOT NULL REFERENCES evidence_summary_executions(id) ON DELETE CASCADE,
     url TEXT NOT NULL,
@@ -217,6 +234,108 @@ class EvidenceSummaryStore:
             **dict(row),
             sources=[EvidenceSummaryExecutionSource(url=url) for url in urls],
         )
+
+    async def create_work_set(self, workspace_id: UUID, run_id: UUID) -> EvidenceSummaryWorkSet:
+        """Create the one coordination record for a graph-owned summary stage."""
+
+        pool = await self._connection_pool()
+        work_set_id = uuid4()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """INSERT INTO evidence_summary_work_sets (id, workspace_id, run_id, status)
+                   VALUES ($1, $2, $3, 'created')
+                   RETURNING id, workspace_id, run_id, status""",
+                work_set_id, workspace_id, run_id,
+            )
+        return EvidenceSummaryWorkSet(**dict(row))
+
+    async def attach_execution_to_work_set(self, work_set_id: UUID, execution_id: UUID) -> None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            result = await connection.execute(
+                """INSERT INTO evidence_summary_work_set_members (work_set_id, execution_id)
+                   VALUES ($1, $2) ON CONFLICT DO NOTHING""",
+                work_set_id, execution_id,
+            )
+            if result not in {"INSERT 0 1", "INSERT 0 0"}:
+                raise EvidenceSummaryStoreUnavailable("Summary work-set membership conflicted.")
+            await connection.execute(
+                """UPDATE evidence_summary_work_sets SET status = 'waiting', updated_at = now()
+                   WHERE id = $1 AND status = 'created'""",
+                work_set_id,
+            )
+
+    async def refresh_work_set(self, work_set_id: UUID) -> EvidenceSummaryWorkSet | None:
+        """Finalize only after every internal job is terminal."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            row = await connection.fetchrow(
+                """SELECT id, workspace_id, run_id, status
+                   FROM evidence_summary_work_sets WHERE id = $1 FOR UPDATE""",
+                work_set_id,
+            )
+            if row is None:
+                return None
+            statuses = await connection.fetch(
+                """SELECT execution.status FROM evidence_summary_work_set_members AS member
+                   JOIN evidence_summary_executions AS execution
+                     ON execution.id = member.execution_id
+                   WHERE member.work_set_id = $1""",
+                work_set_id,
+            )
+            values = [item["status"] for item in statuses]
+            terminal = values and all(
+                value in {"completed", "failed", "cancelled"} for value in values
+            )
+            if terminal and row["status"] not in {"completed", "failed"}:
+                outcome = "completed" if "completed" in values else "failed"
+                row = await connection.fetchrow(
+                    """UPDATE evidence_summary_work_sets
+                       SET status = $2, updated_at = now(), completed_at = now()
+                       WHERE id = $1
+                       RETURNING id, workspace_id, run_id, status""",
+                    work_set_id, outcome,
+                )
+            execution_ids = await connection.fetch(
+                """SELECT execution_id FROM evidence_summary_work_set_members
+                   WHERE work_set_id = $1 ORDER BY execution_id""",
+                work_set_id,
+            )
+        return EvidenceSummaryWorkSet(
+            **dict(row), execution_ids=[item["execution_id"] for item in execution_ids]
+        )
+
+    async def get_work_set(self, workspace_id: UUID, run_id: UUID) -> EvidenceSummaryWorkSet | None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """SELECT id, workspace_id, run_id, status FROM evidence_summary_work_sets
+                   WHERE workspace_id = $1 AND run_id = $2 ORDER BY created_at DESC LIMIT 1""",
+                workspace_id, run_id,
+            )
+            if row is None:
+                return None
+            execution_ids = await connection.fetch(
+                """SELECT execution_id FROM evidence_summary_work_set_members
+                   WHERE work_set_id = $1 ORDER BY execution_id""",
+                row["id"],
+            )
+        return EvidenceSummaryWorkSet(
+            **dict(row), execution_ids=[item["execution_id"] for item in execution_ids]
+        )
+
+    async def refresh_work_set_for_execution(
+        self, execution_id: UUID
+    ) -> EvidenceSummaryWorkSet | None:
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            work_set_id = await connection.fetchval(
+                """SELECT work_set_id FROM evidence_summary_work_set_members
+                   WHERE execution_id = $1""",
+                execution_id,
+            )
+        return await self.refresh_work_set(work_set_id) if work_set_id else None
 
     async def mark_source_extracting(self, execution_id: UUID, url: str) -> None:
         await self._update_source(execution_id, url, "extracting")
@@ -680,7 +799,8 @@ class EvidenceSummaryStore:
             if row is None:
                 return None
             sources = await connection.fetch(
-                """SELECT sources.url, sources.status, sources.content_hash, sources.content_characters, sources.chunk_count,
+                """SELECT sources.url, sources.status, sources.content_hash,
+                          sources.content_characters, sources.chunk_count,
                           chunking_policy_version, summary, keywords,
                           keyword_coverage, prompt_version,
                           evidence_sufficient, artifact_reused, failure_reason, failure_category,

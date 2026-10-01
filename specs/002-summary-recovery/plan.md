@@ -94,7 +94,10 @@ Every durable decision and operator-visible state has one record, one writer, na
 ## Design Decisions
 
 1. V2 model output contains only `summary`, `keywords`, and final-only `evidence_sufficient`.
-2. The platform validates unique, non-empty keywords by normalized case-and-whitespace presence in the completed summary. Chunks use 3–5 keywords; final source summaries use 3–7.
+2. The platform validates unique, non-empty keywords and their required counts.
+   Prompts instruct the model to choose terms the summary explains, but exact
+   phrase presence is not a persistence gate. Chunks use 3–5 keywords; final
+   source summaries use 3–7.
 3. A new append-only attempt record reserves each model-call slot before it is sent, then captures each accepted or rejected completed response without retaining raw output.
 4. A rejected first response gets one complete corrective replacement request using the same bounded evidence input plus a safe validation category. Provider unavailability or a stale reservation is a dependency failure, not a corrective response.
 5. An exhausted unit fails only its source; independent sources continue. A stale reservation or provider failure marks its affected source `model_dependency_unavailable` and fails the execution through the existing dependency path. No accepted artifact is created for a failed source.
@@ -105,10 +108,11 @@ Every durable decision and operator-visible state has one record, one writer, na
 
 ### Fixed Validation And Operator-Outcome Rules
 
-Keyword presence is a deterministic phrase check: trim outer whitespace,
-collapse internal whitespace, compare case-insensitively, preserve punctuation,
-and require the complete normalized keyword phrase in the normalized summary.
-The model never decides whether this rule passed.
+Keyword validation is deterministic only for response shape: each keyword is
+non-empty, unique after normalized case-and-whitespace comparison, and within
+the applicable count. The prompt, rather than a brittle exact-string rule,
+instructs the model to choose terms that the summary explains. The model never
+decides whether the response shape passed.
 
 Source and execution outcomes use the shared safe categories in the feature
 data model. Each existing owning service writes only its own category and fixed
@@ -147,3 +151,79 @@ specs/002-summary-recovery/         # design artifacts and generated tasks
 ## Complexity Tracking
 
 No constitutional violation or exception is proposed.
+
+## Approved Summary-Stage Repair (2026-09-30)
+
+### Reconciliation
+
+The repository currently has two callers that can initiate summaries. The
+unified LangGraph summary node calls `EvidenceSummaryAutomation.start_for_urls`
+after topic relevance succeeds. Separately, the durable candidate-preflight
+worker calls `start_for_discovered_candidates` after preflight. The second call
+skips topic relevance and permits an individual five-source execution to resume
+or fail the graph independently of the other executions for the same research
+task. This is a parallel orchestration path and conflicts with ADR 0016.
+
+The repair retains the existing responsibilities:
+
+- LangGraph remains the single application workflow. Its `summarize_evidence`
+  node is the only initiator of summary work.
+- Candidate preflight remains a LangGraph stage backed by the existing
+  deterministic retrieval, redirect, content-limit, and trust services. For
+  qualifying workloads, Temporal still makes that work durable. The preflight
+  worker records only preflight outcomes and resumes the graph; it does not
+  start summaries.
+- `EvidenceSummaryService` continues to make bounded model calls and own
+  per-source summary outcomes. `EvidenceSummaryStore` continues to own those
+  executions, source rows, artifacts, and attempt records.
+- `ResearchStore` remains the sole owner of `research_runs.status`. The
+  graph, not Temporal or a summary worker, is its only writer.
+
+The repair adds a narrowly scoped `evidence_summary_work_sets` record owned by
+`EvidenceSummaryStore`. It does not duplicate research status. It answers only
+one different question: whether all internal summary executions selected for
+one graph summary stage have reached a terminal outcome and whether any usable
+source summary exists.
+
+### State And Decision Ownership Matrix
+
+| State or decision | Business question | Canonical record and field | Authorized writer | Readers | Derived copies | Allowed transitions | Conflict resolution |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Research status | What is the operator-visible state of this research task? | `research_runs.status`, `status_version`, and failure fields | Unified LangGraph through `ResearchStore` | UI, RuntimeService, routes, durable continuations | LangGraph checkpoint and Temporal history | Existing research transitions; `summarizing -> assessing_coverage` only after completed work set, `summarizing -> failed` only after failed work set | Optimistic status version; a stale graph writer records conflict and stops safely |
+| Summary-work-set status | Have all selected internal summary jobs finished, and is usable evidence available? | `evidence_summary_work_sets.status` and member rows | `EvidenceSummaryStore`, invoked only by `EvidenceSummaryAutomation` from the graph | Graph continuation, UI read model, durable worker | LangGraph checkpoint and Temporal histories | `created -> waiting -> completed` when all members are terminal and one source is evidence-sufficient; `created|waiting -> failed` only when all members are terminal with no evidence-sufficient source, or a state conflict occurs | Transactional row lock and unique membership; duplicate worker delivery recomputes the stored set rather than creating another member or continuation |
+| Internal summary execution | What happened for this fixed group of no more than five sources? | Existing `evidence_summary_executions.status` and source rows | `EvidenceSummaryService` and `EvidenceSummaryStore` | Work-set aggregator, UI detail view, Temporal worker | Temporal history | Existing extraction, waiting, summarizing, completed, and failed outcomes | Existing attempt reservation and execution idempotency; member result is never allowed to transition research status directly |
+| Keyword acceptance | Does a model response have an acceptable summary and keyword-list shape? | Existing accepted attempt and artifact fields | `EvidenceSummaryService` after deterministic validation | Summary store, coverage, reporting | Attempt diagnostics | Reserved -> accepted, rejected, or dependency failed | Reject invalid JSON, missing fields, out-of-range, empty, or duplicate keywords; different-but-relevant wording is not a rejection |
+| Evidence eligibility | May this evidence enter a model prompt? | Existing trust evaluation and active override | Web-trust and evidence-review services | Preflight, summary service, relevance service, reporting | UI views | Existing policy and review transitions | Current policy version and active human acceptance win; neither graph nor model can override them |
+
+### Execution And Continuation Rules
+
+The graph freezes the relevant source identities before summary work starts and
+creates a work set. It partitions those source identities into member
+executions of at most five sources. The five-source limit is a resource bound,
+not an operator-visible research decision.
+
+Each member execution uses the existing deterministic direct-versus-Temporal
+rule. If any member requires Temporal, the graph interrupts at the existing
+summary wait point. Each completed direct execution or Temporal activity updates
+its own stored member outcome. A trusted store operation recalculates the work
+set after every member update. It resumes the graph exactly once only after all
+members are terminal. A failed member is retained as an omission; it does not
+fail the work set while another member can still provide an evidence-sufficient
+summary.
+
+The UI continues to display `research_runs.status` as the official task status.
+During summary work, it reads the latest work set and its member source outcomes
+to show combined counts. It never infers task completion from a Temporal
+workflow or whichever execution happened to be created last.
+
+### Retirement And Documentation
+
+`EvidenceSummaryAutomation.start_for_discovered_candidates` and the durable
+preflight worker call site are retired. No compatibility behavior retains
+preflight-initiated summaries. Existing summary artifacts remain readable;
+in-progress test-era work is not migrated and may be cleared before verification.
+
+ADR 0014 is amended to remove exact keyword-phrase persistence validation.
+ADR 0016 is amended to make the preflight-to-summary boundary and aggregate
+summary continuation explicit. Local evidence documentation is updated to
+describe the combined operator outcome.

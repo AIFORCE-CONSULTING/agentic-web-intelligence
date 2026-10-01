@@ -60,12 +60,14 @@ Generated summaries are derived artifacts. The original extracted source
 evidence remains the source of truth, and Postgres remains the canonical record
 for each summary request, selected URL, route, status, chunk policy, generated
 summary, keywords, prompt version, sufficiency flag, regeneration cycle, and
-safe model-attempt outcome. New summaries use the fixed `evidence-summary-v2`
+safe model-attempt outcome. New summaries use the fixed `evidence-summary-v3`
 contract: chunks and consolidation groups return a summary and three to five
 keywords; final source summaries return a summary, three to seven keywords, and
-`evidence_sufficient`. Each keyword must occur as a complete normalized phrase
-in the saved summary. Existing `keyword_coverage` data remains readable for
-historical artifacts, but new work neither requests nor writes it.
+`evidence_sufficient`. The prompt asks the model to select keywords the summary
+explains. The platform validates the response shape, keyword count, and keyword
+uniqueness, but does not reject a useful summary because the keyword wording is
+not repeated exactly in the prose. Existing `keyword_coverage` data remains
+readable for historical artifacts, but new work neither requests nor writes it.
 
 Only authenticated administrators can configure the local provider. Authenticated
 operators can request summaries for workspace-owned research runs and selected
@@ -131,8 +133,9 @@ Evidence summaries start from a persisted research run:
 2. The platform discovers and automatically preflights each returned candidate
    through the bounded retrieval path. Small batches run directly; larger
    batches use Temporal automatically.
-3. The platform automatically summarizes and generates keywords for eligible
-   retained evidence. `review_required`, `blocked`, and `unreachable`
+3. After the unified graph records topic relevance, the platform automatically
+   summarizes and generates keywords for eligible, relevant retained evidence.
+   `review_required`, `blocked`, and `unreachable`
    candidates remain visible with their reasons but do not enter model context.
 4. An authorized operator may accept a specific `review_required` evidence
    version with a reason; the platform then automatically summarizes it.
@@ -148,8 +151,9 @@ The summary API is intentionally narrow:
   workspace-owned run and selected URLs.
 - `GET /v1/evidence-summary-executions/{batch_id}` inspects a workspace-owned
   execution.
-- `GET /v1/research/runs/{run_id}/evidence-summary-execution` restores the most
-  recent summary execution for a run.
+- `GET /v1/research/runs/{run_id}/evidence-summary-work-set` restores the
+  combined summary-stage outcome for a run, including every internal
+  five-source execution. It is the Research workspace's progress view.
 - `GET /v1/evidence-summary-artifacts` returns one newest stored summary per
   URL for the current workspace, which powers the workspace keyword view.
 - `GET /v1/research/runs/{run_id}/report` returns the newest stored final
@@ -169,8 +173,12 @@ Routing is deterministic platform policy. Model output cannot influence it.
 
 A request runs directly only when exactly one selected source produces exactly
 one chunk. Any multi-source request or multi-chunk page automatically uses the
-dedicated Temporal evidence-summary workflow. After the owning summary service
-persists the result, `continue_unified_research` resumes the same graph thread.
+dedicated Temporal evidence-summary workflow. The unified graph is the sole
+starter of summary work, after relevance is recorded. It creates one summary
+work set for the research task; a set may contain several internal jobs of at
+most five sources. Each job persists its own result, and the graph resumes only
+once the entire set is terminal. A failed job does not discard usable summaries
+from its sibling jobs.
 Durable execution makes an already authorized job restart-safe; it does not
 grant the model or caller Temporal authority or own research status.
 
@@ -191,8 +199,9 @@ platform recursively records bounded consolidation groups before producing the
 final source summary.
 
 Both prompts require the model to write the summary before choosing keywords.
-The server validates keyword count, uniqueness, and normalized phrase presence
-after Ollama returns JSON. If a completed response is malformed or fails those
+The server validates keyword count and uniqueness after Ollama returns JSON.
+The prompts ask for keywords that the summary explains, without making exact
+phrase repetition a rejection rule. If a completed response is malformed or fails those
 checks, the platform records a safe validation category and gives that exact
 summary unit one corrective attempt with the same bounded evidence. It never
 passes the invalid response back to the model. A second invalid completed

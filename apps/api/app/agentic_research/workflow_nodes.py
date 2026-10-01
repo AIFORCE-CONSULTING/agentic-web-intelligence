@@ -350,19 +350,19 @@ def evidence_summary_node(automation: EvidenceSummaryAutomation) -> ResearchNode
         urls = list(dict.fromkeys(item.source_url for item in state.get("relevant_sources", [])))
         if not urls:
             return {"stage": "summaries_stored"}
-        execution = await automation.start_for_urls(
+        work_set = await automation.start_for_relevant_urls(
             state["workspace_id"],
             state["run_id"],
             urls,
             _continuation_context(state),
         )
-        if execution.status == "failed":
+        if work_set.status == "failed":
             raise EvidenceSummaryUnavailable(
                 "No evidence-sufficient source summary is available for this research task."
             )
         return {
             "stage": (
-                "summaries_stored" if execution.status == "completed" else "awaiting_summaries"
+                "summaries_stored" if work_set.status == "completed" else "awaiting_summaries"
             )
         }
 

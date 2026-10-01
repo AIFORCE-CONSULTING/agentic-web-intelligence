@@ -12,9 +12,16 @@
 > evaluations, and audit records.
 
 > **Amendment, 2026-09-29:** The evidence-summary contract is now
-> `evidence-summary-v2`. It removes model-authored keyword-coverage maps in
-> favor of server-side keyword-presence validation and adds a bounded,
-> recorded corrective attempt for malformed completed responses.
+> `evidence-summary-v2`. It removes model-authored keyword-coverage maps and
+> adds a bounded, recorded corrective attempt for malformed completed responses.
+>
+> **Amendment, 2026-09-30:** Keyword phrases remain useful descriptive metadata,
+> but exact phrase repetition in a summary is no longer an acceptance rule. The
+> platform validates the structured response, required fields, keyword count,
+> and keyword uniqueness. It asks the model to choose keywords the summary
+> explains, without rejecting a useful summary for a wording variation. The
+> unified LangGraph workflow is the only component that starts summary work,
+> after relevance is recorded; preflight never starts summaries.
 
 ## Context
 
@@ -95,8 +102,10 @@ The provider adapter requests a strict structured response for a summary and
 keywords. New chunk and consolidation responses contain only `summary` and
 `keywords`; the final source response additionally contains
 `evidence_sufficient`. The platform validates size, schema, keyword count,
-normalized keyword uniqueness, phrase presence in the saved summary, provenance
-references, and workspace ownership before it persists or returns an output.
+normalized keyword uniqueness, provenance references, and workspace ownership
+before it persists or returns an output. The prompt instructs the model to
+choose keywords that its summary explains, but does not impose a literal
+phrase-presence test.
 
 For each chunk, consolidation group, and final source summary, Postgres reserves
 one model-call slot before the provider is contacted. A malformed completed
@@ -130,9 +139,15 @@ give a durable Temporal run a distinct operational identity when needed.
 
 A short summary for one page executes directly inside the API request path. A
 trusted routing rule may use the existing server-only durable-execution path
-for multi-page, long-running, or restart-sensitive chunk processing. Temporal
-only makes an already-authorized server job durable; it does not provide human
-approval, model authority, scheduling authority, or a new caller path.
+for multi-page, long-running, or restart-sensitive chunk processing. The
+unified LangGraph workflow starts summary work only after recording topic
+relevance. When more than five relevant sources are present, the summary
+service creates one stored summary work set and divides it into internal jobs
+of no more than five sources. Temporal makes individual already-authorized jobs
+durable; it does not provide human approval, model authority, scheduling
+authority, or a new caller path. The work set resumes the graph once only after
+every internal job is terminal, allowing the remaining useful summaries to
+continue when one internal job fails.
 
 The operator's request is recorded independently of the execution mechanism.
 The provider cannot choose whether work is direct or durable, schedule itself,

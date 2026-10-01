@@ -60,6 +60,16 @@ class EvidenceSummaryExecution(BaseModel):
     sources: list[EvidenceSummaryExecutionSource]
 
 
+class EvidenceSummaryWorkSet(BaseModel):
+    """Combined outcome for all internal summary jobs of one research task."""
+
+    id: UUID
+    workspace_id: UUID
+    run_id: UUID
+    status: Literal["created", "waiting", "completed", "failed"]
+    execution_ids: list[UUID] = Field(default_factory=list)
+
+
 class WorkspaceEvidenceSummaryArtifact(BaseModel):
     """One newest stored source summary for a canonical URL in a workspace."""
 

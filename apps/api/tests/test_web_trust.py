@@ -9,6 +9,7 @@ import pytest
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
+    EvidenceSummaryWorkSet,
 )
 from app.evidence_summaries.service import (
     EvidenceSummaryAutomation,
@@ -410,36 +411,77 @@ def test_summary_automation_batches_eligible_candidates_within_execution_limit(
 ) -> None:
     workspace_id, run_id = uuid4(), uuid4()
     urls = [f"https://example.com/source-{index}" for index in range(6)]
+    work_set = EvidenceSummaryWorkSet(
+        id=uuid4(),
+        workspace_id=workspace_id,
+        run_id=run_id,
+        status="waiting",
+    )
 
-    class FakeResearchStore:
-        async def get_run(self, *_: object):
-            return SimpleNamespace(
-                sources=[
-                    SourceCandidate(
-                        rank=index + 1,
-                        title=f"Source {index}",
-                        url=url,
-                        preflight_status="ready_to_extract",
-                    )
-                    for index, url in enumerate(urls)
-                ]
-            )
+    class FakeExecutionStore:
+        async def get_work_set(self, *_: object) -> None:
+            return None
+
+        async def create_work_set(self, *_: object) -> EvidenceSummaryWorkSet:
+            return work_set
+
+        async def refresh_work_set(self, *_: object) -> EvidenceSummaryWorkSet:
+            return work_set
 
     automation = EvidenceSummaryAutomation(
-        object(), object(), FakeResearchStore(), object()
+        object(), FakeExecutionStore(), object(), object()
     )
     batches: list[list[str]] = []
 
-    async def start_for_urls(_: object, __: object, batch: list[str]) -> object:
+    async def start_for_urls(
+        _: object, __: object, batch: list[str], ___: object, ____: object
+    ) -> object:
         batches.append(batch)
         return SimpleNamespace(id=len(batches))
 
     monkeypatch.setattr(automation, "start_for_urls", start_for_urls)
 
-    result = asyncio.run(automation.start_for_discovered_candidates(workspace_id, run_id, urls))
+    result = asyncio.run(
+        automation.start_for_relevant_urls(
+            workspace_id, run_id, urls, SimpleNamespace()
+        )
+    )
 
     assert batches == [urls[:5], urls[5:]]
-    assert result.id == 2
+    assert result == work_set
+
+
+def test_summary_automation_reuses_a_completed_work_set() -> None:
+    workspace_id, run_id, work_set_id = uuid4(), uuid4(), uuid4()
+    existing = EvidenceSummaryWorkSet(
+        id=work_set_id,
+        workspace_id=workspace_id,
+        run_id=run_id,
+        status="completed",
+        execution_ids=[uuid4()],
+    )
+
+    class FakeExecutionStore:
+        async def get_work_set(self, *_: object) -> EvidenceSummaryWorkSet:
+            return existing
+
+        async def create_work_set(self, *_: object) -> None:
+            raise AssertionError("A completed work set must be resumed, not replaced.")
+
+    automation = EvidenceSummaryAutomation(
+        object(), FakeExecutionStore(), object(), object()
+    )
+
+    result = asyncio.run(
+        automation.start_for_relevant_urls(
+            workspace_id,
+            run_id,
+            ["https://example.com/source"],
+            SimpleNamespace(),
+        )
+    )
+
+    assert result == existing
 
 
 def test_summary_preparation_excludes_evidence_requiring_review() -> None:
@@ -460,7 +502,7 @@ def test_summary_preparation_excludes_evidence_requiring_review() -> None:
         failure_reasons: list[str] = []
 
         async def record_source_failure(self, *_: object) -> None:
-            self.failure_reasons.append(_[-1])
+            self.failure_reasons.append(_[-2])
 
         async def get_execution(self, *_: object) -> EvidenceSummaryExecution:
             return execution

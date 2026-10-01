@@ -24,12 +24,9 @@
 Chunk and consolidation responses contain only `summary` and `keywords`. Final
 source responses additionally contain `evidence_sufficient`. The platform
 rejects extra fields, invalid JSON, blank or duplicate keywords, out-of-range
-keyword counts, and keywords not found in the normalized summary.
-
-For keyword presence, the platform trims outer whitespace, collapses repeated
-internal whitespace to one space, compares case-insensitively, preserves
-punctuation, and requires the complete normalized keyword phrase to occur in
-the normalized summary.
+keyword counts. The prompt asks the model to choose keywords that the summary
+explains, but the platform does not reject an otherwise valid response merely
+because the exact keyword phrase is not repeated verbatim in the prose.
 
 `evidence_sufficient: false` means the final response satisfied the output
 contract but the source material does not support a complete, reliable briefing.
@@ -49,12 +46,47 @@ The existing summary-execution response adds these nullable source fields:
   "url": "https://example.org/article",
   "status": "failed",
   "summary_attempt_count": 2,
-  "failure_category": "keyword_absent_from_summary",
+  "failure_category": "summary_contract_invalid",
   "failure_reason": "The local model could not produce a valid keyword list for this source after two attempts."
 }
 ```
 
 The existing `keyword_coverage` field remains nullable for historical response compatibility but is absent from new summary content.
+
+## Summary Work-Set Read Model
+
+One research task can require more than five relevant sources to be summarized.
+The platform groups those sources into internal executions of at most five, then
+returns one combined work-set view for the task. This is an operator-facing
+progress view, not a second research status and not a new start action.
+
+`GET /v1/research/runs/{run_id}/evidence-summary-work-set` returns the latest
+work set for the authenticated workspace member, or a not-found result before
+the unified workflow reaches summarization.
+
+```json
+{
+  "run_id": "uuid",
+  "status": "waiting",
+  "total_executions": 3,
+  "terminal_executions": 2,
+  "successful_executions": 1,
+  "failed_executions": 1,
+  "sources_summarized": 6,
+  "sources_failed": 2,
+  "failure_summaries": [
+    {
+      "url": "https://example.org/article",
+      "failure_category": "summary_contract_exhausted",
+      "failure_reason": "The local model could not create a valid summary after two attempts."
+    }
+  ]
+}
+```
+
+The research workspace displays the combined outcome. It never selects the
+most recently created internal five-source execution as if that one job were
+the complete research task.
 
 ## Safe Source-Failure Presentation
 

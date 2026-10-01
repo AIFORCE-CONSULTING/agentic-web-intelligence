@@ -31,13 +31,13 @@
 **Checkpoint**: The model contract is simpler, each completed response has one safe diagnostic record, and idempotency rules prevent a third response for the same source-summary unit.
 
 - [X] T005 Replace the v1 coverage-map Pydantic models, JSON schemas, prompts, and prompt version with the v2 chunk/consolidation \`summary\` and \`keywords\` contract and final-only \`evidence_sufficient\` field in \`apps/api/app/evidence_summaries/service.py\`.
-- [X] T006 Add deterministic keyword uniqueness, count, and full-phrase presence validation using trim, internal-whitespace collapse, case-insensitive comparison, and preserved punctuation in \`apps/api/app/evidence_summaries/service.py\`.
+- [X] T006 Add deterministic keyword uniqueness and count validation in \`apps/api/app/evidence_summaries/service.py\`. The original exact-phrase presence check is superseded by T044 because it rejected useful summaries for a formatting difference rather than a real contract failure.
 - [X] T007 Extend summary API contracts with source attempt count, the shared safe failure-category vocabulary, and fixed operator-facing failure messages while retaining nullable historical coverage fields for reads in \`apps/api/app/evidence_summaries/contracts.py\`.
 - [X] T008 Add the \`evidence_summary_attempts\` schema with cycle identity, reservation state, request deadline, per-source failure metadata, indexes, and a unique cycle/unit/attempt constraint to \`apps/api/app/evidence_summaries/store.py\`.
 - [X] T009 Add transactional store methods that reserve one model-call slot before provider invocation, return existing reservations for duplicate delivery, and reject conflicting attempt or artifact writes in \`apps/api/app/evidence_summaries/store.py\`.
 - [X] T010 Add guarded store transitions for accepted and rejected attempts, final-source completion including the `evidence_sufficient: false` outcome, terminal source failure, stale-reservation dependency failure, and execution completion when one or more sources are evidence-sufficient in \`apps/api/app/evidence_summaries/store.py\`.
 - [ ] T011 [P] Add store tests for reservation uniqueness, duplicate delivery, stale reservation handling, accepted-result preservation, terminal source failure, illegal transitions, and partial execution completion in \`apps/api/tests/test_evidence_summary_store.py\`.
-- [X] T012 [P] Add contract tests for v2 chunk versus final response shapes, JSON rejection, keyword count limits, duplicate keywords, and exact normalized phrase presence with preserved punctuation in \`apps/api/tests/test_evidence_summary_recovery.py\`.
+- [X] T012 [P] Add contract tests for v2 chunk versus final response shapes, JSON rejection, keyword count limits, and duplicate keywords in \`apps/api/tests/test_evidence_summary_recovery.py\`. Exact normalized phrase-presence assertions are superseded by T044.
 
 ---
 
@@ -124,6 +124,26 @@
 - [X] T041 Run API lint and the focused recovery, store, Temporal, unified-workflow, reporting, and API test suite from \`apps/api/\`.
 - [X] T042 Run the web production build from \`apps/web/\`.
 - [ ] T043 Run the documentation build, Compose verification, and the complete \`quickstart.md\` scenario set from repository root.
+
+---
+
+## Phase 7: One Coherent Summary Stage
+
+**Purpose**: Correct the live failure discovered during a fresh research run:
+the platform must not reject a useful summary solely because a keyword phrase
+is not repeated word-for-word, and it must treat all internal five-source
+summary jobs for one research task as one complete stage before the graph
+continues.
+
+- [ ] T044 Update summary prompts, JSON validation, safe corrective feedback, and tests so that the contract requires valid JSON, the required fields, nonblank unique keywords, and the configured keyword count only. Keep keyword-to-summary alignment as a prompt instruction rather than a literal phrase-presence rejection in \`apps/api/app/evidence_summaries/service.py\` and \`apps/api/tests/test_evidence_summary_recovery.py\`.
+- [ ] T045 Add the canonical summary work-set and work-set-member schema, guarded transitions, aggregate read model, and concurrency tests in \`apps/api/app/evidence_summaries/store.py\` and \`apps/api/tests/test_evidence_summary_store.py\`.
+- [ ] T046 Retire the candidate-preflight worker's automatic summary launch. Preflight must persist its retrieval and trust outcome and resume the unified LangGraph workflow only in \`apps/api/app/durable_execution/worker.py\` and its tests.
+- [ ] T047 Add one summary-stage entry point used by the unified graph after relevance. It creates one work set, plans fixed internal jobs of at most five relevant sources, routes each through the existing direct-or-Temporal summary mechanism, and attaches every job to the work set in \`apps/api/app/evidence_summaries/workflow.py\` and \`apps/api/app/evidence_summaries/service.py\`.
+- [ ] T048 Change direct and Temporal completion handling so an internal execution updates its work set. Resume the graph exactly once only after all member jobs are terminal; permit partial success and fail the research task only when the aggregate has no usable summaries or state conflicts in \`apps/api/app/durable_execution/worker.py\` and \`apps/api/app/agentic_research/workflow_nodes.py\`.
+- [ ] T049 Update the unified LangGraph summary node and guarded research-status transitions so \`research_runs.status\` remains the only operator-facing workflow status, and the graph proceeds to coverage and reporting only from a completed aggregate work set in \`apps/api/app/agentic_research/workflow_nodes.py\`.
+- [ ] T050 Replace the Research workspace's latest-execution summary display with the combined work-set read model and source failure details in \`apps/api/app/main.py\`, \`apps/web/src/App.tsx\`, and their API/UI tests.
+- [ ] T051 Add direct and Temporal-backed integration coverage for more than five relevant sources, partial member failure, all-member failure, duplicate delivery, one graph resumption, and report grounding from only successful eligible relevant summaries in \`apps/api/tests/test_unified_research_workflow.py\`.
+- [ ] T052 Amend ADR 0014, ADR 0016, local evidence documentation, quickstart verification, and this feature's data model and contracts to describe the unified summary-stage ownership and simplified keyword contract.
 
 ---
 

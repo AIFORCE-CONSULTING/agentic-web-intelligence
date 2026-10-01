@@ -159,6 +159,15 @@ Eligible and relevant evidence is processed by the existing summary and keyword
 workflow governed by ADR 0014. The research agent does not write documents,
 summaries, keywords, or coverage records directly.
 
+The unified graph starts the summary stage only after relevance is recorded.
+Candidate preflight records retrieval and trust outcomes, then returns control
+to that graph; it never starts a summary itself. The summary service may divide
+more than five relevant sources into internal jobs, but it records one summary
+work set for the research task and waits for every job to finish. A partial
+success continues to coverage and reporting from the usable summaries; the
+research task fails only when the completed work set has no usable summary or
+its saved state conflicts.
+
 Evidence counts toward a topic only when the platform has:
 
 1. acquired usable evidence;
@@ -313,8 +322,10 @@ records through `RuntimeStore`, but it does not own research progress.
 LangGraph's PostgreSQL checkpoint is an execution bookmark, not a business
 record. Temporal history is durable execution tracking, not workflow status.
 When deterministic thresholds select durable preflight or summary work, the
-corresponding Temporal workflow persists its result through the owning service
-and calls `continue_unified_research` to resume the same graph thread. The model,
+corresponding Temporal workflow persists its result through the owning service.
+Preflight resumes the graph after its retrieval and trust result. Each durable
+summary job instead updates its stored summary work set; only the terminal
+aggregate result resumes the same graph thread, exactly once. The model,
 operator, and API route cannot select Temporal directly.
 
 RuntimeService evaluates a request from stored assignment, role, capability,

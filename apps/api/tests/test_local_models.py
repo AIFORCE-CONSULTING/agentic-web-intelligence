@@ -98,12 +98,12 @@ def test_chunk_summary_schema_has_v2_keyword_bounds() -> None:
     assert schema["properties"]["keywords"]["maxItems"] == 5
 
 
-def test_chunk_summary_rejects_keyword_not_explained_by_summary() -> None:
-    with pytest.raises(ValueError, match="keyword_absent_from_summary"):
-        ChunkSummary(
-            summary="The platform stores extracted evidence locally.",
-            keywords=["platform", "evidence", "keyword"],
-        )
+def test_chunk_summary_accepts_keyword_wording_that_is_not_literal_prose() -> None:
+    summary = ChunkSummary(
+        summary="The platform stores extracted evidence locally.",
+        keywords=["platform", "evidence", "keyword"],
+    )
+    assert summary.keywords == ["platform", "evidence", "keyword"]
 
 
 def test_summary_route_is_deterministic_and_not_model_selected() -> None:

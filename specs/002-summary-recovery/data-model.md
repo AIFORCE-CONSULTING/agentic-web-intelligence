@@ -4,7 +4,13 @@
 
 ### Evidence summary execution
 
-`evidence_summary_executions` remains the official record for one operator-authorized summary operation. An execution may be `completed` only when at least one eligible, relevant source has a valid final summary marked `evidence_sufficient: true`; other sources may have failed recovery or completed with insufficient evidence. It is `failed` when no eligible, relevant source has an evidence-sufficient final summary, or an execution-level dependency fails before usable work can be produced.
+`evidence_summary_executions` remains the official record for one internal
+summary job containing no more than five sources. An execution may be
+`completed` only when at least one eligible, relevant source has a valid final
+summary marked `evidence_sufficient: true`; other sources may have failed
+recovery or completed with insufficient evidence. It is `failed` when no
+source in that internal job has an evidence-sufficient final summary, or an
+execution-level dependency fails before usable work can be produced.
 
 ### Evidence summary execution source
 
@@ -62,6 +68,31 @@ explicit operator-authorized regeneration increments `regeneration_attempt` and
 begins a distinct two-attempt cycle; direct retries, Temporal retries, and
 restarts do not.
 
+### Summary work set
+
+`evidence_summary_work_sets` is the canonical coordination record for the
+summary stage of one research task. It is not a second research status and does
+not replace `research_runs.status`. It gathers the internal five-source jobs
+that together summarize the relevant evidence selected by the unified graph.
+
+| Field | Meaning | Rule |
+| --- | --- | --- |
+| `id` | Stable work-set identity | Created once by the unified workflow for its summary stage. |
+| `workspace_id`, `run_id` | Owning research task | Must match the graph's research record. |
+| `status` | Aggregate summary-stage result | `created`, `waiting`, `completed`, or `failed`; it is not displayed as the research task's primary status. |
+| `created_at`, `updated_at`, `completed_at` | Stage timing | Written by the summary-work-set store only. |
+
+`evidence_summary_work_set_members` associates each internal execution with
+one work set. Its unique `(work_set_id, execution_id)` key prevents a retry or
+duplicate continuation from attaching an execution twice.
+
+The work-set store transitions `created` to `waiting` once every planned
+execution is attached. It becomes `completed` only after every member is
+terminal and at least one member has evidence-sufficient output. It becomes
+`failed` only after every member is terminal and none produced usable output,
+or when saved records conflict. A row lock makes the terminal transition and
+the one graph-resume request atomic.
+
 ### Research report
 
 `agentic_research_reports` remains the canonical stored report. When source summaries were omitted, trusted platform code includes a deterministic omission notice in the stored markdown. No failed source or completed source with `evidence_sufficient: false` becomes a qualified report source.
@@ -70,12 +101,14 @@ restarts do not.
 
 ```text
 research_runs
-  └─ evidence_summary_executions
-       ├─ evidence_summary_execution_sources
-       │    └─ evidence_summary_attempts
-       ├─ evidence_summary_execution_chunks
-       ├─ evidence_summary_execution_groups
-       └─ evidence_summary_artifacts (accepted final summaries only)
+  └─ evidence_summary_work_sets
+       └─ evidence_summary_work_set_members
+            └─ evidence_summary_executions
+                 ├─ evidence_summary_execution_sources
+                 │    └─ evidence_summary_attempts
+                 ├─ evidence_summary_execution_chunks
+                 ├─ evidence_summary_execution_groups
+                 └─ evidence_summary_artifacts (accepted final summaries only)
 
 agentic_research_reports
   └─ uses qualified evidence_summary_artifacts only
@@ -88,7 +121,8 @@ agentic_research_reports
 | Summary unit | No attempt -> `reserved` attempt 1 -> `accepted` or `rejected`; only a rejected first response may reserve attempt 2 -> `accepted` or `rejected`. A reservation that reaches its request deadline becomes `dependency_failed`; it is never silently reclaimed. |
 | Source | `extracted` -> `summarizing` -> `completed` after an accepted final unit. A completed source with `evidence_sufficient: false` remains stored and operator-visible but does not qualify for coverage or reporting. `summarizing` -> `failed` after a rejected final permitted response or a dependency failure; the failure category distinguishes those outcomes. A failed source returns to work only through existing operator-authorized regeneration. `retrying` is an operator-facing view derived from a rejected first attempt, not a second stored source status. |
 | Execution | `awaiting_execution` -> `summarizing` -> `completed` when at least one source completes with `evidence_sufficient: true`, or `failed` when none does or a dependency fails. Only the summary service requests the store transition; Temporal and LangGraph read the stored result. |
-| Research task | The existing unified LangGraph state remains authoritative. A completed partial summary execution advances the task; a failed execution follows the existing durable-failure path. |
+| Summary work set | `created` -> `waiting` after its fixed member jobs are recorded. Once every member is terminal, `waiting` -> `completed` when any member has evidence-sufficient output; otherwise `waiting` -> `failed`. Its terminal result resumes the graph once. |
+| Research task | `research_runs.status` remains the operator-facing authority, written by the unified LangGraph workflow only. A completed work set advances to coverage and reporting; a failed work set marks the research task failed through the graph's normal guarded transition. |
 
 ## Transaction And Conflict Rules
 
@@ -108,8 +142,10 @@ agentic_research_reports
    summary-contract category. No attempt three exists.
 5. A stale reservation or provider failure is a dependency failure, not a
    malformed model response. The store marks the affected source failed with
-   `model_dependency_unavailable`, fails the execution under the existing
-   dependency path, and does not automatically start another model call.
+   `model_dependency_unavailable`, completes or fails its internal execution
+   under the existing dependency path, and does not automatically start another
+   model call. The work set decides the aggregate result only after all member
+   executions are terminal.
 6. An accepted final response with `evidence_sufficient: false` completes its
    source and may remain visible and reusable, but it creates no qualifying
    topic-coverage association and is not report input. It is not a source
@@ -121,4 +157,7 @@ agentic_research_reports
 
 ## Retention and Privacy
 
-Attempt records retain safe diagnostic metadata only. Historical coverage maps remain attached to existing artifacts for backward readability, but new work does not create or depend on them. No raw malformed response is retained.
+Attempt records retain safe diagnostic metadata only. Historical coverage maps
+remain attached to existing artifacts for backward readability, but new work
+does not create or depend on them. Keyword phrases are prompt-guided metadata,
+not a literal-text acceptance test. No raw malformed response is retained.

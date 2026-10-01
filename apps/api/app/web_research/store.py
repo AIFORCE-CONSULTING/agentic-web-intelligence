@@ -734,6 +734,13 @@ class ResearchStore:
             )
 
     async def complete_candidate_preflight(self, run_id: UUID) -> None:
+        """Record preflight facts without advancing the research workflow state.
+
+        The unified LangGraph workflow owns every operator-visible research
+        status transition. Preflight is a durable activity that records its
+        outcome, then returns control to that workflow.
+        """
+
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
             counts = await connection.fetchrow(
@@ -750,21 +757,14 @@ class ResearchStore:
             await self._append_audit(
                 connection, run_id, "research.candidate.preflight.finished", dict(counts)
             )
-            await connection.execute(
-                "UPDATE research_runs SET status = 'assessing_coverage', "
-                "updated_at = now() WHERE id = $1",
-                run_id,
-            )
 
     async def fail_candidate_preflight(self, run_id: UUID, reason: str) -> None:
+        """Record preflight failure facts; the graph records the run failure."""
+
         pool = await self._connection_pool()
         async with pool.acquire() as connection, connection.transaction():
             await self._append_audit(
                 connection, run_id, "research.candidate.preflight.failed", {"reason": reason}
-            )
-            await connection.execute(
-                "UPDATE research_runs SET status = 'failed', updated_at = now() WHERE id = $1",
-                run_id,
             )
 
     async def workspace_id_for_run(self, run_id: UUID) -> UUID | None:

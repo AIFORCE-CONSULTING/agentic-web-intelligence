@@ -1,4 +1,5 @@
 import { FormEvent, useEffect, useState } from "react";
+import ReactMarkdown from "react-markdown";
 
 type Health = { status: string; service: string; environment: string };
 type DiscoverySourceCount = 50 | 40 | 30 | 20 | 10 | 5;
@@ -49,7 +50,7 @@ type ResearchRunSummary = {
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
 type EvidenceSummaryBatch = {
-  id: string; route: "undetermined" | "direct" | "durable"; status: string;
+  id: string; workSetId?: string; route: "undetermined" | "direct" | "durable"; status: string;
   sources: {
     content_hash?: string | null; url: string; chunk_count?: number | null; status: string;
     summary?: string | null; keywords?: string[] | null;
@@ -61,6 +62,9 @@ type EvidenceSummaryBatch = {
     summary_attempt_count?: number;
     model_version?: string | null;
   }[];
+};
+type EvidenceSummaryWorkSet = {
+  id: string; status: "created" | "waiting" | "completed" | "failed"; execution_ids: string[];
 };
 type ResearchReport = {
   run_id: string; markdown: string; model_name: string; prompt_version: string; created_at: string;
@@ -598,15 +602,17 @@ export function App() {
   useEffect(() => {
     if (!summaryBatch || !["awaiting_execution", "summarizing"].includes(summaryBatch.status)) return;
     const timer = window.setInterval(() => {
-      void apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
-        .then((updated) => {
-          setSummaryBatch(updated);
-          if (updated.status === "completed") {
-            void loadWorkspaceSummaries();
-            if (run) void loadReport(run.id);
-          }
-        })
-        .catch(() => undefined);
+      const update = summaryBatch.workSetId && run
+        ? loadSummaryBatch(run.id)
+        : apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${summaryBatch.id}`)
+          .then((updated) => {
+            setSummaryBatch(updated);
+            if (updated.status === "completed") {
+              void loadWorkspaceSummaries();
+              if (run) void loadReport(run.id);
+            }
+          });
+      void update.catch(() => undefined);
     }, 3000);
     return () => window.clearInterval(timer);
   }, [summaryBatch]);
@@ -682,10 +688,19 @@ export function App() {
 
   async function loadSummaryBatch(runId: string) {
     try {
-      const restored = await apiRequest<EvidenceSummaryBatch>(
-        `/v1/research/runs/${runId}/evidence-summary-execution`,
+      const workSet = await apiRequest<EvidenceSummaryWorkSet>(
+        `/v1/research/runs/${runId}/evidence-summary-work-set`,
       );
-      setSummaryBatch(restored);
+      const executions = await Promise.all(
+        workSet.execution_ids.map((id) => apiRequest<EvidenceSummaryBatch>(`/v1/evidence-summary-executions/${id}`)),
+      );
+      setSummaryBatch({
+        id: workSet.id,
+        workSetId: workSet.id,
+        route: "durable",
+        status: workSet.status === "waiting" || workSet.status === "created" ? "summarizing" : workSet.status,
+        sources: executions.flatMap((execution) => execution.sources),
+      });
     } catch {
       setSummaryBatch(null);
     }
@@ -907,7 +922,7 @@ export function App() {
           <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">4. Final report</h2></div>{report && <span className="badge">{report.model_name}</span>}</div>
           {report ? <article className="source-summary report-markdown">
             <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.</p>
-            {report.markdown.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+            <ReactMarkdown>{report.markdown}</ReactMarkdown>
           </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
         </section>
 

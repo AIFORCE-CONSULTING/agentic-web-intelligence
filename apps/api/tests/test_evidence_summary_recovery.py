@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from pydantic import ValidationError
+
 from app.evidence_summaries.service import ChunkSummary, EvidenceSummaryService, FinalSummary
 
 
@@ -71,7 +72,10 @@ def test_invalid_completed_response_gets_one_safe_corrective_attempt(
     responses = iter(
         [
             "not-json",
-            '{"summary":"The platform stores evidence for research.","keywords":["platform","evidence","research"]}',
+            (
+                '{"summary":"The platform stores evidence for research.",'
+                '"keywords":["platform","evidence","research"]}'
+            ),
         ]
     )
 

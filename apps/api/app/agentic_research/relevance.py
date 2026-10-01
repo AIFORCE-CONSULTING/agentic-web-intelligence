@@ -106,7 +106,7 @@ class TopicRelevanceService:
             response = await self._client_factory(configuration.endpoint_url).chat(
                 model=configuration.model_name,
                 messages=relevance_messages(source),
-                think=True,
+                think=False,
                 options={"temperature": 0.0},
             )
             model_output = response.message.content or ""

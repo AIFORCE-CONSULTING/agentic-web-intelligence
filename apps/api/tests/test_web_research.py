@@ -154,6 +154,12 @@ def test_research_status_contract_has_one_complete_guarded_transition_table() ->
     assert "failure_explanation" in RESEARCH_SCHEMA
 
 
+def test_preflight_completion_does_not_mutate_research_workflow_status() -> None:
+    source = inspect.getsource(ResearchStore.complete_candidate_preflight)
+
+    assert "UPDATE research_runs SET status" not in source
+
+
 def test_mcp_audit_schema_requires_complete_agent_correlation_fields() -> None:
     for field in (
         "research_run_id",

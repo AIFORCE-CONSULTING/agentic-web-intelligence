@@ -213,8 +213,25 @@ evidence is insufficient, the summary must say so instead of filling gaps. That
 source remains visible and reusable, but it does not count toward topic coverage
 or final-report input. The final report uses only stored summaries that are
 eligible under trust policy, relevant to a planned topic, and evidence
-sufficient. The platform appends a plain-language notice for sources omitted
-because their summary failed or was insufficient.
+sufficient.
+
+## Final report quality
+
+The final report is built from a fixed snapshot of those qualified summaries.
+The local model can propose a structured report, but the platform checks that
+every claim cites a known source for the same topic before it renders the
+report. The report panel shows a `PASS` or `FAIL` quality grade. `FAIL` does not
+mean the evidence failed trust policy or that the research run failed; it means
+the report was incomplete, too brief, or had to fall back to an evidence
+briefing because no safe model draft was available.
+
+The first draft may receive one bounded correction with a concise explanation
+of what was missing. If both drafts fail the safe rendering checks, the platform
+still displays an evidence briefing assembled from the stored summaries. The
+report links only to the platform's stored source summaries. It never turns a
+model-provided URL into a navigation target. A separate disclosure lists known
+sources that were not used and why, such as blocked, awaiting review,
+insufficient, failed to summarize, or not relevant to a planned topic.
 
 ## Failure behavior
 

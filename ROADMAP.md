@@ -291,6 +291,22 @@ storage, and execution action.
   It clears the model-evaluation gate but does not by itself enable live research
   capabilities.
 
+#### Grounded final reports
+
+- [x] Define the report-quality boundary: report quality is separate from
+  evidence trust and research completion. A readable but incomplete report is
+  visible with a `FAIL` grade rather than failing the research task.
+- [x] Create a frozen, append-only report package containing the exact qualified
+  summary inputs, source references, model attempts, quality result, and a
+  separate list of noncontributing sources.
+- [x] Use the local model's native JSON schema for report drafts and validate
+  each claim against known, topic-scoped stored source references before the
+  platform renders Markdown.
+- [x] Use at most one model correction. When no safe model draft is available,
+  store an evidence briefing from the same qualified summaries instead.
+- [x] Show report grade, origin, quality reasons, safe stored-summary links, and
+  exclusions in the existing Final report panel.
+
 ## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete

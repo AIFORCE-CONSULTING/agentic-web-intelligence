@@ -140,13 +140,107 @@ class ResearchReportSource(BaseModel):
     summary: str
 
 
+ReportQualityGrade = Literal["PASS", "FAIL"]
+ReportOrigin = Literal["model_pass", "model_fail", "fallback"]
+ReportQualityReasonCode = Literal[
+    "missing_topic_coverage",
+    "unrepresented_qualified_source",
+    "narrative_length",
+    "model_unavailable",
+    "malformed_model_response",
+    "unsafe_model_draft",
+]
+
+
+class ReportQualityReason(BaseModel):
+    """One concise, server-validated explanation of report quality."""
+
+    code: ReportQualityReasonCode
+    message: str = Field(min_length=1, max_length=512)
+
+
+class ReportSupportingSource(BaseModel):
+    """A frozen source identity that the UI maps to a stored summary."""
+
+    source_ref: str
+    topic_id: str
+    title: str
+    url: str
+
+
+class ReportInput(BaseModel):
+    """An immutable, qualified summary snapshot used to create one report."""
+
+    topic_record_id: UUID
+    topic_id: str
+    topic: str
+    summary_artifact_id: UUID
+    source_ref: str
+    source_url: str
+    source_title: str
+    summary_text: str
+    content_hash: str
+    position: int
+
+
+class ReportExclusion(BaseModel):
+    """A noncontributing source disclosed separately from report evidence."""
+
+    title: str
+    url: str
+    topic_ids: list[str]
+    reason_code: str
+    reason: str
+
+
+class FinalReportFinding(BaseModel):
+    """One model-proposed finding tied to known, topic-scoped source references."""
+
+    text: str = Field(min_length=1, max_length=4000)
+    source_refs: list[str] = Field(min_length=1, max_length=20)
+
+
+class FinalReportSection(BaseModel):
+    """One planned topic in a structured final-report draft."""
+
+    topic_id: str
+    evidence_status: Literal["supported", "insufficient"]
+    findings: list[FinalReportFinding] = Field(default_factory=list)
+    source_refs: list[str] = Field(default_factory=list)
+
+
+class FinalReportDraft(BaseModel):
+    """The only shape accepted from the local model for a final report."""
+
+    sections: list[FinalReportSection] = Field(min_length=1, max_length=3)
+
+
+class FinalReportAttempt(BaseModel):
+    """Diagnostic record for one bounded report-drafting attempt."""
+
+    attempt_number: int = Field(ge=1, le=2)
+    status: Literal["started", "pass", "fail", "unusable"]
+    raw_response: str = ""
+    validation_errors: list[str] = Field(default_factory=list)
+    model_name: str | None = None
+    prompt_version: str
+
+
 class ResearchReport(BaseModel):
     """The newest grounded report stored for one research run."""
 
+    id: UUID | None = None
     run_id: UUID
     markdown: str
-    model_name: str
+    model_name: str | None = None
     prompt_version: str
+    contract_version: str = "legacy"
+    quality_grade: ReportQualityGrade = "FAIL"
+    quality_reasons: list[ReportQualityReason] = Field(default_factory=list)
+    report_origin: ReportOrigin = "fallback"
+    current: bool = True
+    supporting_sources: list[ReportSupportingSource] = Field(default_factory=list)
+    exclusions: list[ReportExclusion] = Field(default_factory=list)
     created_at: datetime
 
 

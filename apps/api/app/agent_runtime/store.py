@@ -20,6 +20,7 @@ from app.agent_runtime.contracts import (
     RuntimeStoreUnavailable,
 )
 from app.agent_runtime.policy import MAX_OPERATOR_REVISION_APPROVALS, MAX_RESEARCH_ATTEMPTS
+from app.persistence import execute_schema_setup
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agent_runtime_runs (
@@ -194,7 +195,7 @@ class RuntimeStore:
             try:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
                 async with self._pool.acquire() as connection:
-                    await connection.execute(SCHEMA)
+                    await execute_schema_setup(connection, SCHEMA)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()

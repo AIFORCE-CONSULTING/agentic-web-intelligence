@@ -1,58 +1,72 @@
 # Agentic Web Intelligence
 
-An open-source, production-quality platform for governed web discovery, extraction, and AI-agent research workflows.
+Agentic Web Intelligence is a local-first research platform for finding web
+sources, deciding whether they are safe and useful to use, preserving the
+supporting evidence, and producing grounded summaries and reports. It is built
+for people who need credible research without making cloud-model access or
+expensive research subscriptions a requirement.
 
-The platform is designed to help teams move from an ambiguous business problem to a documented, governed, observable, and deployable AI solution. Its working model is the Forward Deployed Engineer: discover, design, prototype, validate, and deliver while preserving enterprise standards.
+The [roadmap](foundation/roadmap.md) is the authoritative delivery record. It
+lists every phase, what is complete, active refactoring, and intentionally
+deferred work. This Home page describes the platform as it exists and the
+direction it is taking, rather than repeating a partial phase history.
 
-## Phase 1: Foundation
+## What The Platform Does
 
-Phase 1 makes the project safe and easy to adopt. It establishes the repository, development environment, documentation, contribution standards, and continuous validation.
+- An operator enters a research question, chooses how many sources to seek, and
+  starts one research task.
+- LangGraph coordinates the research flow: topic planning, discovery,
+  retrieval, trust evaluation, relevance, summaries, topic coverage, gap
+  searches, and an evidence-grounded final report.
+- The governed MCP host is the platform's only web-tool boundary. It exposes
+  approved, typed capabilities such as web search and evidence extraction while
+  preventing agents from calling external providers, browsers, or arbitrary
+  network tools directly.
+- The platform stores original evidence, generated summaries, keywords, trust
+  decisions, and safe operational outcomes in PostgreSQL.
+- Local Ollama models perform bounded semantic work such as topic planning,
+  relevance decisions, summarization, keywords, and report writing. They do
+  not receive browser, database, shell, credential, or execution authority.
+- Temporal is mandatory platform infrastructure for work that needs durable
+  execution. The platform selects it automatically; an operator never chooses
+  a separate durable-execution mode.
 
-## Phase 2: Governed web intelligence
+## How It Stays Governed
 
-Phase 2 adds the first thin vertical slice:
+The local web-trust layer evaluates retrieved evidence before it can enter
+automated model context. It records the requested and final URLs, redirect
+result, retrieval facts, content and extraction outcomes, and the resulting
+eligibility decision. `blocked` evidence never enters a model prompt.
+`review_required` evidence remains visible to an operator and needs a recorded
+human acceptance for that exact evidence version before it can be used.
 
-```text
-React operator console -> FastAPI gateway -> LangGraph workflow -> MCP policy boundary -> web intelligence tools
-```
+RuntimeService remains the platform's authority layer. It evaluates who or
+what may request a capability. LangGraph coordinates the work; PostgreSQL holds
+the operator-facing research status; and Temporal provides durable execution
+tracking. These roles deliberately remain separate.
 
-The initial local stack runs only the React console and FastAPI service. PostgreSQL and Redis remain opt-in until a platform capability needs them.
+## Where It Is Going
 
-## Phase 3: Agent runtime
+The platform is being consolidated around one coherent, agentic research
+workflow. The model can help plan and reason within tightly defined contracts,
+while deterministic platform code retains authority over limits, source reuse,
+trust rules, database writes, retries, and audit records. Future capabilities
+such as agent-readiness profiles, publisher access declarations, and carefully
+bounded consent handling are tracked in the [Parking Lot](foundation/roadmap.md#parking-lot),
+not treated as current behavior.
 
-Phase 3 adds governed planning, typed execution state, bounded role handoffs,
-and safe recovery semantics. The [agent runtime contract](agent-runtime.md)
-defines these boundaries before additional agent behavior is implemented.
+## Start Here
 
-## Phase 4: Enterprise services
-
-Phase 4 adds the platform controls needed for local-first and enterprise-ready
-operation: authentication and workspace authorization, service identities,
-secret handling, governed tool registration, security operations, and a
-human-operated GitHub Projects connector. Start with the [identity guide](identity.md),
-[operations runbook](operations.md), and [GitHub Projects guide](github-projects.md).
-
-## Phase 5: Durable execution
-
-Phase 5 adds restart-safe execution for approved, long-running runtime work.
-Temporal provides durability when it is justified; runtime-owned state remains
-the authority for approval, revision, cancellation, and escalation decisions.
-Read the [durable-execution guide](durable-execution.md) and the
-[validation guide](durable-validation.md).
-
-## Phase 6: Local evidence intelligence
-
-Phase 6 adds local-first generated summaries and keywords for evidence already
-extracted by the governed research workflow. A workspace-scoped Ollama provider
-boundary keeps inference local and gives the model no tools, browser, runtime,
-database, or credential access. Read the
-[local evidence intelligence guide](local-evidence-intelligence.md).
-
-## Start here
-
-- Read the [project vision](foundation/project.md) and [engineering principles](foundation/principles.md).
-- Review the [platform architecture](architecture.md), the [roadmap](foundation/roadmap.md), and the [MCP web-intelligence decision](adr/0003-web-intelligence-mcp.md).
-- For platform administration, review [identity](identity.md), [operations](operations.md), and [GitHub Projects](github-projects.md).
-- For resilient runtime work, review [durable execution](durable-execution.md) and its [validation guide](durable-validation.md).
-- For local generated summaries, review [local evidence intelligence](local-evidence-intelligence.md).
-- Follow the [contribution guide](contributing.md) to run the project locally.
+- Review the [roadmap](foundation/roadmap.md) for current phases, completed
+  work, refactoring, and deferred ideas.
+- Read the [current platform architecture](current-platform-architecture.md)
+  and the [architecture glossary](architecture-glossary.md) for the components
+  and their responsibilities.
+- Read [Local Evidence Intelligence](local-evidence-intelligence.md) for the
+  operator workflow, trust boundary, local summaries, and reports.
+- Read [Governed Web Research](governed-web-research.md) for the MCP host, its
+  approved tool catalog, and the execution safeguards around every tool call.
+- Review [ADR 0014](adr/0014-governed-local-model-provider.md) and
+  [ADR 0016](adr/0016-governed-local-agent-capability-requests.md) for the
+  model and agentic-research decisions.
+- Use the [contribution guide](contributing.md) to run the platform locally.

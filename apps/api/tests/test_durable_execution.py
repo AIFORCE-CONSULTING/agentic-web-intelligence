@@ -24,6 +24,14 @@ from app.web_research.contracts import ResearchRun
 from app.web_trust.workflow import CandidatePreflightWorkflow
 
 
+def test_durable_worker_exposes_the_summary_temporal_boundary() -> None:
+    """The graph-continuation dependency builder must schedule summary work."""
+
+    from app.durable_execution import worker
+
+    assert worker.EvidenceSummaryTemporalBoundary is not None
+
+
 def test_runtime_execution_permission_excludes_viewers() -> None:
     viewer = AuthenticatedUser(
         id=uuid4(),
@@ -103,8 +111,11 @@ def test_durable_work_stores_result_before_requesting_graph_continuation(
     result = asyncio.run(workflow_class().run(request_factory(envelope)))
 
     assert result == "completed"
-    assert [name for name, _ in calls] == [work_activity, "continue_unified_research"]
-    assert calls[1][1] == envelope
+    expected_activities = [work_activity, "continue_unified_research"]
+    if workflow_class is EvidenceSummaryWorkflow:
+        expected_activities.insert(1, "complete_evidence_summary_work_set")
+    assert [name for name, _ in calls] == expected_activities
+    assert calls[-1][1] == envelope
 
 
 def test_continuation_resumes_once_and_ignores_duplicate_completion() -> None:

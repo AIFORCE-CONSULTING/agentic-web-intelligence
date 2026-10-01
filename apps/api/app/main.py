@@ -20,14 +20,16 @@ from app.agent_runtime.research_workflow import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
+from app.agentic_research.contracts import ResearchReport
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
-from app.agentic_research.store import AgenticResearchStore
+from app.agentic_research.store import AgenticResearchStore, AgenticResearchStoreUnavailable
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
+    EvidenceSummaryWorkSet,
     RegenerateEvidenceSummaryRequest,
     WorkspaceEvidenceSummaryArtifactList,
 )
@@ -1184,6 +1186,31 @@ def create_app() -> FastAPI:
         return run
 
     @app.get(
+        "/v1/research/runs/{run_id}/report",
+        response_model=ResearchReport,
+        tags=["research"],
+    )
+    async def get_research_report(run_id: str, http_request: Request) -> ResearchReport:
+        """Read the newest grounded report without starting model work."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        try:
+            report = await http_request.app.state.agentic_research_store.get_report(
+                user.workspace_id, parsed_run_id
+            )
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if report is None:
+            raise HTTPException(status_code=404, detail="No final report exists for this run.")
+        return report
+
+    @app.get(
         "/v1/web-trust-policy",
         response_model=EffectiveWebTrustPolicy,
         tags=["research"],
@@ -1539,6 +1566,32 @@ def create_app() -> FastAPI:
         if batch is None:
             raise HTTPException(status_code=404, detail="No summary request exists for this run.")
         return batch
+
+    @app.get(
+        "/v1/research/runs/{run_id}/evidence-summary-work-set",
+        response_model=EvidenceSummaryWorkSet,
+        tags=["evidence-summaries"],
+    )
+    async def get_run_evidence_summary_work_set(
+        run_id: str, http_request: Request
+    ) -> EvidenceSummaryWorkSet:
+        """Return the combined summary-stage progress for one research task."""
+
+        from uuid import UUID
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        store: EvidenceSummaryStore = http_request.app.state.evidence_summary_store
+        try:
+            work_set = await store.get_work_set(user.workspace_id, parsed_run_id)
+        except EvidenceSummaryStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if work_set is None:
+            raise HTTPException(status_code=404, detail="No summary work exists for this run.")
+        return work_set
 
     @app.post("/v1/research/runs/{run_id}/extract", response_model=Evidence, tags=["research"])
     async def extract_run_evidence(

@@ -59,6 +59,11 @@ class StoredDurableResultVerifier:
             return True
         wait = envelope.wait
         if wait.wait_type == "evidence_summary":
+            work_set = await self._summary_store.refresh_work_set(
+                UUID(envelope.result_record_id)
+            )
+            if work_set is not None:
+                return work_set.status in {"completed", "failed"}
             execution = await self._summary_store.get_execution_for_worker(
                 UUID(envelope.result_record_id)
             )
@@ -179,6 +184,29 @@ async def execute_evidence_summary(execution_id: str) -> str:
     return (await service.execute(UUID(execution_id))).status
 
 
+@activity.defn(name="fail_evidence_summary_execution")
+async def fail_evidence_summary_execution(execution_id: str) -> None:
+    """Make a crashed durable job terminal before aggregate progress is evaluated."""
+
+    settings = get_settings()
+    if not settings.database_url:
+        raise RuntimeError("The durable worker requires DATABASE_URL.")
+    await EvidenceSummaryStore(settings.database_url).fail_execution(UUID(execution_id))
+
+
+@activity.defn(name="complete_evidence_summary_work_set")
+async def complete_evidence_summary_work_set(execution_id: str) -> str | None:
+    """Refresh aggregate summary progress after one durable internal job finishes."""
+
+    settings = get_settings()
+    if not settings.database_url:
+        raise RuntimeError("The durable worker requires DATABASE_URL.")
+    work_set = await EvidenceSummaryStore(settings.database_url).refresh_work_set_for_execution(
+        UUID(execution_id)
+    )
+    return work_set.status if work_set is not None else None
+
+
 @activity.defn(name="preflight_source_candidates")
 async def preflight_source_candidates(request_json: str) -> str:
     """Preflight only the server-selected, stored sources in one discovery batch."""
@@ -197,21 +225,6 @@ async def preflight_source_candidates(request_json: str) -> str:
         EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
     )
     await service.preflight_run(workspace_id, request.run_id, request.source_urls)
-    summary_store = EvidenceSummaryStore(settings.database_url)
-    summary_service = EvidenceSummaryService(
-        summary_store,
-        research_store,
-        LocalModelProviderService(LocalModelProviderStore(settings.database_url)),
-        EvidenceTrustService(WebTrustStore(settings.database_url, secrets.redact)),
-    )
-    await EvidenceSummaryAutomation(
-        summary_service,
-        summary_store,
-        research_store,
-        EvidenceSummaryTemporalBoundary(
-            settings.temporal_address, settings.temporal_namespace, settings.temporal_task_queue
-        ),
-    ).start_for_discovered_candidates(workspace_id, request.run_id, request.source_urls)
     return "ready"
 
 
@@ -229,6 +242,8 @@ async def run_worker() -> None:
         workflows=[EvidenceSummaryWorkflow, CandidatePreflightWorkflow],
         activities=[
             execute_evidence_summary,
+            fail_evidence_summary_execution,
+            complete_evidence_summary_work_set,
             preflight_source_candidates,
             continue_unified_research,
         ],

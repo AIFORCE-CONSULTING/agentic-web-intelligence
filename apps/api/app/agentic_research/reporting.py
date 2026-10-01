@@ -75,6 +75,15 @@ class ResearchReportingService:
         )
         if not markdown.strip():
             raise ResearchReportingUnavailable("The local model returned an empty report.")
+        omissions = await self._store.report_omissions(workspace_id, run_id)
+        if omissions:
+            markdown = (
+                markdown.strip()
+                + "\n\n## Sources omitted from automated findings\n"
+                + "These sources were not used in the report because their stored summary was "
+                "insufficient or could not be completed.\n"
+                + "\n".join(omissions)
+            )
         return await self._store.save_report(
             workspace_id,
             run_id,

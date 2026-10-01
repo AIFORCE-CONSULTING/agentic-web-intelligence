@@ -125,7 +125,7 @@ def test_exact_model_response_is_recorded(output: str, expected: str) -> None:
     assert store.recorded["prompt_version"] == TOPIC_RELEVANCE_PROMPT_VERSION
     assert client.request is not None
     assert client.request["model"] == "qwen3:1.7b"
-    assert client.request["think"] is True
+    assert client.request["think"] is False
     assert client.request["options"] == {"temperature": 0.0}
 
 

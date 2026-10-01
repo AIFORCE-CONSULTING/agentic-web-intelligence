@@ -151,6 +151,7 @@ SELECT topic.id AS topic_record_id,
              AND length(btrim(artifact.summary)) > 0
              AND jsonb_typeof(artifact.keywords) = 'array'
              AND jsonb_array_length(artifact.keywords) > 0
+             AND artifact.evidence_sufficient IS TRUE
            ORDER BY artifact.created_at DESC
            LIMIT 1
        ) AS summary_artifact_id
@@ -333,6 +334,7 @@ class AgenticResearchStore:
                    JOIN evidence_summary_artifacts AS artifact
                      ON artifact.id = coverage.summary_artifact_id
                    WHERE topic.workspace_id = $1 AND topic.run_id = $2
+                     AND artifact.evidence_sufficient IS TRUE
                      AND EXISTS (
                          SELECT 1
                          FROM web_evidence_trust_evaluations AS evaluation
@@ -356,6 +358,51 @@ class AgenticResearchStore:
                 run_id,
             )
         return [ResearchReportSource(**dict(row)) for row in rows]
+
+    async def get_report(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> ResearchReport | None:
+        """Return the newest stored, grounded report without invoking a model."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            row = await connection.fetchrow(
+                """SELECT run_id, markdown, model_name, prompt_version, created_at
+                   FROM agentic_research_reports
+                   WHERE workspace_id = $1 AND run_id = $2
+                   ORDER BY created_at DESC LIMIT 1""",
+                workspace_id,
+                run_id,
+            )
+        return ResearchReport(**dict(row)) if row is not None else None
+
+    async def report_omissions(self, workspace_id: UUID, run_id: UUID) -> list[str]:
+        """Describe summary outcomes omitted from a grounded report without model interpretation."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT sources.url, sources.status, sources.evidence_sufficient,
+                          sources.failure_category
+                   FROM evidence_summary_execution_sources AS sources
+                   JOIN evidence_summary_executions AS execution
+                     ON execution.id = sources.execution_id
+                   WHERE execution.workspace_id = $1 AND execution.run_id = $2
+                     AND execution.created_at = (
+                         SELECT MAX(created_at) FROM evidence_summary_executions
+                         WHERE workspace_id = $1 AND run_id = $2
+                     )
+                     AND (sources.status = 'failed' OR sources.evidence_sufficient IS FALSE)
+                   ORDER BY sources.url""",
+                workspace_id,
+                run_id,
+            )
+        return [
+            (
+                f"- {row['url']}: {row['failure_category'] or 'evidence_insufficient'}"
+            )
+            for row in rows
+        ]
 
     async def save_report(
         self,

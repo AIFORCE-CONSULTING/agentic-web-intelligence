@@ -21,7 +21,7 @@ dependencies = [
   "temporalio==1.32.0",
   "trafilatura==2.2.0",
   "urllib3==2.8.0",
-  "uvicorn==0.47.0",
+  "uvicorn==0.54.0",
 ]
 
 [project.optional-dependencies]

@@ -175,16 +175,20 @@ notice outside the model prompt.
 ### Validated final-report packages
 
 Final-report generation receives a frozen list of eligible, relevant,
-evidence-sufficient stored summaries. The local model receives that list as
-untrusted reference material and returns a native Ollama JSON-schema draft; it
-does not return public URLs, eligibility decisions, workflow status, or
-operator-facing links. Platform code validates every finding against its known,
-topic-scoped source reference before rendering Markdown.
+evidence-sufficient stored summaries grouped by the planned topics already
+stored for the research run. Platform code owns the report sections, source
+membership, simple citation labels such as `S01`, source lists, links, quality
+grade, and fallback briefing. The local model receives one planned topic at a
+time as untrusted reference material and returns only topic-level finding text
+with supplied citation labels; it does not return public URLs, topic decisions,
+eligibility decisions, workflow status, or operator-facing links.
 
-The platform makes at most two report attempts. When the first response is
-incomplete or invalid, the second prompt contains only the server's concise
-validation feedback. Both attempts retain their prompt version, model version,
-raw response, and validation outcome in the immutable report package.
+The platform makes at most two bounded attempts per planned topic. When the
+first topic response is incomplete or invalid, the second prompt contains only
+the server's concise validation feedback for that same fixed topic input. Each
+topic attempt retains the planned topic identifier, prompt version, model
+version, raw response, telemetry, and validation outcome in the immutable
+report package.
 
 Report quality is separate from evidence trust and research completion. A
 `PASS` report covers planned topics, represents qualified source summaries, and

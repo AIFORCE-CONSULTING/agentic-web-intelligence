@@ -302,8 +302,15 @@ storage, and execution action.
 - [x] Use the local model's native JSON schema for report drafts and validate
   each claim against known, topic-scoped stored source references before the
   platform renders Markdown.
-- [x] Use at most one model correction. When no safe model draft is available,
-  store an evidence briefing from the same qualified summaries instead.
+- [x] Refine final report generation so platform code owns planned topic
+  sections, topic source lists, source-summary links, and report quality while
+  the local model drafts only one topic's findings at a time.
+- [x] Use simple report-local citation labels such as `S01`, normalize harmless
+  variants only when unambiguous, and reject unsupported or cross-topic labels
+  before rendering.
+- [x] Use at most one model correction per planned topic. When no safe topic
+  draft is available, render that topic from the same qualified summaries and
+  store a visible `FAIL` reason.
 - [x] Show report grade, origin, quality reasons, safe stored-summary links, and
   exclusions in the existing Final report panel.
 

@@ -63,8 +63,9 @@ for every design and implementation decision.
 For significant feature, workflow, authority, durable-execution, human-approval,
 or external-effect changes, use the Specify workflow in `.agents/skills/`.
 Treat `.specify/memory/constitution.md` as the canonical project constitution.
-The active grounded-final-report plan is `specs/003-improve-final-report/plan.md`. Read
-`.specify/feature.json` and the selected feature's current specification, plan,
-and tasks before implementation. Specify artifacts supplement rather than
+The active topic-scoped report plan is
+`specs/004-topic-report-sections/plan.md`. Read `.specify/feature.json` and
+the selected feature's current specification, plan, and tasks before
+implementation. Specify artifacts supplement rather than
 replace the architecture reconciliation and approval required above.
 <!-- SPECKIT END -->

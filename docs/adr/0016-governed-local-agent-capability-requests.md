@@ -320,7 +320,10 @@ records through `RuntimeStore`, but it does not own research progress.
 `EvidenceSummaryStore` owns summary work and artifacts.
 
 The unified graph's final-report node remains the sole report caller. It
-creates an append-only report package from qualified stored summaries. A report
+creates an append-only report package from qualified stored summaries grouped
+under the planned topics already stored for the research run. Platform code
+renders the final sections, source lists, citation links, and quality grade;
+the model may draft bounded findings for one supplied topic at a time. A report
 quality grade of `FAIL` identifies an incomplete or fallback report, not an
 authority, trust, relevance, or workflow failure. The graph transitions the
 research record to `completed` after that package is stored; it transitions to

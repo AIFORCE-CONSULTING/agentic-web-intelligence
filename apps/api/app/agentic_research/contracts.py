@@ -147,8 +147,24 @@ ReportQualityReasonCode = Literal[
     "unrepresented_qualified_source",
     "narrative_length",
     "model_unavailable",
+    "model_timeout",
     "malformed_model_response",
+    "malformed_topic_output",
+    "unsupported_citation_label",
+    "insufficient_topic_evidence",
     "unsafe_model_draft",
+]
+ReportAttemptStatus = Literal["started", "pass", "fail", "unusable"]
+CitationFailureCode = Literal[
+    "unknown_citation_label",
+    "ambiguous_citation_label",
+    "cross_topic_citation_label",
+]
+TopicSectionQualityReasonCode = Literal[
+    "unsupported_citation_label",
+    "malformed_topic_output",
+    "model_timeout",
+    "insufficient_topic_evidence",
 ]
 
 
@@ -200,26 +216,20 @@ class FinalReportFinding(BaseModel):
     source_refs: list[str] = Field(min_length=1, max_length=20)
 
 
-class FinalReportSection(BaseModel):
-    """One planned topic in a structured final-report draft."""
+class TopicFindingDraft(BaseModel):
+    """The only shape accepted from the local model for one topic section."""
 
-    topic_id: str
-    evidence_status: Literal["supported", "insufficient"]
-    findings: list[FinalReportFinding] = Field(default_factory=list)
-    source_refs: list[str] = Field(default_factory=list)
+    model_config = ConfigDict(extra="forbid")
 
-
-class FinalReportDraft(BaseModel):
-    """The only shape accepted from the local model for a final report."""
-
-    sections: list[FinalReportSection] = Field(min_length=1, max_length=3)
+    findings: list[FinalReportFinding] = Field(default_factory=list, max_length=12)
 
 
 class FinalReportAttempt(BaseModel):
     """Diagnostic record for one bounded report-drafting attempt."""
 
     attempt_number: int = Field(ge=1, le=2)
-    status: Literal["started", "pass", "fail", "unusable"]
+    topic_id: str | None = None
+    status: ReportAttemptStatus
     raw_response: str = ""
     validation_errors: list[str] = Field(default_factory=list)
     model_name: str | None = None

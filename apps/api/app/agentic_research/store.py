@@ -141,9 +141,18 @@ CREATE TABLE IF NOT EXISTS agentic_research_report_attempts (
     contract_version TEXT NOT NULL,
     raw_response TEXT NOT NULL DEFAULT '',
     validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    input_characters INTEGER NOT NULL DEFAULT 0 CHECK (input_characters >= 0),
+    failure_code TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (report_id, attempt_number)
 );
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS input_characters INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS failure_code TEXT;
 CREATE INDEX IF NOT EXISTS agentic_research_topics_workspace_run_idx
     ON agentic_research_topics(workspace_id, run_id, created_at);
 CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
@@ -726,13 +735,15 @@ class AgenticResearchStore:
                     """INSERT INTO agentic_research_report_attempts
                        (id, report_id, attempt_number, status, input_fingerprint,
                         model_name, prompt_version, contract_version, raw_response,
-                        validation_errors)
-                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb)""",
+                        validation_errors, duration_ms, input_characters, failure_code)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                               $11, $12, $13)""",
                     [
                         (uuid4(), report_id, item.attempt_number, item.status,
                          input_fingerprint, item.model_name, item.prompt_version,
                          contract_version, item.raw_response,
-                         json.dumps(item.validation_errors))
+                         json.dumps(item.validation_errors), item.duration_ms,
+                         item.input_characters, item.failure_code)
                         for item in attempts
                     ],
                 )

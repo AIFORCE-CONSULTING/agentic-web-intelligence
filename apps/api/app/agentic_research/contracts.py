@@ -224,6 +224,9 @@ class FinalReportAttempt(BaseModel):
     validation_errors: list[str] = Field(default_factory=list)
     model_name: str | None = None
     prompt_version: str
+    duration_ms: int | None = Field(default=None, ge=0)
+    input_characters: int = Field(default=0, ge=0)
+    failure_code: str | None = None
 
 
 class ResearchReport(BaseModel):

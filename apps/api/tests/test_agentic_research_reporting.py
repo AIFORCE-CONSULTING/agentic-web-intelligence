@@ -5,6 +5,8 @@ import json
 from types import SimpleNamespace
 from uuid import uuid4
 
+import httpx
+
 from app.agentic_research.contracts import (
     FinalReportDraft,
     ReportInput,
@@ -147,6 +149,11 @@ class _Client:
         return SimpleNamespace(message=SimpleNamespace(content=self.responses.pop(0)))
 
 
+class _FailingClient:
+    async def chat(self, **_: object) -> SimpleNamespace:
+        raise httpx.ReadTimeout("timed out")
+
+
 def test_service_corrects_one_incomplete_draft_and_stores_pass() -> None:
     inputs = _inputs()
     first = json.dumps({"sections": [{
@@ -186,3 +193,19 @@ def test_service_stores_fallback_after_two_malformed_model_responses() -> None:
     assert report.quality_grade == "FAIL"
     assert store.saved["origin"] == "fallback"
     assert len(store.saved["attempts"]) == 2
+
+
+def test_service_records_timing_when_model_unavailable() -> None:
+    inputs = _inputs()
+    store = _FakeStore(inputs, _coverage(inputs))
+    service = ResearchReportingService(store, _Provider(), lambda _: _FailingClient())
+
+    report = asyncio.run(service.final_report(uuid4(), uuid4(), "How do agents identify sources?"))
+
+    assert report.quality_grade == "FAIL"
+    assert store.saved["origin"] == "fallback"
+    attempts = store.saved["attempts"]
+    assert len(attempts) == 1
+    assert attempts[0].failure_code == "model_unavailable"
+    assert attempts[0].input_characters > 0
+    assert attempts[0].duration_ms is not None

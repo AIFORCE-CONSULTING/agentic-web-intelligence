@@ -2,10 +2,12 @@
 
 import hashlib
 import json
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from uuid import UUID
 
+import httpx
 from ollama import AsyncClient, RequestError, ResponseError
 from pydantic import ValidationError
 
@@ -56,7 +58,7 @@ class ResearchReportingService:
     ) -> None:
         self._store = store
         self._provider_service = provider_service
-        self._client_factory = client_factory or (lambda host: AsyncClient(host=host, timeout=120))
+        self._client_factory = client_factory or (lambda host: AsyncClient(host=host, timeout=240))
 
     async def missing_topic_query(
         self, workspace_id: UUID, topic: ResearchTopic, prior_queries: list[str]
@@ -93,17 +95,21 @@ class ResearchReportingService:
         model_name: str | None = None
         correction: list[str] = []
         fallback_code: str | None = None
+        payload = _report_payload(question, coverage, inputs)
+        input_characters = len(payload)
 
         for attempt_number in range(1, MAX_REPORT_ATTEMPTS + 1):
             raw_response = ""
+            started_at = time.perf_counter()
             try:
                 raw_response, model_name = await self._chat_report(
                     workspace_id,
                     _report_instruction(correction),
-                    _report_payload(question, coverage, inputs),
+                    payload,
                 )
                 draft = FinalReportDraft.model_validate_json(raw_response)
             except (json.JSONDecodeError, ValidationError):
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
                 attempts.append(
                     FinalReportAttempt(
                         attempt_number=attempt_number,
@@ -112,15 +118,33 @@ class ResearchReportingService:
                         validation_errors=["The model response did not match the report schema."],
                         model_name=model_name,
                         prompt_version=REPORT_PROMPT_VERSION,
+                        duration_ms=duration_ms,
+                        input_characters=input_characters,
+                        failure_code="malformed_model_response",
                     )
                 )
                 correction = ["Return valid JSON matching the required schema exactly."]
                 fallback_code = "malformed_model_response"
                 continue
-            except ResearchReportingUnavailable:
+            except ResearchReportingUnavailable as error:
+                duration_ms = int((time.perf_counter() - started_at) * 1000)
+                attempts.append(
+                    FinalReportAttempt(
+                        attempt_number=attempt_number,
+                        status="unusable",
+                        raw_response=raw_response,
+                        validation_errors=[str(error)],
+                        model_name=model_name,
+                        prompt_version=REPORT_PROMPT_VERSION,
+                        duration_ms=duration_ms,
+                        input_characters=input_characters,
+                        failure_code="model_unavailable",
+                    )
+                )
                 fallback_code = "model_unavailable"
                 break
 
+            duration_ms = int((time.perf_counter() - started_at) * 1000)
             assessment = _assess_draft(draft, coverage, inputs)
             attempt_status = (
                 "pass" if assessment.passed else "fail" if assessment.safe else "unusable"
@@ -128,6 +152,11 @@ class ResearchReportingService:
             validation_errors = assessment.errors + [
                 item.message for item in assessment.reasons
             ]
+            failure_code = None
+            if validation_errors:
+                failure_code = (
+                    "unsafe_model_draft" if not assessment.safe else "quality_check_failed"
+                )
             attempts.append(
                 FinalReportAttempt(
                     attempt_number=attempt_number,
@@ -136,6 +165,9 @@ class ResearchReportingService:
                     validation_errors=validation_errors,
                     model_name=model_name,
                     prompt_version=REPORT_PROMPT_VERSION,
+                    duration_ms=duration_ms,
+                    input_characters=input_characters,
+                    failure_code=failure_code,
                 )
             )
             if assessment.safe and (
@@ -184,7 +216,7 @@ class ResearchReportingService:
                 think=True,
                 options={"temperature": 0.0},
             )
-        except (RequestError, ResponseError, OSError) as error:
+        except (RequestError, ResponseError, httpx.HTTPError, OSError) as error:
             raise ResearchReportingUnavailable(
                 "The local model could not complete the research response."
             ) from error
@@ -206,7 +238,7 @@ class ResearchReportingService:
                 think=True,
                 options={"temperature": 0.0},
             )
-        except (RequestError, ResponseError, OSError) as error:
+        except (RequestError, ResponseError, httpx.HTTPError, OSError) as error:
             raise ResearchReportingUnavailable(
                 "The local model could not complete the research response."
             ) from error

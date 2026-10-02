@@ -934,7 +934,15 @@ export function App() {
               a: ({ href, children }) => {
                 const sourceRef = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
                 const source = sourceRef ? report.supporting_sources.find((item) => item.source_ref === sourceRef) : null;
-                return source ? <a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{children}</a> : <span>{children}</span>;
+                return source ? (
+                  <a
+                    href="#source-summary"
+                    title={`Open stored summary ${source.source_ref}`}
+                    onClick={() => setSelectedSummaryUrl(source.url)}
+                  >
+                    {children}
+                  </a>
+                ) : <span title="Unsupported report link">{children}</span>;
               },
             }}>{report.markdown}</ReactMarkdown>
             {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">

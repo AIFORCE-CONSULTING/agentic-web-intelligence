@@ -218,20 +218,28 @@ sufficient.
 ## Final report quality
 
 The final report is built from a fixed snapshot of those qualified summaries.
-The local model can propose a structured report, but the platform checks that
-every claim cites a known source for the same topic before it renders the
-report. The report panel shows a `PASS` or `FAIL` quality grade. `FAIL` does not
-mean the evidence failed trust policy or that the research run failed; it means
-the report was incomplete, too brief, or had to fall back to an evidence
-briefing because no safe model draft was available.
+The platform owns the report structure: it loads the planned topics, assigns
+simple report-local source labels such as `S01`, groups the qualified summaries
+under their stored topics, and renders the final Markdown itself. The local
+model drafts only bounded findings for one supplied topic at a time. It cannot
+create report sections, choose topic IDs, decide which sources belong to a
+topic, or provide navigation links.
 
-The first draft may receive one bounded correction with a concise explanation
-of what was missing. If both drafts fail the safe rendering checks, the platform
-still displays an evidence briefing assembled from the stored summaries. The
-report links only to the platform's stored source summaries. It never turns a
-model-provided URL into a navigation target. A separate disclosure lists known
-sources that were not used and why, such as blocked, awaiting review,
-insufficient, failed to summarize, or not relevant to a planned topic.
+Each topic-level draft may receive one bounded correction with a concise
+explanation of what was invalid. The platform accepts only citations that match
+the source labels supplied for that topic, while harmless variants such as
+`s01`, `S 01`, or `S1` may be normalized when unambiguous. The report panel
+shows a `PASS` or `FAIL` quality grade. `FAIL` does not mean the evidence failed
+trust policy or that the research run failed; it means one or more topic drafts
+timed out, were malformed, cited unsupported labels, lacked enough evidence, or
+had to fall back to stored evidence.
+
+If a topic cannot receive a safe model draft, the platform still renders that
+topic from the stored evidence snapshot. The report links only to the
+platform's stored source summaries. It never turns a model-provided URL into a
+navigation target. A separate disclosure lists known sources that were not used
+and why, such as blocked, awaiting review, insufficient, failed to summarize,
+or not relevant to a planned topic.
 
 ## Failure behavior
 

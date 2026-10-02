@@ -19,7 +19,7 @@ As an operator reviewing research results, I need the final report to contain th
 
 1. **Given** a research run has planned topics and eligible, relevant source summaries assigned to those topics, **When** the final report is generated, **Then** the report contains one section for each planned topic in the planned order.
 2. **Given** a topic has qualified source summaries, **When** the topic section is generated, **Then** findings may cite only the simple citation labels supplied for that topic.
-3. **Given** the model attempts to create a new topic or cite a source label outside the supplied topic, **When** the platform validates the draft, **Then** the invalid material is rejected or corrected without allowing unsupported content into the report.
+3. **Given** the model returns legacy or unexpected fields that try to name a topic, or cites a source label outside the supplied topic, **When** the platform validates the draft, **Then** the invalid material is rejected or corrected without allowing unsupported content into the report.
 
 ---
 
@@ -57,7 +57,8 @@ As an operator or reviewer, I need citation links to remain traceable to stored 
 - A topic has many qualified summaries and only some are used in findings.
 - The model returns a citation label with harmless formatting variation, such as lower case, while the label is otherwise unambiguous.
 - The model returns a citation label that matches no supplied source.
-- The model tries to add a new topic section or omit a planned topic.
+- The model returns legacy or unexpected topic fields, tries to add a new topic
+  section, or omits required finding data for the supplied topic.
 - The model returns valid text but invalid structured data.
 - The model is unavailable, times out, or returns no response.
 
@@ -70,12 +71,12 @@ As an operator or reviewer, I need citation links to remain traceable to stored 
 - **FR-003**: The system MUST assign simple, stable citation labels for the report input, such as `S01`, `S02`, and `S03`.
 - **FR-004**: The system MUST give the model only one topic's source summaries at a time when requesting topic-level findings.
 - **FR-005**: The system MUST require each model-drafted finding to cite only source labels supplied for the current topic.
-- **FR-006**: The system MUST reject invented topics, unsupported source labels, and source labels from another topic.
+- **FR-006**: The system MUST reject legacy or unexpected model-authored topic identifiers, unsupported source labels, and source labels from another topic. The model is not responsible for choosing topic IDs.
 - **FR-007**: The system MUST render citation links to stored source summaries using trusted platform data, not model-provided URLs or titles.
 - **FR-008**: The system MUST render each topic's source list from trusted platform data, including qualified topic sources not cited by a finding.
 - **FR-009**: The system MUST provide a final report or fallback evidence briefing whenever report inputs can be read and stored, even when model drafting fails.
 - **FR-010**: The system MUST show concise report-quality reasons when the report receives a failure grade or fallback briefing.
-- **FR-011**: The system MUST preserve report-attempt diagnostics sufficient to distinguish malformed output, unsupported citation labels, invented topics, model unavailability, and timeout conditions.
+- **FR-011**: The system MUST preserve report-attempt diagnostics sufficient to distinguish malformed output, unsupported citation labels, legacy or unexpected model-authored topic identifiers, model unavailability, and timeout conditions.
 - **FR-012**: The system MUST keep source eligibility, topic qualification, human review, and trust-policy decisions outside model authority.
 
 ### Authority and Safety Boundaries *(include for agent, workflow, or external-action features)*
@@ -102,10 +103,10 @@ As an operator or reviewer, I need citation links to remain traceable to stored 
 ### Measurable Outcomes
 
 - **SC-001**: In test runs with qualified evidence for three planned topics, 100% of completed reports contain exactly those planned topics in the planned order.
-- **SC-002**: In validation tests, 100% of invented topic IDs and unsupported source labels are rejected before appearing in an operator-facing report.
-- **SC-003**: In test runs where the model changes source-label formatting harmlessly and unambiguously, at least 95% of cases are corrected or accepted without losing traceability.
+- **SC-002**: In validation tests, 100% of legacy or unexpected model-authored topic identifiers and unsupported source labels are rejected before appearing in an operator-facing report.
+- **SC-003**: In citation-normalization tests, at least 95% of predefined harmless and unambiguous source-label variants are corrected or accepted without losing traceability, including lower-case labels, labels with harmless spacing, and labels missing a leading zero. Ambiguous or unsupported labels must still be rejected.
 - **SC-004**: In test runs where the model is unavailable or produces unusable topic findings, the operator receives a fallback evidence briefing instead of an absent report.
-- **SC-005**: At least 90% of report-generation attempts with ten or more qualified source summaries produce either a passing report or a visible failure-grade report that still includes topic-organized evidence.
+- **SC-005**: At least 90% of report-generation attempts in fixtures with ten or more qualified source summaries across planned topics produce either a passing report or a visible failure-grade report that still includes topic-organized evidence.
 
 ## Assumptions
 

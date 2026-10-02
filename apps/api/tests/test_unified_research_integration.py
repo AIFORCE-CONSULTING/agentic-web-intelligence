@@ -289,6 +289,7 @@ def test_malformed_relevance_result_never_reaches_summaries_or_report() -> None:
     assert "https://identity1.example" not in harness.summary_urls
     assert "https://provenance1.example" in harness.summary_urls
     assert harness.gap_rounds == 2
+    assert harness.report_created is True
 
 
 def test_large_batch_uses_temporal_and_stops_before_model_context() -> None:

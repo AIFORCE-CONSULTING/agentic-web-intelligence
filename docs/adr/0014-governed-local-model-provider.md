@@ -172,6 +172,29 @@ eligible, relevant, evidence-sufficient stored summaries. When some sources are
 omitted after recovery is exhausted, trusted platform code adds the omission
 notice outside the model prompt.
 
+### Validated final-report packages
+
+Final-report generation receives a frozen list of eligible, relevant,
+evidence-sufficient stored summaries. The local model receives that list as
+untrusted reference material and returns a native Ollama JSON-schema draft; it
+does not return public URLs, eligibility decisions, workflow status, or
+operator-facing links. Platform code validates every finding against its known,
+topic-scoped source reference before rendering Markdown.
+
+The platform makes at most two report attempts. When the first response is
+incomplete or invalid, the second prompt contains only the server's concise
+validation feedback. Both attempts retain their prompt version, model version,
+raw response, and validation outcome in the immutable report package.
+
+Report quality is separate from evidence trust and research completion. A
+`PASS` report covers planned topics, represents qualified source summaries, and
+meets the applicable detail target. A structurally safe but incomplete report
+is stored with a `FAIL` quality grade and plain-language reasons. When neither
+model response can be rendered safely, the platform stores a `FAIL` evidence
+briefing assembled directly from the frozen summaries. The research workflow
+completes after any report package is stored; it fails at this stage only when
+the platform cannot read report inputs or persist the package.
+
 ## Consequences
 
 Phase 6 can add useful local inference without treating the model as an agent

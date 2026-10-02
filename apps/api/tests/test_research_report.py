@@ -23,7 +23,10 @@ def test_report_read_returns_only_the_current_workspace_report() -> None:
                 run_id=run_id,
                 markdown="# Grounded report",
                 model_name="qwen3:1.7b",
-                prompt_version="agentic-research-final-report-v1",
+                prompt_version="agentic-research-final-report-v2",
+                contract_version="grounded-final-report-v1",
+                quality_grade="PASS",
+                report_origin="model_pass",
                 created_at=datetime.now(UTC),
             )
 
@@ -38,6 +41,8 @@ def test_report_read_returns_only_the_current_workspace_report() -> None:
 
     assert response.status_code == 200
     assert response.json()["markdown"] == "# Grounded report"
+    assert response.json()["quality_grade"] == "PASS"
+    assert response.json()["report_origin"] == "model_pass"
 
 
 def test_report_read_returns_not_found_when_no_report_exists() -> None:

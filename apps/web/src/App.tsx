@@ -67,7 +67,13 @@ type EvidenceSummaryWorkSet = {
   id: string; status: "created" | "waiting" | "completed" | "failed"; execution_ids: string[];
 };
 type ResearchReport = {
-  run_id: string; markdown: string; model_name: string; prompt_version: string; created_at: string;
+  id?: string | null; run_id: string; markdown: string; model_name?: string | null;
+  prompt_version: string; contract_version: string; quality_grade: "PASS" | "FAIL";
+  quality_reasons: { code: string; message: string }[];
+  report_origin: "model_pass" | "model_fail" | "fallback"; current: boolean;
+  supporting_sources: { source_ref: string; topic_id: string; title: string; url: string }[];
+  exclusions: { title: string; url: string; topic_ids: string[]; reason_code: string; reason: string }[];
+  created_at: string;
 };
 type WorkspaceSummaryArtifact = {
   run_id: string; url: string; title: string; chunk_count?: number | null;
@@ -919,10 +925,22 @@ export function App() {
         </section>
 
         <section aria-labelledby="report-heading">
-          <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">4. Final report</h2></div>{report && <span className="badge">{report.model_name}</span>}</div>
+          <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">4. Final report</h2></div>{report && <span className="badge">{report.quality_grade} {report.report_origin === "fallback" ? "evidence briefing" : "report"}</span>}</div>
           {report ? <article className="source-summary report-markdown">
-            <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.</p>
-            <ReactMarkdown>{report.markdown}</ReactMarkdown>
+            <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.{report.model_name ? ` Model: ${report.model_name}.` : ""}</p>
+            {!report.current && <aside className="error"><strong>Historical report</strong><p>This report was created from an earlier evidence set and is not the current report for this research run.</p></aside>}
+            {report.quality_grade === "FAIL" && <aside className="error"><strong>Report quality: FAIL</strong>{report.quality_reasons.map((reason) => <p key={reason.code}>{reason.message}</p>)}</aside>}
+            <ReactMarkdown components={{
+              a: ({ href, children }) => {
+                const sourceRef = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
+                const source = sourceRef ? report.supporting_sources.find((item) => item.source_ref === sourceRef) : null;
+                return source ? <a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{children}</a> : <span>{children}</span>;
+              },
+            }}>{report.markdown}</ReactMarkdown>
+            {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">
+              <h3>Sources not used for report findings</h3>
+              <ul>{report.exclusions.map((source) => <li key={`${source.url}-${source.reason_code}`}><strong>{source.title}</strong>: {source.reason}</li>)}</ul>
+            </section>}
           </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
         </section>
 

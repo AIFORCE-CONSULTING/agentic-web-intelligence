@@ -1,12 +1,19 @@
 """Postgres records for research topics, relevance, and evidence coverage."""
 
+import hashlib
+import json
 from collections.abc import Mapping
 from uuid import UUID, uuid4
 
 import asyncpg
 
 from app.agentic_research.contracts import (
+    FinalReportAttempt,
     RelevanceDecision,
+    ReportExclusion,
+    ReportInput,
+    ReportQualityReason,
+    ReportSupportingSource,
     ResearchReport,
     ResearchReportSource,
     TopicCoverage,
@@ -19,6 +26,7 @@ from app.agentic_research.contracts import (
     TopicSourceAssociation,
     assess_topic_coverage,
 )
+from app.persistence import execute_schema_setup
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS agentic_research_topics (
@@ -79,6 +87,72 @@ CREATE TABLE IF NOT EXISTS agentic_research_reports (
     prompt_version TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE agentic_research_reports
+    ADD COLUMN IF NOT EXISTS contract_version TEXT;
+ALTER TABLE agentic_research_reports
+    ADD COLUMN IF NOT EXISTS input_fingerprint TEXT;
+ALTER TABLE agentic_research_reports
+    ADD COLUMN IF NOT EXISTS quality_grade TEXT;
+ALTER TABLE agentic_research_reports
+    ADD COLUMN IF NOT EXISTS quality_reasons JSONB;
+ALTER TABLE agentic_research_reports
+    ADD COLUMN IF NOT EXISTS report_origin TEXT;
+CREATE TABLE IF NOT EXISTS agentic_research_report_inputs (
+    report_id UUID NOT NULL REFERENCES agentic_research_reports(id) ON DELETE CASCADE,
+    topic_record_id UUID NOT NULL REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    topic_id TEXT NOT NULL,
+    topic TEXT NOT NULL,
+    summary_artifact_id UUID NOT NULL REFERENCES evidence_summary_artifacts(id) ON DELETE CASCADE,
+    source_ref TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    source_title TEXT NOT NULL,
+    summary_text TEXT NOT NULL,
+    summary_digest TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (report_id, source_ref),
+    UNIQUE (report_id, topic_record_id, summary_artifact_id)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_report_contributions (
+    report_id UUID NOT NULL REFERENCES agentic_research_reports(id) ON DELETE CASCADE,
+    topic_record_id UUID NOT NULL REFERENCES agentic_research_topics(id) ON DELETE CASCADE,
+    finding_position INTEGER NOT NULL,
+    source_ref TEXT NOT NULL,
+    contribution_kind TEXT NOT NULL CHECK (contribution_kind IN ('finding', 'section_source_list')),
+    PRIMARY KEY (report_id, topic_record_id, finding_position, source_ref, contribution_kind)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_report_exclusions (
+    report_id UUID NOT NULL REFERENCES agentic_research_reports(id) ON DELETE CASCADE,
+    source_url TEXT NOT NULL,
+    source_title TEXT NOT NULL,
+    topic_ids JSONB NOT NULL,
+    reason_code TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    PRIMARY KEY (report_id, source_url, reason_code)
+);
+CREATE TABLE IF NOT EXISTS agentic_research_report_attempts (
+    id UUID PRIMARY KEY,
+    report_id UUID NOT NULL REFERENCES agentic_research_reports(id) ON DELETE CASCADE,
+    attempt_number INTEGER NOT NULL CHECK (attempt_number IN (1, 2)),
+    status TEXT NOT NULL CHECK (status IN ('started', 'pass', 'fail', 'unusable')),
+    input_fingerprint TEXT NOT NULL,
+    model_name TEXT,
+    prompt_version TEXT NOT NULL,
+    contract_version TEXT NOT NULL,
+    raw_response TEXT NOT NULL DEFAULT '',
+    validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
+    duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
+    input_characters INTEGER NOT NULL DEFAULT 0 CHECK (input_characters >= 0),
+    failure_code TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (report_id, attempt_number)
+);
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS input_characters INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS failure_code TEXT;
 CREATE INDEX IF NOT EXISTS agentic_research_topics_workspace_run_idx
     ON agentic_research_topics(workspace_id, run_id, created_at);
 CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
@@ -87,11 +161,59 @@ CREATE INDEX IF NOT EXISTS agentic_topic_relevance_lookup_idx
     );
 CREATE INDEX IF NOT EXISTS agentic_topic_coverage_lookup_idx
     ON agentic_topic_coverage_evidence(topic_record_id, qualified_at);
+CREATE INDEX IF NOT EXISTS agentic_research_reports_workspace_run_idx
+    ON agentic_research_reports(workspace_id, run_id, created_at DESC);
 ALTER TABLE agentic_topic_relevance_decisions
     ADD COLUMN IF NOT EXISTS model_output TEXT NOT NULL DEFAULT '';
 ALTER TABLE agentic_topic_relevance_decisions
     ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 """
+
+
+def _json_value(value: object, default: object) -> object:
+    """Normalise asyncpg JSON values without trusting their runtime representation."""
+
+    if value is None:
+        return default
+    if isinstance(value, str):
+        return json.loads(value)
+    return value
+
+
+def _summary_digest(summary: str) -> str:
+    return hashlib.sha256(summary.encode("utf-8")).hexdigest()
+
+
+def _report_input_fingerprint(inputs: list[ReportInput]) -> str:
+    payload = [
+        {
+            "topic_id": item.topic_id,
+            "source_url": item.source_url,
+            "content_hash": item.content_hash,
+            "summary_artifact_id": str(item.summary_artifact_id),
+        }
+        for item in inputs
+    ]
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+
+
+def _current_report_fingerprint(
+    inputs: list[ReportInput], coverage: list[TopicCoverage]
+) -> str:
+    """Match the reporting service fingerprint without creating a service dependency."""
+
+    payload = {
+        "topics": [(item.topic_id, item.status) for item in coverage],
+        "inputs": [
+            (item.topic_id, item.source_url, item.content_hash, str(item.summary_artifact_id))
+            for item in inputs
+        ],
+    }
+    return hashlib.sha256(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
 
 
 _COVERAGE_FACTS_QUERY = """
@@ -191,7 +313,7 @@ class AgenticResearchStore:
                     self._database_url, min_size=1, max_size=5
                 )
                 async with self._pool.acquire() as connection:
-                    await connection.execute(SCHEMA)
+                    await execute_schema_setup(connection, SCHEMA)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()
@@ -319,20 +441,27 @@ class AgenticResearchStore:
             )
         return [TopicSourceAssociation(**dict(row)) for row in rows]
 
-    async def report_sources(
-        self, workspace_id: UUID, run_id: UUID
-    ) -> list[ResearchReportSource]:
-        """Load only summaries that currently qualify as topic evidence."""
+    async def report_inputs(self, workspace_id: UUID, run_id: UUID) -> list[ReportInput]:
+        """Load the qualified summaries frozen into one report package."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             rows = await connection.fetch(
-                """SELECT topic.topic_id, topic.topic, coverage.source_url,
-                          artifact.summary
+                """SELECT topic.id AS topic_record_id, topic.topic_id, topic.topic,
+                          artifact.id AS summary_artifact_id, coverage.source_url,
+                          COALESCE(NULLIF(source.title, ''), coverage.source_url) AS source_title,
+                          artifact.summary AS summary_text, coverage.content_hash,
+                          row_number() OVER (
+                              ORDER BY topic.position, coverage.qualified_at, coverage.source_url
+                          )::INTEGER AS position
                    FROM agentic_topic_coverage_evidence AS coverage
                    JOIN agentic_research_topics AS topic ON topic.id = coverage.topic_record_id
                    JOIN evidence_summary_artifacts AS artifact
                      ON artifact.id = coverage.summary_artifact_id
+                   LEFT JOIN research_sources AS source
+                     ON source.run_id = topic.run_id
+                    AND (source.url = coverage.source_url
+                         OR source.preflight_final_url = coverage.source_url)
                    WHERE topic.workspace_id = $1 AND topic.run_id = $2
                      AND artifact.evidence_sufficient IS TRUE
                      AND EXISTS (
@@ -353,11 +482,31 @@ class AgenticResearchStore:
                                )
                            )
                      )
-                   ORDER BY topic.position, coverage.qualified_at""",
+                   ORDER BY topic.position, coverage.qualified_at, coverage.source_url""",
                 workspace_id,
                 run_id,
             )
-        return [ResearchReportSource(**dict(row)) for row in rows]
+        return [
+            ReportInput(
+                **dict(row), source_ref=f"source-{index:02d}"
+            )
+            for index, row in enumerate(rows, start=1)
+        ]
+
+    async def report_sources(
+        self, workspace_id: UUID, run_id: UUID
+    ) -> list[ResearchReportSource]:
+        """Backward-compatible view of the current qualified report inputs."""
+
+        return [
+            ResearchReportSource(
+                topic_id=item.topic_id,
+                topic=item.topic,
+                source_url=item.source_url,
+                summary=item.summary_text,
+            )
+            for item in await self.report_inputs(workspace_id, run_id)
+        ]
 
     async def get_report(
         self, workspace_id: UUID, run_id: UUID
@@ -367,14 +516,49 @@ class AgenticResearchStore:
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
             row = await connection.fetchrow(
-                """SELECT run_id, markdown, model_name, prompt_version, created_at
+                """SELECT id, run_id, markdown, model_name, prompt_version, contract_version,
+                          quality_grade, quality_reasons, report_origin, input_fingerprint,
+                          created_at
                    FROM agentic_research_reports
                    WHERE workspace_id = $1 AND run_id = $2
+                     AND contract_version IS NOT NULL
                    ORDER BY created_at DESC LIMIT 1""",
                 workspace_id,
                 run_id,
             )
-        return ResearchReport(**dict(row)) if row is not None else None
+            if row is None:
+                return None
+            supporting_rows = await connection.fetch(
+                """SELECT source_ref, topic_id, source_title AS title, source_url AS url
+                   FROM agentic_research_report_inputs
+                   WHERE report_id = $1 ORDER BY position, source_ref""",
+                row["id"],
+            )
+            exclusion_rows = await connection.fetch(
+                """SELECT source_title AS title, source_url AS url, topic_ids,
+                          reason_code, reason
+                   FROM agentic_research_report_exclusions
+                   WHERE report_id = $1 ORDER BY source_url, reason_code""",
+                row["id"],
+            )
+            current_inputs = await self.report_inputs(workspace_id, run_id)
+        report = dict(row)
+        fingerprint = report.pop("input_fingerprint")
+        report["quality_reasons"] = _json_value(report["quality_reasons"], [])
+        report["supporting_sources"] = [
+            ReportSupportingSource(**dict(item)) for item in supporting_rows
+        ]
+        report["exclusions"] = [
+            ReportExclusion(
+                **{**dict(item), "topic_ids": _json_value(item["topic_ids"], [])}
+            )
+            for item in exclusion_rows
+        ]
+        coverage = await self.list_topic_coverage(workspace_id, run_id)
+        report["current"] = fingerprint == _current_report_fingerprint(
+            current_inputs, coverage
+        )
+        return ResearchReport(**report)
 
     async def report_omissions(self, workspace_id: UUID, run_id: UUID) -> list[str]:
         """Describe summary outcomes omitted from a grounded report without model interpretation."""
@@ -404,33 +588,178 @@ class AgenticResearchStore:
             for row in rows
         ]
 
-    async def save_report(
+    async def report_exclusions(
+        self, workspace_id: UUID, run_id: UUID, inputs: list[ReportInput]
+    ) -> list[ReportExclusion]:
+        """Describe known noncontributing sources without changing their eligibility."""
+
+        included_urls = {item.source_url for item in inputs}
+        topics = await self.list_topic_coverage(workspace_id, run_id)
+        topic_ids = [item.topic_id for item in topics]
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT source.title, source.url,
+                          COALESCE(source.preflight_final_url, source.url) AS evidence_url,
+                          source.preflight_status,
+                          source.preflight_trust_disposition,
+                          execution_source.status AS summary_status,
+                          execution_source.evidence_sufficient,
+                          execution_source.failure_category
+                   FROM research_sources AS source
+                   JOIN research_runs AS run ON run.id = source.run_id
+                   LEFT JOIN LATERAL (
+                       SELECT member.status, member.evidence_sufficient, member.failure_category
+                       FROM evidence_summary_execution_sources AS member
+                       JOIN evidence_summary_executions AS execution
+                         ON execution.id = member.execution_id
+                       WHERE execution.workspace_id = $1 AND execution.run_id = source.run_id
+                         AND member.url = COALESCE(source.preflight_final_url, source.url)
+                       ORDER BY execution.created_at DESC LIMIT 1
+                   ) AS execution_source ON TRUE
+                   WHERE run.workspace_id = $1 AND source.run_id = $2
+                   ORDER BY source.rank""",
+                workspace_id,
+                run_id,
+            )
+        exclusions: list[ReportExclusion] = []
+        for row in rows:
+            source_url = row["evidence_url"]
+            if source_url in included_urls:
+                continue
+            if row["preflight_status"] == "blocked":
+                code, reason = "blocked", "Blocked by the local trust workflow."
+            elif row["preflight_status"] == "review_required":
+                code, reason = "review_required", "Requires recorded human review before use."
+            elif row["summary_status"] == "failed":
+                code = "summary_failed"
+                reason = row["failure_category"] or "A usable source summary was not stored."
+            elif row["evidence_sufficient"] is False:
+                code, reason = "evidence_insufficient", "The captured content was insufficient."
+            else:
+                code = "not_relevant"
+                reason = "It did not become qualified evidence for a planned topic."
+            exclusions.append(
+                ReportExclusion(
+                    title=row["title"] or source_url,
+                    url=source_url,
+                    topic_ids=topic_ids,
+                    reason_code=code,
+                    reason=reason,
+                )
+            )
+        return exclusions
+
+    async def save_report_package(
         self,
         workspace_id: UUID,
         run_id: UUID,
         markdown: str,
-        model_name: str,
+        model_name: str | None,
         prompt_version: str,
+        contract_version: str,
+        input_fingerprint: str,
+        quality_grade: str,
+        quality_reasons: list[ReportQualityReason],
+        report_origin: str,
+        inputs: list[ReportInput],
+        contributions: list[tuple[UUID, int, str, str]],
+        exclusions: list[ReportExclusion],
+        attempts: list[FinalReportAttempt],
     ) -> ResearchReport:
         pool = await self._connection_pool()
-        async with pool.acquire() as connection:
+        report_id = uuid4()
+        async with pool.acquire() as connection, connection.transaction():
             row = await connection.fetchrow(
                 """INSERT INTO agentic_research_reports
-                   (id, workspace_id, run_id, markdown, model_name, prompt_version)
-                   SELECT $3, runs.workspace_id, runs.id, $4, $5, $6
+                   (id, workspace_id, run_id, markdown, model_name, prompt_version,
+                    contract_version, input_fingerprint, quality_grade, quality_reasons,
+                    report_origin)
+                   SELECT $3, runs.workspace_id, runs.id, $4, $5, $6, $7, $8, $9,
+                          $10::jsonb, $11
                    FROM research_runs AS runs
                    WHERE runs.workspace_id = $1 AND runs.id = $2
-                   RETURNING run_id, markdown, model_name, prompt_version, created_at""",
+                   RETURNING id, run_id, markdown, model_name, prompt_version, contract_version,
+                             quality_grade, quality_reasons, report_origin, created_at""",
                 workspace_id,
                 run_id,
-                uuid4(),
+                report_id,
                 markdown,
                 model_name,
                 prompt_version,
+                contract_version,
+                input_fingerprint,
+                quality_grade,
+                json.dumps([item.model_dump() for item in quality_reasons]),
+                report_origin,
             )
-        if row is None:
-            raise KeyError(run_id)
-        return ResearchReport(**dict(row))
+            if row is None:
+                raise KeyError(run_id)
+            await connection.executemany(
+                """INSERT INTO agentic_research_report_inputs
+                   (report_id, topic_record_id, topic_id, topic, summary_artifact_id,
+                    source_ref, source_url, source_title, summary_text, summary_digest,
+                    content_hash, position)
+                   VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)""",
+                [
+                    (
+                        report_id, item.topic_record_id, item.topic_id, item.topic,
+                        item.summary_artifact_id, item.source_ref, item.source_url,
+                        item.source_title, item.summary_text, _summary_digest(item.summary_text),
+                        item.content_hash, item.position,
+                    )
+                    for item in inputs
+                ],
+            )
+            if contributions:
+                await connection.executemany(
+                    """INSERT INTO agentic_research_report_contributions
+                       (report_id, topic_record_id, finding_position, source_ref,
+                        contribution_kind)
+                       VALUES ($1, $2, $3, $4, $5)""",
+                    [(report_id, *item) for item in contributions],
+                )
+            if exclusions:
+                await connection.executemany(
+                    """INSERT INTO agentic_research_report_exclusions
+                       (report_id, source_url, source_title, topic_ids, reason_code, reason)
+                       VALUES ($1, $2, $3, $4::jsonb, $5, $6)""",
+                    [
+                        (report_id, item.url, item.title, json.dumps(item.topic_ids),
+                         item.reason_code, item.reason)
+                        for item in exclusions
+                    ],
+                )
+            if attempts:
+                await connection.executemany(
+                    """INSERT INTO agentic_research_report_attempts
+                       (id, report_id, attempt_number, status, input_fingerprint,
+                        model_name, prompt_version, contract_version, raw_response,
+                        validation_errors, duration_ms, input_characters, failure_code)
+                       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::jsonb,
+                               $11, $12, $13)""",
+                    [
+                        (uuid4(), report_id, item.attempt_number, item.status,
+                         input_fingerprint, item.model_name, item.prompt_version,
+                         contract_version, item.raw_response,
+                         json.dumps(item.validation_errors), item.duration_ms,
+                         item.input_characters, item.failure_code)
+                        for item in attempts
+                    ],
+                )
+        saved = dict(row)
+        saved["quality_reasons"] = _json_value(saved["quality_reasons"], [])
+        return ResearchReport(
+            **saved,
+            supporting_sources=[
+                ReportSupportingSource(
+                    source_ref=item.source_ref, topic_id=item.topic_id,
+                    title=item.source_title, url=item.source_url
+                )
+                for item in inputs
+            ],
+            exclusions=exclusions,
+        )
 
     async def record_relevance_decision(
         self,

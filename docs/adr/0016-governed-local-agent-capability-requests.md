@@ -319,6 +319,13 @@ records through `RuntimeStore`, but it does not own research progress.
 `WebTrustStore` owns evidence-policy evaluations and human acceptances.
 `EvidenceSummaryStore` owns summary work and artifacts.
 
+The unified graph's final-report node remains the sole report caller. It
+creates an append-only report package from qualified stored summaries. A report
+quality grade of `FAIL` identifies an incomplete or fallback report, not an
+authority, trust, relevance, or workflow failure. The graph transitions the
+research record to `completed` after that package is stored; it transitions to
+`failed` during reporting only if the package cannot be created or persisted.
+
 LangGraph's PostgreSQL checkpoint is an execution bookmark, not a business
 record. Temporal history is durable execution tracking, not workflow status.
 When deterministic thresholds select durable preflight or summary work, the

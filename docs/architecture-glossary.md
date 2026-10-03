@@ -96,12 +96,12 @@ facts or requests; outputs are validated results, not merely model text.
 
 ### EvidenceTrustService
 - **Purpose:** Decides whether an exact captured evidence version may enter automated model context.
-- **Inputs:** Evidence and retrieval facts, policy version, applicable human acceptance.
+- **Inputs:** Evidence and retrieval facts, policy version, applicable human review decision.
 - **Outputs:** Explainable trust disposition and rule outcomes.
 - **Connected to:** CandidatePreflightService, WebTrustStore, graph and model-facing services.
 
 ### WebTrustStore
-- **Purpose:** Persists trust evaluations and exact-version human acceptances.
+- **Purpose:** Persists trust evaluations and exact-version human review decisions.
 - **Inputs:** Trust-service decisions and authorized review decisions.
 - **Outputs:** Effective evidence eligibility and audit details.
 - **Connected to:** EvidenceTrustService, review API, PostgreSQL.

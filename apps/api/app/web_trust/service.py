@@ -70,15 +70,50 @@ class EvidenceTrustService:
         if evaluation.base_disposition != "review_required":
             raise ValueError("Only evidence requiring review can be accepted.")
         if evaluation.override_id is not None:
+            if evaluation.override_outcome != "accepted":
+                raise ValueError("Evidence review already has a human decision.")
             return evaluation
         if expires_at is not None:
             if expires_at.tzinfo is None:
                 raise ValueError("Acceptance expiry must include a timezone.")
             if expires_at <= datetime.now(UTC):
                 raise ValueError("Acceptance expiry must be in the future.")
-        return await self._store.accept_evaluation(
+        accepted = await self._store.accept_evaluation(
             workspace_id, run_id, source_url, content_hash, actor_user_id, reason, expires_at
         )
+        if accepted is not None and accepted.override_outcome != "accepted":
+            raise ValueError("Evidence review already has a human decision.")
+        return accepted
+
+    async def reject(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        source_url: str,
+        content_hash: str,
+        actor_user_id: UUID,
+        reason: str | None = None,
+    ) -> EvidenceTrustEvaluation | None:
+        """Persist a human rejection for an already evaluated source version."""
+
+        evaluation = await self._store.latest_evaluation(
+            workspace_id, run_id, source_url, content_hash
+        )
+        if evaluation is None:
+            return None
+        if evaluation.base_disposition != "review_required":
+            raise ValueError("Only evidence requiring review can be rejected.")
+        if evaluation.override_id is not None:
+            if evaluation.override_outcome != "rejected":
+                raise ValueError("Evidence review already has a human decision.")
+            return evaluation
+        note = reason.strip() if reason is not None else None
+        rejected = await self._store.reject_evaluation(
+            workspace_id, run_id, source_url, content_hash, actor_user_id, note or None
+        )
+        if rejected is not None and rejected.override_outcome != "rejected":
+            raise ValueError("Evidence review already has a human decision.")
+        return rejected
 
     async def list_for_run(self, workspace_id: UUID, run_id: UUID) -> list[EvidenceTrustEvaluation]:
         return await self._store.list_latest_evaluations(workspace_id, run_id)
@@ -91,7 +126,7 @@ class EvidenceTrustService:
         content_hash: str,
         status_version: int,
     ) -> None:
-        """Audit the graph continuation requested for one accepted evidence version."""
+        """Audit the graph continuation requested for one reviewed evidence version."""
 
         recorded = await self._store.record_workflow_resume(
             workspace_id,
@@ -103,7 +138,7 @@ class EvidenceTrustService:
         )
         if not recorded:
             raise ValueError(
-                "An active human acceptance is required before workflow continuation."
+                "An active human review decision is required before workflow continuation."
             )
 
     @classmethod

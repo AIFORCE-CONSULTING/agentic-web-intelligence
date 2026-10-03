@@ -6,6 +6,7 @@ from uuid import uuid4
 import httpx
 import pytest
 
+from app.agent_runtime.research_workflow import ResearchWorkflowUnavailable
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
@@ -16,7 +17,7 @@ from app.evidence_summaries.service import (
     EvidenceSummaryService,
     EvidenceSummaryUnavailable,
 )
-from app.identity.contracts import AuthenticatedUser
+from app.identity.contracts import AuthenticatedServiceIdentity, AuthenticatedUser
 from app.main import create_app
 from app.web_research.contracts import Evidence, ResearchRun, SourceCandidate, ToolPolicyError
 from app.web_trust.contracts import EvidenceTrustEvaluation, TrustRuleOutcome
@@ -61,6 +62,7 @@ class FakeTrustStore:
     def __init__(self) -> None:
         self.current: EvidenceTrustEvaluation | None = None
         self.accept_calls = 0
+        self.reject_calls = 0
 
     async def latest_evaluation(self, *_: object) -> EvidenceTrustEvaluation | None:
         return self.current
@@ -95,7 +97,33 @@ class FakeTrustStore:
             update={
                 "disposition": "eligible",
                 "override_id": uuid4(),
+                "override_outcome": "accepted",
+                "override_actor_user_id": uuid4(),
                 "override_reason": "Reviewed",
+                "override_created_at": datetime.now(UTC),
+            }
+        )
+        return self.current
+
+    async def reject_evaluation(
+        self,
+        _workspace_id,
+        _run_id,
+        _source_url,
+        _content_hash,
+        actor_user_id,
+        reason,
+    ) -> EvidenceTrustEvaluation | None:
+        self.reject_calls += 1
+        assert self.current is not None
+        self.current = self.current.model_copy(
+            update={
+                "disposition": "review_required",
+                "override_id": uuid4(),
+                "override_outcome": "rejected",
+                "override_actor_user_id": actor_user_id,
+                "override_reason": reason,
+                "override_created_at": datetime.now(UTC),
             }
         )
         return self.current
@@ -148,6 +176,70 @@ def test_unsupported_content_requires_human_review_and_can_be_accepted() -> None
 
     assert repeated == accepted
     assert store.accept_calls == 1
+
+
+def test_unsupported_content_requires_human_review_and_can_be_rejected_without_reason() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    rejected = asyncio.run(
+        service.reject(
+            workspace_id,
+            run_id,
+            result.source_url,
+            result.content_hash,
+            uuid4(),
+            None,
+        )
+    )
+
+    assert rejected is not None
+    assert rejected.disposition == "review_required"
+    assert rejected.base_disposition == "review_required"
+    assert rejected.override_outcome == "rejected"
+    assert rejected.override_reason is None
+
+    repeated = asyncio.run(
+        service.reject(
+            workspace_id,
+            run_id,
+            result.source_url,
+            result.content_hash,
+            uuid4(),
+            "Repeated rejection",
+        )
+    )
+
+    assert repeated == rejected
+    assert store.reject_calls == 1
+
+
+def test_review_rejection_preserves_optional_reason() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(
+        service.evaluate(workspace_id, run_id, evidence(content_type="application/pdf"))
+    )
+
+    rejected = asyncio.run(
+        service.reject(
+            workspace_id,
+            run_id,
+            result.source_url,
+            result.content_hash,
+            uuid4(),
+            "Navigation shell, not useful source evidence.",
+        )
+    )
+
+    assert rejected is not None
+    assert rejected.override_outcome == "rejected"
+    assert rejected.override_reason == "Navigation shell, not useful source evidence."
 
 
 def test_review_acceptance_expiry_must_be_in_the_future() -> None:
@@ -228,6 +320,91 @@ def test_non_https_evidence_is_blocked_and_cannot_be_accepted() -> None:
         assert str(error) == "Only evidence requiring review can be accepted."
     else:
         raise AssertionError("Blocked evidence must not be accepted.")
+
+
+def test_blocked_evidence_cannot_be_rejected_as_human_review() -> None:
+    store = FakeTrustStore()
+    service = EvidenceTrustService(store)
+    workspace_id, run_id = uuid4(), uuid4()
+    result = asyncio.run(service.evaluate(workspace_id, run_id, evidence(url="http://example.com")))
+
+    assert result.disposition == "blocked"
+    with pytest.raises(ValueError, match="Only evidence requiring review can be rejected"):
+        asyncio.run(
+            service.reject(
+                workspace_id,
+                run_id,
+                result.source_url,
+                result.content_hash,
+                uuid4(),
+                None,
+            )
+        )
+
+
+def test_human_review_decision_cannot_be_changed_between_accept_and_reject() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    accepted_store = FakeTrustStore()
+    accepted_service = EvidenceTrustService(accepted_store)
+    accepted_result = asyncio.run(
+        accepted_service.evaluate(
+            workspace_id, run_id, evidence(content_type="application/pdf")
+        )
+    )
+    asyncio.run(
+        accepted_service.accept(
+            workspace_id,
+            run_id,
+            accepted_result.source_url,
+            accepted_result.content_hash,
+            uuid4(),
+            "Appropriate source.",
+            None,
+        )
+    )
+
+    with pytest.raises(ValueError, match="already has a human decision"):
+        asyncio.run(
+            accepted_service.reject(
+                workspace_id,
+                run_id,
+                accepted_result.source_url,
+                accepted_result.content_hash,
+                uuid4(),
+                None,
+            )
+        )
+
+    rejected_store = FakeTrustStore()
+    rejected_service = EvidenceTrustService(rejected_store)
+    rejected_result = asyncio.run(
+        rejected_service.evaluate(
+            workspace_id, run_id, evidence(content_type="application/pdf")
+        )
+    )
+    asyncio.run(
+        rejected_service.reject(
+            workspace_id,
+            run_id,
+            rejected_result.source_url,
+            rejected_result.content_hash,
+            uuid4(),
+            None,
+        )
+    )
+
+    with pytest.raises(ValueError, match="already has a human decision"):
+        asyncio.run(
+            rejected_service.accept(
+                workspace_id,
+                run_id,
+                rejected_result.source_url,
+                rejected_result.content_hash,
+                uuid4(),
+                "Appropriate source.",
+                None,
+            )
+        )
 
 
 def test_candidate_preflight_persists_reusable_evidence_and_failed_candidate_metadata(
@@ -575,7 +752,11 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
 
         async def accept(self, *_: object) -> EvidenceTrustEvaluation:
             return review.model_copy(
-                update={"disposition": "eligible", "override_reason": "Reviewed"}
+                update={
+                    "disposition": "eligible",
+                    "override_outcome": "accepted",
+                    "override_reason": "Reviewed",
+                }
             )
 
         async def record_workflow_resume(self, *args: object) -> None:
@@ -614,8 +795,225 @@ def test_trust_review_endpoint_requires_a_human_and_returns_the_recorded_accepta
 
     assert response.status_code == 200
     assert response.json()["disposition"] == "eligible"
+    assert response.json()["override_outcome"] == "accepted"
     assert response.json()["override_reason"] == "Reviewed"
     assert len(app.state.web_trust_service.resume_records) == 1
     assert resumed == [
-        (user.workspace_id, run_id, review.source_url, review.content_hash)
+        (user.workspace_id, run_id, review.source_url, review.content_hash, "accepted")
     ]
+
+
+def test_trust_review_reject_endpoint_records_decision_and_resumes_without_reason() -> None:
+    app = create_app()
+    user = AuthenticatedUser(
+        id=uuid4(), email="operator@example.com", workspace_id=uuid4(),
+        workspace_name="Test", role="operator", authenticated_at=datetime.now(UTC),
+    )
+    run_id = uuid4()
+    review = EvidenceTrustEvaluation(
+        id=uuid4(), run_id=run_id, source_url="https://example.com/article",
+        content_hash="sha256:content", policy_version="local-default-v2",
+        disposition="review_required", base_disposition="review_required",
+        rule_outcomes=[
+            TrustRuleOutcome(rule="content_type", outcome="review_required", detail="Review.")
+        ],
+        component_version="web-trust-v2", created_at=datetime.now(UTC),
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, _: object) -> AuthenticatedUser:
+            return user
+
+    class FakeTrustService:
+        resume_records: list[tuple[object, ...]] = []
+
+        async def reject(self, *_: object) -> EvidenceTrustEvaluation:
+            return review.model_copy(
+                update={
+                    "override_outcome": "rejected",
+                    "override_reason": None,
+                }
+            )
+
+        async def record_workflow_resume(self, *args: object) -> None:
+            self.resume_records.append(args)
+
+    app.state.identity_service = FakeIdentityService()
+    app.state.web_trust_service = FakeTrustService()
+
+    class FakeResearchStore:
+        async def get_run(self, *_: object) -> object:
+            return SimpleNamespace(status_version=4)
+
+    resumed: list[tuple[object, ...]] = []
+
+    class FakeWorkflowEntry:
+        async def resume_after_review(self, *args: object) -> object:
+            resumed.append(args)
+            return SimpleNamespace(status="evaluating_relevance")
+
+    app.state.research_store = FakeResearchStore()
+    app.state.research_workflow_entry = FakeWorkflowEntry()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/evidence-trust/reject",
+                json={
+                    "source_url": review.source_url,
+                    "content_hash": review.content_hash,
+                },
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    assert response.json()["disposition"] == "review_required"
+    assert response.json()["override_outcome"] == "rejected"
+    assert len(app.state.web_trust_service.resume_records) == 1
+    assert resumed == [
+        (user.workspace_id, run_id, review.source_url, review.content_hash, "rejected")
+    ]
+
+
+def test_trust_review_endpoints_reject_service_identity_callers() -> None:
+    app = create_app()
+    service_identity = AuthenticatedServiceIdentity(
+        id=uuid4(),
+        name="research-bot",
+        workspace_id=uuid4(),
+        workspace_name="Test",
+        permissions=frozenset({"research.write"}),
+        authenticated_at=datetime.now(UTC),
+    )
+    run_id = uuid4()
+
+    class FakeIdentityService:
+        async def current_user(self, _: object) -> None:
+            return None
+
+        async def current_service_identity(self, _: object) -> AuthenticatedServiceIdentity:
+            return service_identity
+
+    class FakeTrustService:
+        called = False
+
+        async def accept(self, *_: object) -> None:
+            self.called = True
+
+        async def reject(self, *_: object) -> None:
+            self.called = True
+
+    app.state.identity_service = FakeIdentityService()
+    app.state.web_trust_service = FakeTrustService()
+
+    async def request(path: str, body: dict[str, object]) -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                path,
+                headers={"Authorization": "Bearer service-token"},
+                json=body,
+            )
+
+    accept_response = asyncio.run(
+        request(
+            f"/v1/research/runs/{run_id}/evidence-trust/accept",
+            {
+                "source_url": "https://example.com/article",
+                "content_hash": "sha256:content",
+                "reason": "Reviewed.",
+            },
+        )
+    )
+    reject_response = asyncio.run(
+        request(
+            f"/v1/research/runs/{run_id}/evidence-trust/reject",
+            {
+                "source_url": "https://example.com/article",
+                "content_hash": "sha256:content",
+            },
+        )
+    )
+
+    assert accept_response.status_code == 403
+    assert reject_response.status_code == 403
+    assert "human operator" in accept_response.json()["detail"]
+    assert "human operator" in reject_response.json()["detail"]
+    assert app.state.web_trust_service.called is False
+
+
+def test_reject_endpoint_can_retry_after_workflow_resume_failure() -> None:
+    app = create_app()
+    user = AuthenticatedUser(
+        id=uuid4(), email="operator@example.com", workspace_id=uuid4(),
+        workspace_name="Test", role="operator", authenticated_at=datetime.now(UTC),
+    )
+    run_id = uuid4()
+    decision_id = uuid4()
+    review = EvidenceTrustEvaluation(
+        id=uuid4(), run_id=run_id, source_url="https://example.com/article",
+        content_hash="sha256:content", policy_version="local-default-v2",
+        disposition="review_required", base_disposition="review_required",
+        rule_outcomes=[
+            TrustRuleOutcome(rule="content_type", outcome="review_required", detail="Review.")
+        ],
+        component_version="web-trust-v2", created_at=datetime.now(UTC),
+        override_id=decision_id, override_outcome="rejected",
+    )
+
+    class FakeIdentityService:
+        async def current_user(self, _: object) -> AuthenticatedUser:
+            return user
+
+    class FakeTrustService:
+        reject_calls = 0
+        resume_records: list[tuple[object, ...]] = []
+
+        async def reject(self, *_: object) -> EvidenceTrustEvaluation:
+            self.reject_calls += 1
+            return review
+
+        async def record_workflow_resume(self, *args: object) -> None:
+            self.resume_records.append(args)
+
+    class FakeResearchStore:
+        async def get_run(self, *_: object) -> object:
+            return SimpleNamespace(status_version=4)
+
+    class FakeWorkflowEntry:
+        attempts = 0
+
+        async def resume_after_review(self, *args: object) -> object:
+            self.attempts += 1
+            if self.attempts == 1:
+                raise ResearchWorkflowUnavailable("Checkpoint store is unavailable.")
+            return SimpleNamespace(status="evaluating_relevance")
+
+    app.state.identity_service = FakeIdentityService()
+    app.state.web_trust_service = FakeTrustService()
+    app.state.research_store = FakeResearchStore()
+    app.state.research_workflow_entry = FakeWorkflowEntry()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.post(
+                f"/v1/research/runs/{run_id}/evidence-trust/reject",
+                json={
+                    "source_url": review.source_url,
+                    "content_hash": review.content_hash,
+                },
+            )
+
+    first_response = asyncio.run(request())
+    second_response = asyncio.run(request())
+
+    assert first_response.status_code == 503
+    assert second_response.status_code == 200
+    assert second_response.json()["override_id"] == str(decision_id)
+    assert second_response.json()["override_outcome"] == "rejected"
+    assert app.state.web_trust_service.reject_calls == 2
+    assert len(app.state.web_trust_service.resume_records) == 2
+    assert app.state.research_workflow_entry.attempts == 2

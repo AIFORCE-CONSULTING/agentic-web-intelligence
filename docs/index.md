@@ -38,7 +38,9 @@ automated model context. It records the requested and final URLs, redirect
 result, retrieval facts, content and extraction outcomes, and the resulting
 eligibility decision. `blocked` evidence never enters a model prompt.
 `review_required` evidence remains visible to an operator and needs a recorded
-human acceptance for that exact evidence version before it can be used.
+human acceptance for that exact evidence version before it can be used. A
+human rejection records that the exact evidence version must remain excluded
+while the workflow continues with other usable evidence.
 
 RuntimeService remains the platform's authority layer. It evaluates who or
 what may request a capability. LangGraph coordinates the work; PostgreSQL holds

@@ -588,6 +588,26 @@ def test_summary_automation_batches_eligible_candidates_within_execution_limit(
 ) -> None:
     workspace_id, run_id = uuid4(), uuid4()
     urls = [f"https://example.com/source-{index}" for index in range(6)]
+    run = ResearchRun(
+        id=run_id,
+        question="agentic web",
+        status="summarizing",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+        evidence=[
+            Evidence(
+                url=url,
+                requested_url=url,
+                redirect_result="no_redirect",
+                retrieved_at=datetime.now(UTC),
+                content_type="text/html",
+                text="Stored public evidence.",
+                content_hash=f"sha256:source-{index}",
+                extraction_method="readability",
+            )
+            for index, url in enumerate(urls)
+        ],
+    )
     work_set = EvidenceSummaryWorkSet(
         id=uuid4(),
         workspace_id=workspace_id,
@@ -605,8 +625,12 @@ def test_summary_automation_batches_eligible_candidates_within_execution_limit(
         async def refresh_work_set(self, *_: object) -> EvidenceSummaryWorkSet:
             return work_set
 
+    class FakeResearchStore:
+        async def get_run(self, *_: object) -> ResearchRun:
+            return run
+
     automation = EvidenceSummaryAutomation(
-        object(), FakeExecutionStore(), object(), object()
+        object(), FakeExecutionStore(), FakeResearchStore(), object()
     )
     batches: list[list[str]] = []
 

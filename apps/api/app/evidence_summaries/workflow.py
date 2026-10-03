@@ -55,7 +55,9 @@ class EvidenceSummaryWorkflow:
         )
         if work_set_status == "waiting":
             return result
-        if work_set_status == "failed":
+        if work_set_status == "completed":
+            continuation = request.continuation
+        elif work_set_status == "failed":
             continuation = WorkflowContinuationEnvelope(
                 wait=request.continuation.wait,
                 result_record_id=request.continuation.result_record_id,

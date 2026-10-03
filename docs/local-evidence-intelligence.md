@@ -160,7 +160,7 @@ The summary API is intentionally narrow:
   execution.
 - `GET /v1/research/runs/{run_id}/evidence-summary-work-set` restores the
   combined summary-stage outcome for a run, including every internal
-  five-source execution. It is the Research workspace's progress view.
+  chunk-aware execution. It is the Research workspace's progress view.
 - `GET /v1/evidence-summary-artifacts` returns one newest stored summary per
   URL for the current workspace, which powers the workspace keyword view.
 - `GET /v1/research/runs/{run_id}/report` returns the newest stored final
@@ -182,10 +182,13 @@ A request runs directly only when exactly one selected source produces exactly
 one chunk. Any multi-source request or multi-chunk page automatically uses the
 dedicated Temporal evidence-summary workflow. The unified graph is the sole
 starter of summary work, after relevance is recorded. It creates one summary
-work set for the research task; a set may contain several internal jobs of at
-most five sources. Each job persists its own result, and the graph resumes only
-once the entire set is terminal. A failed job does not discard usable summaries
-from its sibling jobs.
+work set for the research task. The summary service then splits that set into
+internal jobs by stored evidence size: at most five sources, normally at most
+15 total chunks, and one isolated job for any 16-or-more-chunk source. Each job
+persists its own result, and the graph resumes only once the entire set is
+terminal. A failed job does not discard usable summaries from its sibling jobs;
+when no internal job produces a usable summary, the operator sees that summary
+processing completed without usable source summaries.
 Durable execution makes an already authorized job restart-safe; it does not
 grant the model or caller Temporal authority or own research status.
 

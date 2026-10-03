@@ -21,7 +21,7 @@ from app.local_models.service import LocalModelProviderService
 from app.web_research.contracts import Evidence
 from app.web_research.store import ResearchStore
 from app.web_trust.service import EvidenceTrustService
-from evidence_intelligence.chunking import CHUNK_CHARACTERS, OVERLAP_CHARACTERS
+from evidence_intelligence.chunking import CHUNK_CHARACTERS, OVERLAP_CHARACTERS, chunk_text
 from evidence_intelligence.consolidation import group_within_budget
 from evidence_intelligence.contracts import PreparedBatch, SourceInput
 from evidence_intelligence.preparation import prepare_batch
@@ -87,6 +87,9 @@ summaries."""
 _PROMPT_VERSION = "evidence-summary-v3"
 _MODEL_REQUEST_TIMEOUT_SECONDS = 120
 _STALE_RESERVATION_GRACE_SECONDS = 30
+_MAX_SOURCES_PER_EXECUTION = 5
+_MAX_CHUNKS_PER_EXECUTION = 15
+_OVERSIZED_SOURCE_CHUNKS = 16
 
 
 class EvidenceSummaryUnavailable(RuntimeError):
@@ -148,6 +151,71 @@ class PreparedExecution:
     execution: EvidenceSummaryExecution
     batch: PreparedBatch
     route: ExecutionRoute
+
+
+@dataclass(frozen=True)
+class SummaryWorkItem:
+    """One source selected for summary work, sized by deterministic chunking."""
+
+    url: str
+    chunk_count: int
+
+
+@dataclass(frozen=True)
+class PlannedSummaryBatch:
+    """A Temporal execution group planned before execution records are created."""
+
+    urls: tuple[str, ...]
+    total_chunk_count: int
+    oversized: bool = False
+
+    @property
+    def source_count(self) -> int:
+        return len(self.urls)
+
+
+def plan_summary_batches(items: list[SummaryWorkItem]) -> list[PlannedSummaryBatch]:
+    """Create deterministic source groups without exceeding the normal chunk budget."""
+
+    batches: list[PlannedSummaryBatch] = []
+    current: list[SummaryWorkItem] = []
+    current_chunks = 0
+
+    def flush() -> None:
+        nonlocal current, current_chunks
+        if not current:
+            return
+        batches.append(
+            PlannedSummaryBatch(
+                urls=tuple(item.url for item in current),
+                total_chunk_count=current_chunks,
+            )
+        )
+        current = []
+        current_chunks = 0
+
+    for item in items:
+        if item.chunk_count < 1:
+            raise ValueError("Every summary work item must have at least one chunk.")
+        if item.chunk_count >= _OVERSIZED_SOURCE_CHUNKS:
+            flush()
+            batches.append(
+                PlannedSummaryBatch(
+                    urls=(item.url,),
+                    total_chunk_count=item.chunk_count,
+                    oversized=True,
+                )
+            )
+            continue
+        if current and (
+            len(current) >= _MAX_SOURCES_PER_EXECUTION
+            or current_chunks + item.chunk_count > _MAX_CHUNKS_PER_EXECUTION
+        ):
+            flush()
+        current.append(item)
+        current_chunks += item.chunk_count
+    flush()
+    return batches
 
 
 class EvidenceSummaryService:
@@ -563,8 +631,6 @@ class EvidenceSummaryTemporalBoundary:
 class EvidenceSummaryAutomation:
     """Start summaries only for server-selected, preflighted evidence."""
 
-    _MAX_SOURCES_PER_EXECUTION = 5
-
     def __init__(
         self,
         service: EvidenceSummaryService,
@@ -594,11 +660,11 @@ class EvidenceSummaryAutomation:
             # A graph restart resumes the canonical work set; it must not create duplicate batches.
             return existing
         work_set = await self._execution_store.create_work_set(workspace_id, run_id)
-        for offset in range(0, len(unique_urls), self._MAX_SOURCES_PER_EXECUTION):
+        for batch in await self._plan_relevant_batches(workspace_id, run_id, unique_urls):
             await self.start_for_urls(
                 workspace_id,
                 run_id,
-                unique_urls[offset : offset + self._MAX_SOURCES_PER_EXECUTION],
+                list(batch.urls),
                 continuation,
                 work_set.id,
             )
@@ -659,3 +725,25 @@ class EvidenceSummaryAutomation:
         if scheduled is None:
             raise EvidenceSummaryUnavailable("The summary execution no longer exists.")
         return scheduled
+
+    async def _plan_relevant_batches(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        urls: list[str],
+    ) -> list[PlannedSummaryBatch]:
+        run = await self._research_store.get_run(workspace_id, run_id)
+        if run is None:
+            raise EvidenceSummaryUnavailable("The research run no longer exists.")
+        evidence_by_url = {item.url: item for item in run.evidence}
+        evidence_by_hash = {item.content_hash: item for item in run.evidence}
+        candidate_by_url = {item.url: item for item in getattr(run, "sources", [])}
+        items: list[SummaryWorkItem] = []
+        for url in urls:
+            candidate = candidate_by_url.get(url)
+            evidence = evidence_by_url.get(url)
+            if evidence is None and candidate and candidate.preflight_content_hash:
+                evidence = evidence_by_hash.get(candidate.preflight_content_hash)
+            chunk_count = len(chunk_text(evidence.text)) if evidence is not None else 1
+            items.append(SummaryWorkItem(url=url, chunk_count=chunk_count))
+        return plan_summary_batches(items)

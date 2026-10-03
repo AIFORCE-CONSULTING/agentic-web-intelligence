@@ -882,6 +882,16 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
             }
         )
         if isinstance(resume, dict) and resume.get("outcome") == "failed":
+            if wait_stage == "awaiting_summaries":
+                return {
+                    "stage": "durable_work_failed",
+                    "failure_code": "summary_work_no_usable_summaries",
+                    "failure_explanation": (
+                        "Summary processing completed without any usable source summaries."
+                    ),
+                    "retryable": True,
+                    "failed_stage": state.get("canonical_status", "summarizing"),
+                }
             return {
                 "stage": "durable_work_failed",
                 "failure_code": "durable_work_failed",

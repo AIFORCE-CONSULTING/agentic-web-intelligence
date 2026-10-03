@@ -1351,7 +1351,13 @@ def test_latest_summary_execution_restores_persisted_source_results() -> None:
                         summary="Persisted summary.",
                         keywords=["persisted", "summary"],
                         evidence_sufficient=True,
-                    )
+                    ),
+                    EvidenceSummaryExecutionSource(
+                        url="https://example.com/failed",
+                        status="failed",
+                        failure_reason="The local model could not create a valid summary.",
+                        failure_category="summary_contract_exhausted",
+                    ),
                 ],
             )
 
@@ -1368,6 +1374,10 @@ def test_latest_summary_execution_restores_persisted_source_results() -> None:
     source = response.json()["sources"][0]
     assert source["summary"] == "Persisted summary."
     assert source["keywords"] == ["persisted", "summary"]
+    failed = response.json()["sources"][1]
+    assert failed["status"] == "failed"
+    assert failed["failure_reason"] == "The local model could not create a valid summary."
+    assert failed["failure_category"] == "summary_contract_exhausted"
 
 
 def test_workspace_summary_artifacts_return_one_summary_per_stored_url() -> None:

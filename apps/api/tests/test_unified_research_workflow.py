@@ -141,6 +141,7 @@ def nodes(
     gap_result: ResearchWorkflowState | None = None,
     acquisition: ResearchWorkflowState | None = None,
     relevance: ResearchWorkflowState | None = None,
+    summary: ResearchWorkflowState | None = None,
 ) -> ResearchWorkflowNodes:
     async def assess_coverage(_: ResearchWorkflowState) -> ResearchWorkflowState:
         visited.append("assess_topic_coverage")
@@ -162,7 +163,9 @@ def nodes(
             relevance or {"stage": "relevance_decided"},
         ),
         summarize_evidence=node(
-            "summarize_evidence", visited, {"stage": "summaries_stored"}
+            "summarize_evidence",
+            visited,
+            summary or {"stage": "summaries_stored"},
         ),
         assess_topic_coverage=assess_coverage,
         search_missing_topic=node(
@@ -1216,3 +1219,28 @@ def test_failed_durable_result_routes_to_graph_owned_failure_node() -> None:
     assert result["retryable"] is True
     assert "fail_durable_work" in visited
     assert "evaluate_relevance" not in visited
+
+
+def test_failed_summary_work_reports_no_usable_summaries() -> None:
+    visited: list[str] = []
+    workflow = build_research_workflow(
+        nodes(
+            visited,
+            summary={"stage": "awaiting_summaries"},
+            coverage={"stage": "coverage_complete", "uncovered_topic_ids": []},
+        )
+    ).compile(checkpointer=InMemorySaver())
+    workflow_state = initial_state()
+    config = ResearchCheckpointLifecycle.graph_config(workflow_state["run_id"])
+
+    asyncio.run(workflow.ainvoke(workflow_state, config))
+    result = asyncio.run(workflow.ainvoke(Command(resume={"outcome": "failed"}), config))
+
+    assert result["stage"] == "failed"
+    assert result["failure_code"] == "summary_work_no_usable_summaries"
+    assert result["failure_explanation"] == (
+        "Summary processing completed without any usable source summaries."
+    )
+    assert result["retryable"] is True
+    assert "fail_durable_work" in visited
+    assert "assess_topic_coverage" not in visited

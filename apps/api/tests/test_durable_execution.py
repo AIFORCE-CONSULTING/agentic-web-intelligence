@@ -118,6 +118,39 @@ def test_durable_work_stores_result_before_requesting_graph_continuation(
     assert calls[-1][1] == envelope
 
 
+def test_summary_workflow_uses_completed_work_set_for_continuation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[tuple[str, object]] = []
+
+    async def execute_activity(name: str, argument: object, **_: object) -> str:
+        calls.append((name, argument))
+        if name == "execute_evidence_summary":
+            return "failed"
+        if name == "complete_evidence_summary_work_set":
+            return "completed"
+        return "continued"
+
+    monkeypatch.setattr(
+        "app.evidence_summaries.workflow.workflow.execute_activity",
+        execute_activity,
+    )
+    envelope = continuation_envelope(status="summarizing")
+    request = EvidenceSummaryWorkflowInput(
+        execution_id="operation-1", continuation=envelope
+    )
+
+    result = asyncio.run(EvidenceSummaryWorkflow().run(request))
+
+    assert result == "failed"
+    assert [name for name, _ in calls] == [
+        "execute_evidence_summary",
+        "complete_evidence_summary_work_set",
+        "continue_unified_research",
+    ]
+    assert calls[-1][1] == envelope
+
+
 def test_continuation_resumes_once_and_ignores_duplicate_completion() -> None:
     envelope = continuation_envelope()
     wait = envelope.wait

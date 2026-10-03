@@ -196,7 +196,9 @@ RESEARCH_STATUS_TRANSITIONS: dict[str, frozenset[str]] = {
         "awaiting_review", "evaluating_relevance", "assessing_coverage", "failed"
     }),
     "awaiting_review": frozenset({"evaluating_relevance", "assessing_coverage", "failed"}),
-    "evaluating_relevance": frozenset({"summarizing", "assessing_coverage", "failed"}),
+    "evaluating_relevance": frozenset({
+        "awaiting_review", "summarizing", "assessing_coverage", "failed"
+    }),
     "summarizing": frozenset({"assessing_coverage", "failed"}),
     "assessing_coverage": frozenset({"discovering", "reporting", "failed"}),
     "reporting": frozenset({"completed", "failed"}),

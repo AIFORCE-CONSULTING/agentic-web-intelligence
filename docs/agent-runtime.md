@@ -28,7 +28,8 @@ MCP host rejects calls without that matching stored decision.
 
 RuntimeService does not decide whether evidence is trustworthy or relevant.
 EvidenceTrustService owns model-context eligibility, the human review service
-owns exact-version acceptance, and TopicRelevanceService owns relevance.
+owns exact-version acceptance or rejection, and TopicRelevanceService owns
+relevance.
 
 ## State boundaries
 

@@ -38,6 +38,7 @@ CREATE TABLE IF NOT EXISTS web_evidence_trust_overrides (
     evaluation_id UUID NOT NULL REFERENCES web_evidence_trust_evaluations(id) ON DELETE CASCADE,
     workspace_id UUID NOT NULL REFERENCES workspaces(id) ON DELETE CASCADE,
     actor_user_id UUID NOT NULL REFERENCES platform_users(id) ON DELETE RESTRICT,
+    outcome TEXT NOT NULL DEFAULT 'accepted' CHECK (outcome IN ('accepted', 'rejected')),
     reason TEXT NOT NULL,
     expires_at TIMESTAMPTZ,
     workflow_thread_id TEXT,
@@ -55,6 +56,9 @@ ALTER TABLE web_evidence_trust_overrides
     ADD COLUMN IF NOT EXISTS workflow_status_version INTEGER;
 ALTER TABLE web_evidence_trust_overrides
     ADD COLUMN IF NOT EXISTS workflow_resume_requested_at TIMESTAMPTZ;
+ALTER TABLE web_evidence_trust_overrides
+    ADD COLUMN IF NOT EXISTS outcome TEXT NOT NULL DEFAULT 'accepted'
+    CHECK (outcome IN ('accepted', 'rejected'));
 """
 
 
@@ -111,11 +115,14 @@ class WebTrustStore:
         async with pool.acquire() as connection:
             row = await connection.fetchrow(
                 """SELECT evaluation.*, override.id AS override_id,
+                          override.outcome AS override_outcome,
+                          override.actor_user_id AS override_actor_user_id,
                           override.reason AS override_reason,
-                          override.expires_at AS override_expires_at
+                          override.expires_at AS override_expires_at,
+                          override.created_at AS override_created_at
                    FROM web_evidence_trust_evaluations AS evaluation
                    LEFT JOIN LATERAL (
-                       SELECT id, reason, expires_at
+                       SELECT id, outcome, actor_user_id, reason, expires_at, created_at
                        FROM web_evidence_trust_overrides
                        WHERE evaluation_id = evaluation.id
                          AND (expires_at IS NULL OR expires_at > now())
@@ -168,8 +175,11 @@ class WebTrustStore:
             rows = await connection.fetch(
                 """SELECT DISTINCT ON (candidate.url, candidate.preflight_content_hash)
                           evaluation.*, override.id AS override_id,
+                          override.outcome AS override_outcome,
+                          override.actor_user_id AS override_actor_user_id,
                           override.reason AS override_reason,
-                          override.expires_at AS override_expires_at
+                          override.expires_at AS override_expires_at,
+                          override.created_at AS override_created_at
                    FROM research_sources AS candidate
                    JOIN LATERAL (
                        SELECT * FROM web_evidence_trust_evaluations
@@ -179,7 +189,7 @@ class WebTrustStore:
                        ORDER BY created_at DESC LIMIT 1
                    ) AS evaluation ON TRUE
                    LEFT JOIN LATERAL (
-                       SELECT id, reason, expires_at
+                       SELECT id, outcome, actor_user_id, reason, expires_at, created_at
                        FROM web_evidence_trust_overrides
                        WHERE evaluation_id = evaluation.id
                          AND (expires_at IS NULL OR expires_at > now())
@@ -209,9 +219,49 @@ class WebTrustStore:
         async with pool.acquire() as connection:
             await connection.execute(
                 """INSERT INTO web_evidence_trust_overrides
-                   (id, evaluation_id, workspace_id, actor_user_id, reason, expires_at)
-                   VALUES ($1, $2, $3, $4, $5, $6)""",
+                   (id, evaluation_id, workspace_id, actor_user_id, outcome, reason, expires_at)
+                   SELECT $1, $2, $3, $4, 'accepted', $5, $6
+                   WHERE NOT EXISTS (
+                       SELECT 1
+                       FROM web_evidence_trust_overrides AS existing
+                       WHERE existing.evaluation_id = $2
+                         AND (
+                             existing.expires_at IS NULL
+                             OR existing.expires_at > now()
+                         )
+                   )""",
                 uuid4(), evaluation.id, workspace_id, actor_user_id, reason, expires_at,
+            )
+        return await self.latest_evaluation(workspace_id, run_id, source_url, content_hash)
+
+    async def reject_evaluation(
+        self,
+        workspace_id: UUID,
+        run_id: UUID,
+        source_url: str,
+        content_hash: str,
+        actor_user_id: UUID,
+        reason: str | None,
+    ) -> EvidenceTrustEvaluation | None:
+        evaluation = await self.latest_evaluation(workspace_id, run_id, source_url, content_hash)
+        if evaluation is None:
+            return None
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            await connection.execute(
+                """INSERT INTO web_evidence_trust_overrides
+                   (id, evaluation_id, workspace_id, actor_user_id, outcome, reason)
+                   SELECT $1, $2, $3, $4, 'rejected', $5
+                   WHERE NOT EXISTS (
+                       SELECT 1
+                       FROM web_evidence_trust_overrides AS existing
+                       WHERE existing.evaluation_id = $2
+                         AND (
+                             existing.expires_at IS NULL
+                             OR existing.expires_at > now()
+                         )
+                   )""",
+                uuid4(), evaluation.id, workspace_id, actor_user_id, reason or "",
             )
         return await self.latest_evaluation(workspace_id, run_id, source_url, content_hash)
 
@@ -224,7 +274,7 @@ class WebTrustStore:
         thread_id: str,
         status_version: int,
     ) -> bool:
-        """Link one exact human acceptance to its trusted graph-resume request."""
+        """Link one exact human review decision to its trusted graph-resume request."""
 
         pool = await self._connection_pool()
         async with pool.acquire() as connection:
@@ -261,15 +311,26 @@ class WebTrustStore:
         if isinstance(raw_outcomes, str):
             raw_outcomes = json.loads(raw_outcomes)
         override_id = values.pop("override_id", None)
+        override_outcome = values.pop("override_outcome", None)
+        override_actor_user_id = values.pop("override_actor_user_id", None)
         override_reason = values.pop("override_reason", None)
         override_expires_at = values.pop("override_expires_at", None)
+        override_created_at = values.pop("override_created_at", None)
         base_disposition = values.pop("disposition")
+        effective_disposition = (
+            "eligible"
+            if override_id is not None and override_outcome == "accepted"
+            else base_disposition
+        )
         return EvidenceTrustEvaluation(
             **values,
-            disposition="eligible" if override_id is not None else base_disposition,
+            disposition=effective_disposition,
             base_disposition=base_disposition,
             rule_outcomes=[TrustRuleOutcome(**item) for item in raw_outcomes],
             override_id=override_id,
-            override_reason=override_reason,
+            override_outcome=override_outcome,
+            override_actor_user_id=override_actor_user_id,
+            override_reason=override_reason or None,
             override_expires_at=override_expires_at,
+            override_created_at=override_created_at,
         )

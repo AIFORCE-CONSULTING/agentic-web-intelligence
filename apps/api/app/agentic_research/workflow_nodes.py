@@ -304,6 +304,11 @@ def topic_relevance_node(
             if source.preflight_status == "review_required" and (
                 evaluation is None or evaluation.disposition != "eligible"
             ):
+                if (
+                    evaluation is not None
+                    and getattr(evaluation, "override_outcome", None) == "rejected"
+                ):
+                    continue
                 review_required.append(
                     {
                         "source_url": evidence_url,

@@ -26,7 +26,10 @@ type EvidenceTrustEvaluation = {
   disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
   base_disposition: "eligible" | "eligible_with_notice" | "review_required" | "blocked";
   rule_outcomes: TrustRuleOutcome[]; component_version: string; created_at: string;
+  override_outcome?: "accepted" | "rejected" | null;
+  override_actor_user_id?: string | null;
   override_reason?: string | null; override_expires_at?: string | null;
+  override_created_at?: string | null;
 };
 type TrustRuleOutcome = {
   rule: string; outcome: "passed" | "notice" | "review_required" | "blocked"; detail: string;
@@ -736,6 +739,7 @@ export function App() {
       `/v1/research/runs/${runId}/evidence-trust`,
     );
     setTrustEvaluations(response.evaluations);
+    return response.evaluations;
   }
 
   async function loadTrustPolicy() {
@@ -788,6 +792,49 @@ export function App() {
       closeEvidenceReview();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to accept the evidence.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function rejectEvidenceForReview() {
+    if (!run || !reviewForm) return;
+    if (!window.confirm("Reject this exact captured evidence version and continue without it?")) return;
+    setBusy(true);
+    setError(null);
+    try {
+      await apiRequest<EvidenceTrustEvaluation>(
+        `/v1/research/runs/${run.id}/evidence-trust/reject`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            source_url: reviewForm.evidence.url,
+            content_hash: reviewForm.evidence.content_hash,
+            ...(reviewReason.trim() ? { reason: reviewReason.trim() } : {}),
+          }),
+        },
+      );
+      await refreshTrustEvaluations(run.id);
+      await loadSummaryBatch(run.id);
+      closeEvidenceReview();
+    } catch (reason) {
+      const message = reason instanceof Error ? reason.message : "Unable to reject the evidence.";
+      try {
+        const evaluations = await refreshTrustEvaluations(run.id);
+        await loadSummaryBatch(run.id);
+        const updated = evaluations.find((candidate) =>
+          candidate.source_url === reviewForm.evidence.url
+          && candidate.content_hash === reviewForm.evidence.content_hash
+        );
+        if (updated?.override_outcome === "rejected") {
+          closeEvidenceReview();
+          return;
+        }
+      } catch {
+        // Preserve the original reject error when the follow-up refresh also fails.
+      }
+      setError(message);
     } finally {
       setBusy(false);
     }
@@ -876,6 +923,12 @@ export function App() {
               const evidence = run.evidence.find((item) => item.content_hash === source.preflight_content_hash && (item.requested_url === source.url || item.url === source.preflight_final_url || item.url === source.url));
               const evaluation = evidence && trustEvaluations.find((candidate) => candidate.source_url === evidence.url && candidate.content_hash === evidence.content_hash);
               if (!evidence || evaluation?.disposition !== "review_required") return null;
+              if (evaluation.override_outcome === "rejected") {
+                return <div className="candidate-review">
+                  <span className="badge danger">Rejected after review</span>
+                  {evaluation.override_reason && <small>{evaluation.override_reason}</small>}
+                </div>;
+              }
               const reviewing = reviewForm?.evidence.url === evidence.url
                 && reviewForm.evidence.content_hash === evidence.content_hash;
               return <div className="candidate-review">
@@ -895,7 +948,7 @@ export function App() {
                   <details className="review-evidence"><summary>Captured evidence</summary><pre>{evidence.text}</pre></details>
                   <label>Acceptance reason<textarea value={reviewReason} onChange={(event) => setReviewReason(event.target.value)} minLength={3} maxLength={500} required /></label>
                   <label>Acceptance expiry <span className="field-note">Optional. Leave blank for no expiry.</span><input type="datetime-local" value={reviewExpiresAt} onChange={(event) => setReviewExpiresAt(event.target.value)} /></label>
-                  <div className="review-actions"><button type="submit" disabled={busy || !reviewReason.trim()}>Accept evidence and start summary</button><button type="button" className="secondary" onClick={closeEvidenceReview} disabled={busy}>Cancel</button></div>
+                  <div className="review-actions"><button type="submit" disabled={busy || !reviewReason.trim()}>Accept evidence and start summary</button><button type="button" className="danger" onClick={() => void rejectEvidenceForReview()} disabled={busy}>Reject evidence</button><button type="button" className="secondary" onClick={closeEvidenceReview} disabled={busy}>Cancel</button></div>
                 </form>}
               </div>;
             })()}</li>

@@ -40,19 +40,24 @@ that endpoint neither changes policy nor re-evaluates evidence.
 - `eligible` evidence may enter the local-model context.
 - `review_required` evidence remains visible in the operator interface but is
   excluded from summaries and keywords until a human operator accepts that exact
-  content hash with a recorded reason.
+  content hash with a recorded reason. A human operator may also reject that
+  exact evidence version; rejection keeps the evidence and policy record visible
+  but continues the research workflow without using that source.
 - `blocked` evidence remains retained for audit but cannot enter automated
   model context. A human acceptance cannot override a blocked result.
 
 Operators can inspect a run's latest evaluations at
 `GET /v1/research/runs/{run_id}/evidence-trust`. The operator UI provides an
 inline review panel with the captured evidence, retrieval details, policy
-version, and rule outcomes before acceptance. A human operator can accept a
+version, and rule outcomes before a decision. A human operator can accept a
 `review_required` result through
 `POST /v1/research/runs/{run_id}/evidence-trust/accept`; the acceptance records
 the operator, reason, exact evidence version, and optional future expiry
-separately from the summary execution mechanism. A blocked result cannot be
-accepted.
+separately from the summary execution mechanism. The operator can reject the
+same exact evidence version through
+`POST /v1/research/runs/{run_id}/evidence-trust/reject`; rejection may include
+an optional note, keeps the evidence excluded, and lets the run continue. A
+blocked result cannot be accepted or rejected through this review workflow.
 
 ## Boundary
 
@@ -138,7 +143,9 @@ Evidence summaries start from a persisted research run:
    `review_required`, `blocked`, and `unreachable`
    candidates remain visible with their reasons but do not enter model context.
 4. An authorized operator may accept a specific `review_required` evidence
-   version with a reason; the platform then automatically summarizes it.
+   version with a reason; the platform then automatically summarizes it. The
+   operator may instead reject the specific evidence version without entering a
+   reason, and the platform continues without using that source.
 5. Inspect generated summaries through the workspace keyword view. Each keyword
    groups every stored source summary that uses it, and a source link opens the
    newest stored summary for that URL without navigating to the external page.

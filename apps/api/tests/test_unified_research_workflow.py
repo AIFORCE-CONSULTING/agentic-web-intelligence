@@ -29,8 +29,10 @@ from app.agent_runtime.research_workflow import (
 )
 from app.agentic_research.contracts import ResearchTopic, TopicSourceAssociation
 from app.agentic_research.topic_planning import TopicPlanningUnavailable
+from app.agentic_research.workflow_nodes import topic_relevance_node
 from app.durable_execution.contracts import UNIFIED_RESEARCH_WORKFLOW_VERSION
-from app.web_research.contracts import ResearchRun
+from app.web_research.contracts import ResearchRun, SourceCandidate
+from app.web_trust.contracts import EvidenceTrustEvaluation, TrustRuleOutcome
 
 
 class FakeCleanupStore:
@@ -735,6 +737,63 @@ def test_workflow_entry_resumes_exact_waiting_review_thread() -> None:
     assert resumed == run
     assert len(graph_calls) == 1
     assert graph_calls[0][1] == ResearchCheckpointLifecycle.graph_config(run_id)
+    assert graph_calls[0][0].resume == {
+        "source_url": "https://example.com/review",
+        "content_hash": "sha256:review",
+        "outcome": "accepted",
+    }
+
+
+def test_workflow_entry_resumes_rejected_review_decision() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="awaiting_review",
+        status_version=4,
+        created_at=now,
+        updated_at=now,
+    )
+    graph_calls: list[tuple[object, object]] = []
+
+    class Store:
+        async def get_run(self, *_):
+            return run
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+    class Graph:
+        async def ainvoke(self, command, config):
+            graph_calls.append((command, config))
+
+    async def temporal_ready() -> bool:
+        return True
+
+    resumed = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), object(), Checkpoints(), Graph(), temporal_ready
+        ).resume_after_review(
+            workspace_id,
+            run_id,
+            "https://example.com/review",
+            "sha256:review",
+            "rejected",
+        )
+    )
+
+    assert resumed == run
+    assert len(graph_calls) == 1
+    assert graph_calls[0][0].resume == {
+        "source_url": "https://example.com/review",
+        "content_hash": "sha256:review",
+        "outcome": "rejected",
+    }
 
 
 def test_canonical_node_uses_database_status_instead_of_checkpoint_status() -> None:
@@ -1007,6 +1066,112 @@ def test_review_required_evidence_stops_before_report_generation() -> None:
 
     assert resumed["stage"] == "completed"
     assert relevance_calls == 2
+
+
+def test_rejected_review_source_does_not_clear_unresolved_review_sources() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="evaluating_relevance",
+        status_version=4,
+        created_at=now,
+        updated_at=now,
+        sources=[
+            SourceCandidate(
+                rank=1,
+                title="Rejected",
+                url="https://example.com/rejected",
+                snippet="",
+                preflight_status="review_required",
+                preflight_content_hash="sha256:rejected",
+            ),
+            SourceCandidate(
+                rank=2,
+                title="Still waiting",
+                url="https://example.com/waiting",
+                snippet="",
+                preflight_status="review_required",
+                preflight_content_hash="sha256:waiting",
+            ),
+        ],
+    )
+
+    class ResearchStore:
+        async def get_run(self, *_: object) -> ResearchRun:
+            return run
+
+    class AgenticStore:
+        async def list_discovered_sources(self, *_: object) -> list[TopicSourceAssociation]:
+            return [
+                TopicSourceAssociation(
+                    topic_id="agent-identity",
+                    source_url="https://example.com/rejected",
+                    result_rank=1,
+                ),
+                TopicSourceAssociation(
+                    topic_id="agent-identity",
+                    source_url="https://example.com/waiting",
+                    result_rank=2,
+                ),
+            ]
+
+    class TrustService:
+        async def list_for_run(self, *_: object) -> list[EvidenceTrustEvaluation]:
+            return [
+                EvidenceTrustEvaluation(
+                    id=uuid4(),
+                    run_id=run_id,
+                    source_url="https://example.com/rejected",
+                    content_hash="sha256:rejected",
+                    policy_version="local-default-v2",
+                    disposition="review_required",
+                    base_disposition="review_required",
+                    rule_outcomes=[
+                        TrustRuleOutcome(
+                            rule="content_type",
+                            outcome="review_required",
+                            detail="Review.",
+                        )
+                    ],
+                    component_version="web-trust-v2",
+                    created_at=now,
+                    override_id=uuid4(),
+                    override_outcome="rejected",
+                    override_actor_user_id=uuid4(),
+                    override_created_at=now,
+                )
+            ]
+
+    class RelevanceService:
+        called = False
+
+        async def evaluate(self, *_: object) -> object:
+            self.called = True
+            return SimpleNamespace(decision="relevant")
+
+    relevance = RelevanceService()
+    state = initial_state()
+    state["workspace_id"] = workspace_id
+    state["run_id"] = run_id
+    result = asyncio.run(
+        topic_relevance_node(
+            ResearchStore(),
+            AgenticStore(),
+            relevance,
+            TrustService(),
+        )(state)
+    )
+
+    assert result["stage"] == "awaiting_review"
+    assert result["review_required_sources"] == [
+        {
+            "source_url": "https://example.com/waiting",
+            "content_hash": "sha256:waiting",
+        }
+    ]
+    assert relevance.called is False
 
 
 def test_durable_interrupt_resumes_same_checkpointed_thread() -> None:

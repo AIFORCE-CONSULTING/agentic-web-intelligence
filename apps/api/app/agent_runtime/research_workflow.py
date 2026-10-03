@@ -77,6 +77,7 @@ class ResearchWorkflowEntry(Protocol):
         research_run_id: UUID,
         source_url: str,
         content_hash: str,
+        outcome: Literal["accepted", "rejected"] = "accepted",
     ) -> ResearchRun: ...
 
 
@@ -278,8 +279,9 @@ class UnifiedResearchWorkflowEntry:
         research_run_id: UUID,
         source_url: str,
         content_hash: str,
+        outcome: Literal["accepted", "rejected"] = "accepted",
     ) -> ResearchRun:
-        """Resume the stored review interrupt after an exact acceptance exists."""
+        """Resume the stored review interrupt after an exact human decision exists."""
 
         checkpoint_status = await self._checkpoints.readiness()
         if not checkpoint_status.ready:
@@ -294,7 +296,7 @@ class UnifiedResearchWorkflowEntry:
         await self._graph.ainvoke(
             Command(
                 resume={
-                    "outcome": "accepted",
+                    "outcome": outcome,
                     "source_url": source_url,
                     "content_hash": content_hash,
                 }
@@ -855,7 +857,10 @@ def build_research_workflow(nodes: ResearchWorkflowNodes) -> StateGraph:
                 "evidence_versions": state.get("review_required_sources", []),
             }
         )
-        if not isinstance(resume, dict) or resume.get("outcome") != "accepted":
+        if (
+            not isinstance(resume, dict)
+            or resume.get("outcome") not in {"accepted", "rejected"}
+        ):
             raise ResearchWorkflowUnavailable(
                 "The human-review continuation outcome is invalid."
             )

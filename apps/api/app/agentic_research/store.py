@@ -243,10 +243,11 @@ SELECT topic.id AS topic_record_id,
            SELECT latest_evaluation.id
            FROM (
                SELECT evaluation.id, evaluation.disposition,
-                      active_override.id AS override_id
+                      active_override.id AS override_id,
+                      active_override.outcome AS override_outcome
                FROM web_evidence_trust_evaluations AS evaluation
                LEFT JOIN LATERAL (
-                   SELECT override.id
+                   SELECT override.id, override.outcome
                    FROM web_evidence_trust_overrides AS override
                    WHERE override.evaluation_id = evaluation.id
                      AND (override.expires_at IS NULL OR override.expires_at > now())
@@ -262,6 +263,7 @@ SELECT topic.id AS topic_record_id,
               OR (
                   latest_evaluation.disposition = 'review_required'
                   AND latest_evaluation.override_id IS NOT NULL
+                  AND latest_evaluation.override_outcome = 'accepted'
               )
        ) AS trust_evaluation_id,
        (
@@ -480,6 +482,7 @@ class AgenticResearchStore:
                          FROM web_evidence_trust_evaluations AS evaluation
                          LEFT JOIN web_evidence_trust_overrides AS active_override
                            ON active_override.evaluation_id = evaluation.id
+                          AND active_override.outcome = 'accepted'
                           AND (
                               active_override.expires_at IS NULL
                               OR active_override.expires_at > now()
@@ -845,10 +848,11 @@ class AgenticResearchStore:
                    ) AS evidence ON TRUE
                    JOIN LATERAL (
                        SELECT evaluation.disposition,
-                              active_override.id AS override_id
+                              active_override.id AS override_id,
+                              active_override.outcome AS override_outcome
                        FROM web_evidence_trust_evaluations AS evaluation
                        LEFT JOIN LATERAL (
-                           SELECT override.id
+                           SELECT override.id, override.outcome
                            FROM web_evidence_trust_overrides AS override
                            WHERE override.evaluation_id = evaluation.id
                              AND (
@@ -868,6 +872,7 @@ class AgenticResearchStore:
                        OR (
                            trust.disposition = 'review_required'
                            AND trust.override_id IS NOT NULL
+                           AND trust.override_outcome = 'accepted'
                        )
                    )
                    WHERE topic.workspace_id = $1 AND topic.run_id = $2
@@ -964,6 +969,7 @@ class AgenticResearchStore:
                         FROM web_evidence_trust_evaluations AS effective_evaluation
                         LEFT JOIN web_evidence_trust_overrides AS active_override
                           ON active_override.evaluation_id = effective_evaluation.id
+                         AND active_override.outcome = 'accepted'
                          AND (
                              active_override.expires_at IS NULL
                              OR active_override.expires_at > now()

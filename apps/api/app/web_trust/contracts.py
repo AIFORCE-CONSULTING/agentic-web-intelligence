@@ -7,6 +7,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 TrustDisposition = Literal["eligible", "eligible_with_notice", "review_required", "blocked"]
+HumanReviewOutcome = Literal["accepted", "rejected"]
 
 
 class EffectiveWebTrustPolicy(BaseModel):
@@ -47,8 +48,11 @@ class EvidenceTrustEvaluation(BaseModel):
     component_version: str
     created_at: datetime
     override_id: UUID | None = None
+    override_outcome: HumanReviewOutcome | None = None
+    override_actor_user_id: UUID | None = None
     override_reason: str | None = None
     override_expires_at: datetime | None = None
+    override_created_at: datetime | None = None
 
 
 class EvidenceTrustEvaluationList(BaseModel):
@@ -66,3 +70,13 @@ class CreateEvidenceTrustOverrideRequest(BaseModel):
     content_hash: str = Field(min_length=8, max_length=256)
     reason: str = Field(min_length=3, max_length=500)
     expires_at: datetime | None = None
+
+
+class CreateEvidenceTrustRejectionRequest(BaseModel):
+    """A human rejection for one exact captured evidence version."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    source_url: str = Field(min_length=1, max_length=2_048)
+    content_hash: str = Field(min_length=8, max_length=256)
+    reason: str | None = Field(default=None, max_length=500)

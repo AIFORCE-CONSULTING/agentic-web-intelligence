@@ -78,16 +78,20 @@ The evaluator produces one of four dispositions:
 - `eligible_with_notice`: may be used with its configured limitation visible to
   the operator and attached to citations or derived output as appropriate.
 - `review_required`: remains preserved and viewable, but is excluded from
-  automated model context unless an authorized person accepts it.
+  automated model context unless an authorized person accepts it. An authorized
+  person may also reject the exact evidence version, which keeps it preserved
+  and viewable while confirming it must remain excluded.
 - `blocked`: remains preserved for audit but cannot enter automated model
   context or derivative evidence generation.
 
-An authorized human may accept or override an outcome only through a separate,
-persisted authorization record. That record contains the actor, reason, scope,
-and expiry when applicable. Eligibility enforcement consults this record
-independently of UI state and independently of whether work ran directly or
-durably. Acceptance of `review_required` evidence automatically initiates its
-summary through the same server-owned route policy.
+An authorized human may accept or reject a `review_required` outcome only
+through a separate, persisted authorization record. That record contains the
+actor, outcome, scope, reason when applicable, and expiry when applicable.
+Eligibility enforcement consults this record independently of UI state and
+independently of whether work ran directly or durably. Acceptance of
+`review_required` evidence automatically initiates its summary through the same
+server-owned route policy. Rejection resumes the workflow without that source
+and never converts the evidence into model-eligible context.
 
 ### Direct and durable execution
 

@@ -226,13 +226,14 @@ path.
 
 ### Human decisions
 
-Human evidence acceptance remains separate from agent reasoning and execution.
-An authorized operator may accept one `review_required` evidence version through
-the existing review workflow. The platform records the operator identity,
-reason, evidence-version scope, and optional expiry, and enforces that decision
+Human evidence review remains separate from agent reasoning and execution. An
+authorized operator may accept or reject one `review_required` evidence version
+through the existing review workflow. The platform records the operator
+identity, decision outcome, evidence-version scope, optional rejection note,
+acceptance reason, and optional acceptance expiry, and enforces that decision
 whenever the evidence is considered for model context.
 
-The agent cannot request or manufacture a human acceptance. Login, paywall,
+The agent cannot request or manufacture a human review decision. Login, paywall,
 credential, purchase, upload, download, external-write, and ambiguous browser
 interactions remain outside the initial research capability set.
 

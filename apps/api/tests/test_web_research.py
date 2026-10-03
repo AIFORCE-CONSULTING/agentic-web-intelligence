@@ -130,7 +130,7 @@ def test_research_status_contract_has_one_complete_guarded_transition_table() ->
             {"evaluating_relevance", "assessing_coverage", "failed"}
         ),
         "evaluating_relevance": frozenset(
-            {"summarizing", "assessing_coverage", "failed"}
+            {"awaiting_review", "summarizing", "assessing_coverage", "failed"}
         ),
         "summarizing": frozenset({"assessing_coverage", "failed"}),
         "assessing_coverage": frozenset({"discovering", "reporting", "failed"}),

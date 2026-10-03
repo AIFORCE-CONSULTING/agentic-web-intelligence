@@ -82,7 +82,8 @@ The local model supports bounded planning, relevance, summarization, keyword,
 missing-topic, and reporting decisions. Its output remains untrusted until the
 owning service validates it. Blocked or review-required evidence never enters
 automated model context unless an authorized human acceptance exists for that
-exact review-required evidence version.
+exact review-required evidence version. An authorized human rejection keeps the
+exact evidence version excluded and lets the workflow continue without it.
 
 ## Durable continuation path
 
@@ -119,7 +120,7 @@ second workflow path is not started.
 | `research_runs.status` | Unified graph through `ResearchStore` | UI, RuntimeService, APIs | Official operator-facing workflow status |
 | Runtime assignments and decisions | RuntimeService through `RuntimeStore` | Graph, MCP host, Admin view | Who may do what, why, and under which policy version |
 | Topics, relevance, coverage, reports | Unified graph through `AgenticResearchStore` | Graph, APIs, UI | Validated research artifacts |
-| Trust evaluations and human acceptance | Trust and review services through `WebTrustStore` | Graph, summary service, UI | Whether evidence may enter model context |
+| Trust evaluations and human review decisions | Trust and review services through `WebTrustStore` | Graph, summary service, UI | Whether evidence may enter model context |
 | Summary executions and artifacts | EvidenceSummaryService through `EvidenceSummaryStore` | Graph, APIs, UI | Summary work and validated outputs |
 | LangGraph checkpoint | LangGraph checkpointer only | LangGraph | Temporary execution bookmark, never business truth |
 | Temporal history | Temporal only | Worker and operational tools | Durable execution tracking, never business truth |

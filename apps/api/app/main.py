@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import asynccontextmanager
 from typing import Literal
+from uuid import UUID
 
 import httpx
 from fastapi import FastAPI, HTTPException, Query, Request, Response
@@ -124,6 +125,7 @@ from app.web_research.store import ResearchStore
 from app.web_research.workflow import run_extract_workflow, run_search_workflow
 from app.web_trust.contracts import (
     CreateEvidenceTrustOverrideRequest,
+    CreateEvidenceTrustRejectionRequest,
     EffectiveWebTrustPolicy,
     EvidenceTrustEvaluation,
     EvidenceTrustEvaluationList,
@@ -1248,6 +1250,52 @@ def create_app() -> FastAPI:
         except WebTrustStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 
+    async def resume_research_after_evidence_review(
+        http_request: Request,
+        identity: AuthenticatedUser,
+        run_id: UUID,
+        source_url: str,
+        content_hash: str,
+        outcome: str,
+    ) -> None:
+        service: EvidenceTrustService = http_request.app.state.web_trust_service
+        entry: UnifiedResearchWorkflowEntry | None = (
+            http_request.app.state.research_workflow_entry
+        )
+        if entry is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            run = await http_request.app.state.research_store.get_run(
+                identity.workspace_id, run_id
+            )
+            if run is None:
+                raise HTTPException(status_code=404, detail="Research run was not found.")
+            await service.record_workflow_resume(
+                identity.workspace_id,
+                run_id,
+                source_url,
+                content_hash,
+                run.status_version,
+            )
+            await entry.resume_after_review(
+                identity.workspace_id,
+                run_id,
+                source_url,
+                content_hash,
+                outcome,
+            )
+        except (
+            ResearchStoreUnavailable,
+            WebTrustStoreUnavailable,
+            ResearchWorkflowUnavailable,
+        ) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        except (ResearchWorkflowConflict, ValueError) as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
+
     @app.post(
         "/v1/research/runs/{run_id}/evidence-trust/accept",
         response_model=EvidenceTrustEvaluation,
@@ -1286,41 +1334,61 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=409, detail=str(error)) from error
         if evaluation is None:
             raise HTTPException(status_code=404, detail="Evidence trust evaluation was not found.")
-        entry: UnifiedResearchWorkflowEntry | None = (
-            http_request.app.state.research_workflow_entry
+        await resume_research_after_evidence_review(
+            http_request,
+            identity,
+            parsed_run_id,
+            request.source_url,
+            request.content_hash,
+            evaluation.override_outcome or "accepted",
         )
-        if entry is None:
-            raise HTTPException(
-                status_code=503,
-                detail="The governed research workflow is unavailable.",
-            )
+        return evaluation
+
+    @app.post(
+        "/v1/research/runs/{run_id}/evidence-trust/reject",
+        response_model=EvidenceTrustEvaluation,
+        tags=["research"],
+    )
+    async def reject_evidence_trust_evaluation(
+        run_id: str,
+        request: CreateEvidenceTrustRejectionRequest,
+        http_request: Request,
+    ) -> EvidenceTrustEvaluation:
+        """Record a human rejection for one exact evidence version."""
+
+        from uuid import UUID
+
+        identity = await require_workspace_permission(http_request, "research.write")
+        if not isinstance(identity, AuthenticatedUser):
+            raise HTTPException(status_code=403, detail="A human operator is required.")
         try:
-            run = await http_request.app.state.research_store.get_run(
-                identity.workspace_id, parsed_run_id
-            )
-            if run is None:
-                raise HTTPException(status_code=404, detail="Research run was not found.")
-            await service.record_workflow_resume(
+            parsed_run_id = UUID(run_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
+        service: EvidenceTrustService = http_request.app.state.web_trust_service
+        try:
+            evaluation = await service.reject(
                 identity.workspace_id,
                 parsed_run_id,
                 request.source_url,
                 request.content_hash,
-                run.status_version,
+                identity.id,
+                request.reason,
             )
-            await entry.resume_after_review(
-                identity.workspace_id,
-                parsed_run_id,
-                request.source_url,
-                request.content_hash,
-            )
-        except (
-            ResearchStoreUnavailable,
-            WebTrustStoreUnavailable,
-            ResearchWorkflowUnavailable,
-        ) as error:
+        except WebTrustStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
-        except (ResearchWorkflowConflict, ValueError) as error:
+        except ValueError as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
+        if evaluation is None:
+            raise HTTPException(status_code=404, detail="Evidence trust evaluation was not found.")
+        await resume_research_after_evidence_review(
+            http_request,
+            identity,
+            parsed_run_id,
+            request.source_url,
+            request.content_hash,
+            evaluation.override_outcome or "rejected",
+        )
         return evaluation
 
     @app.get("/v1/research/runs", response_model=ResearchRunList, tags=["research"])

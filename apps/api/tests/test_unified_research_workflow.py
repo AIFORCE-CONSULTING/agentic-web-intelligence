@@ -322,8 +322,46 @@ def test_checkpoint_cleanup_failure_is_audited_and_keeps_degraded_readiness() ->
     readiness = asyncio.run(lifecycle.readiness())
 
     assert store.records[0][0:2] == (run_id, "failed")
-    assert readiness.ready is False
+    assert readiness.ready is True
     assert readiness.backlog == 1
+    assert "maintenance" in readiness.detail
+    assert "does not delete completed research outputs" in readiness.detail
+
+
+def test_checkpoint_cleanup_backlog_stays_start_eligible() -> None:
+    lifecycle = ResearchCheckpointLifecycle(
+        None,
+        FakeCleanupStore(backlog=2),
+        saver_context_factory=lambda: FakeSaverContext(FakeSaver()),
+    )
+
+    asyncio.run(lifecycle.start())
+    readiness = asyncio.run(lifecycle.readiness())
+
+    assert readiness.ready is True
+    assert readiness.backlog == 2
+    assert "execution bookmarks only" in readiness.detail
+
+
+def test_checkpoint_cleanup_retry_can_succeed_after_prior_failure() -> None:
+    run_id = uuid4()
+    store = FakeCleanupStore([run_id], backlog=0)
+    saver = FakeSaver()
+    saver.delete_failures.add(str(run_id))
+    lifecycle = ResearchCheckpointLifecycle(
+        None,
+        store,
+        saver_context_factory=lambda: FakeSaverContext(saver),
+    )
+
+    asyncio.run(lifecycle.start())
+    saver.delete_failures.clear()
+    remaining = asyncio.run(lifecycle.retry_completed_cleanup(limit=100))
+
+    assert remaining == 0
+    assert store.requested_limits == [100, 100]
+    assert [record[1] for record in store.records] == ["failed", "succeeded"]
+    assert saver.deleted == [str(run_id)]
 
 
 def test_obsolete_checkpoint_cleanup_uses_official_thread_deletion_once() -> None:
@@ -463,6 +501,133 @@ def test_workflow_entry_does_not_restart_completed_research() -> None:
 
     assert persisted.status == "completed"
     assert created is False
+
+
+def test_workflow_entry_cleans_checkpoints_after_completed_graph_return() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="planning",
+        status_version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    outputs = {
+        "summary": "Stored source summary",
+        "keywords": ["agentic web"],
+        "report": "Stored final report",
+        "trust": "eligible",
+        "audit": "completed",
+    }
+    graph_calls = 0
+    cleanup_calls: list[Any] = []
+
+    class Store:
+        async def get_or_create_run(self, *_):
+            return current, False
+
+        async def get_run(self, *_):
+            return current
+
+    class Runtime:
+        async def ensure_research_assignment(self, *_):
+            return None
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+        async def delete_thread(self, requested_run_id):
+            cleanup_calls.append((requested_run_id, dict(outputs)))
+            return True
+
+    class Graph:
+        async def ainvoke(self, *_):
+            nonlocal current, graph_calls
+            graph_calls += 1
+            current = current.model_copy(
+                update={"status": "completed", "status_version": 2}
+            )
+
+    async def temporal_ready() -> bool:
+        return True
+
+    persisted, _created = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+        ).start_or_resume(workspace_id, "agent identity", 20)
+    )
+
+    assert persisted.status == "completed"
+    assert graph_calls == 1
+    assert cleanup_calls == [(run_id, outputs)]
+    assert outputs == {
+        "summary": "Stored source summary",
+        "keywords": ["agentic web"],
+        "report": "Stored final report",
+        "trust": "eligible",
+        "audit": "completed",
+    }
+
+
+def test_workflow_entry_keeps_completion_when_checkpoint_cleanup_fails() -> None:
+    workspace_id, run_id = uuid4(), uuid4()
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=run_id,
+        question="agent identity",
+        status="planning",
+        status_version=1,
+        created_at=now,
+        updated_at=now,
+    )
+    cleanup_calls: list[Any] = []
+
+    class Store:
+        async def get_or_create_run(self, *_):
+            return current, False
+
+        async def get_run(self, *_):
+            return current
+
+    class Runtime:
+        async def ensure_research_assignment(self, *_):
+            return None
+
+    class Checkpoints:
+        async def readiness(self):
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id):
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+        async def delete_thread(self, requested_run_id):
+            cleanup_calls.append(requested_run_id)
+            return False
+
+    class Graph:
+        async def ainvoke(self, *_):
+            nonlocal current
+            current = current.model_copy(
+                update={"status": "completed", "status_version": 2}
+            )
+
+    async def temporal_ready() -> bool:
+        return True
+
+    persisted, _created = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+        ).start_or_resume(workspace_id, "agent identity", 20)
+    )
+
+    assert persisted.status == "completed"
+    assert cleanup_calls == [run_id]
 
 
 def test_workflow_entry_retries_from_stored_failed_stage() -> None:

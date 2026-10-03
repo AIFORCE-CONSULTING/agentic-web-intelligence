@@ -148,7 +148,7 @@ class DependencyHealth(BaseModel):
     """A safe, operator-facing status for one platform dependency."""
 
     name: str
-    status: Literal["ready", "unavailable", "unconfigured"]
+    status: Literal["ready", "degraded", "unavailable", "unconfigured"]
     detail: str
 
 
@@ -936,13 +936,12 @@ def create_app() -> FastAPI:
 
         async def checkpoint_health() -> DependencyHealth:
             status = await http_request.app.state.research_checkpoint_lifecycle.readiness()
+            checkpoint_status = "ready" if status.ready else "unavailable"
+            if status.ready and status.backlog:
+                checkpoint_status = "degraded"
             return DependencyHealth(
                 name="Research workflow checkpoints",
-                status=(
-                    "ready"
-                    if status.ready
-                    else "unavailable" if settings.database_url else "unconfigured"
-                ),
+                status=checkpoint_status if settings.database_url else "unconfigured",
                 detail=status.detail,
             )
 

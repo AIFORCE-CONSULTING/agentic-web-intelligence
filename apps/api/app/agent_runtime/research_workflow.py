@@ -268,6 +268,8 @@ class UnifiedResearchWorkflowEntry:
             raise ResearchWorkflowUnavailable(
                 "The research record could not be reloaded after workflow execution."
             )
+        if run.status != "completed" and persisted.status == "completed":
+            await self._checkpoints.delete_thread(persisted.id)
         return persisted, created
 
     async def resume_after_review(
@@ -439,9 +441,13 @@ class ResearchCheckpointLifecycle:
         self._cleanup_backlog = await self._cleanup_store.checkpoint_cleanup_backlog()
         if self._cleanup_backlog:
             return CheckpointReadiness(
-                ready=False,
+                ready=True,
                 backlog=self._cleanup_backlog,
-                detail="Completed research checkpoint cleanup is pending.",
+                detail=(
+                    "Completed research checkpoint cleanup is pending as "
+                    "maintenance. Cleanup removes execution bookmarks only "
+                    "and does not delete completed research outputs."
+                ),
             )
         return CheckpointReadiness(
             ready=True,

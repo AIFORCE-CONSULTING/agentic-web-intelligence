@@ -46,6 +46,26 @@ Retries and continuation reload stored authority and business state. A stale
 checkpoint, terminal research record, exhausted limit, mismatched workspace, or
 conflicting record stops safely instead of repeating an external effect.
 
+## Checkpoint cleanup
+
+LangGraph checkpoints are temporary execution bookmarks. After a research run
+reaches `completed`, the platform attempts best-effort cleanup through the
+official LangGraph checkpointer API. Cleanup deletes only execution bookmarks;
+it does not delete research questions, discovered sources, evidence, summaries,
+keywords, trust decisions, final reports, or audit history.
+
+If completed-run cleanup is pending or fails, the completed research run stays
+completed. The backlog appears as degraded maintenance in health checks and can
+be retried with the bounded maintenance command:
+
+```powershell
+python -m app.agent_runtime.research_workflow retry-terminal-cleanup --limit 100
+```
+
+Completed-run cleanup backlog does not block a different research request.
+Only checkpoint infrastructure that is unavailable for active workflow
+execution can make the governed research workflow unavailable.
+
 ## Agent-visible capabilities
 
 The versioned `agentic-research-capabilities-v1` catalog contains only bounded:

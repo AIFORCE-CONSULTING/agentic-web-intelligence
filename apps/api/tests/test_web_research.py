@@ -9,6 +9,7 @@ import httpx
 import pytest
 
 from app.agent_runtime.research_workflow import (
+    CheckpointReadiness,
     ResearchWorkflowUnavailable,
     UnifiedResearchWorkflowEntry,
 )
@@ -344,6 +345,56 @@ def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.Monke
             "detail": "Research checkpoint persistence is not started.",
         },
         ]
+
+
+def test_service_health_reports_checkpoint_cleanup_as_maintenance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FakeStore:
+        async def healthcheck(self) -> None:
+            return None
+
+    class FakeCheckpoints:
+        async def readiness(self) -> CheckpointReadiness:
+            return CheckpointReadiness(
+                ready=True,
+                backlog=1,
+                detail=(
+                    "Completed research checkpoint cleanup is pending as "
+                    "maintenance. Cleanup removes execution bookmarks only "
+                    "and does not delete completed research outputs."
+                ),
+            )
+
+    monkeypatch.setattr(
+        "app.main.get_settings",
+        lambda: Settings(database_url="postgresql://test", searxng_base_url=None),
+    )
+    app = create_app()
+    app.state.research_store = FakeStore()
+    app.state.research_checkpoint_lifecycle = FakeCheckpoints()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.get("/health/services")
+
+    response = asyncio.run(request())
+    checkpoint = response.json()["services"][2]
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "degraded"
+    assert checkpoint == {
+        "name": "Research workflow checkpoints",
+        "status": "degraded",
+        "detail": (
+            "Completed research checkpoint cleanup is pending as maintenance. "
+            "Cleanup removes execution bookmarks only and does not delete "
+            "completed research outputs."
+        ),
+    }
 
 
 def test_mcp_host_advertises_only_governed_read_only_tools() -> None:
@@ -1151,6 +1202,41 @@ def test_run_endpoint_returns_safe_workflow_unavailability() -> None:
     assert response.json() == {
         "detail": "Research checkpoint persistence is unavailable."
     }
+
+
+def test_run_endpoint_does_not_report_cleanup_backlog_as_start_blocker() -> None:
+    run_id = uuid4()
+
+    class FakeEntry:
+        async def start_or_resume(self, _workspace_id, question, _source_limit):
+            return ResearchRun(
+                id=run_id,
+                question=question,
+                status="planning",
+                created_at=datetime.now(UTC),
+                updated_at=datetime.now(UTC),
+            ), True
+
+    app, _ = authenticated_app(create_app())
+    app.state.research_workflow_entry = FakeEntry()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                "/v1/research/runs",
+                json={"question": "evidence", "max_results": 10},
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 201
+    assert response.json()["status"] == "planning"
+    assert response.json().get("detail") != (
+        "Completed research checkpoint cleanup is pending."
+    )
 
 
 def test_research_durable_work_endpoints_are_workspace_scoped_and_read_only() -> None:

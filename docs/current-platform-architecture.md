@@ -128,6 +128,19 @@ Stale checkpoints and Temporal histories never override PostgreSQL business
 records. Continuation reloads canonical records and stops on a terminal,
 conflicting, or unauthorized state.
 
+## Checkpoint Maintenance
+
+When the unified graph returns and the stored research run is confirmed as
+`completed`, `ResearchCheckpointLifecycle` asks the LangGraph checkpointer to
+delete that run's execution bookmark thread. The cleanup result is recorded in
+`research_checkpoint_cleanups`.
+
+This cleanup is maintenance, not business state. A failed or pending cleanup
+does not change `research_runs.status`, does not remove evidence or reports,
+and does not block unrelated new research. Health can report pending cleanup as
+degraded maintenance so the operator knows there is housekeeping to retry, but
+the UI continues to show the official research status from `research_runs`.
+
 ## Retired paths
 
 Phase 7.5 removed the duplicate plain-Python agentic router, the earlier

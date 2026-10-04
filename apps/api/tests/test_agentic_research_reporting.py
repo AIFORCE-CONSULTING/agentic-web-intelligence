@@ -8,6 +8,7 @@ from uuid import uuid4
 import httpx
 
 from app.agentic_research.contracts import (
+    ReportExclusion,
     ReportInput,
     TopicCoverage,
     TopicCoverageEvidence,
@@ -221,9 +222,16 @@ def test_fallback_briefing_only_links_to_stored_summary_references() -> None:
 
 
 class _FakeStore:
-    def __init__(self, inputs: list[ReportInput], coverage: list[TopicCoverage]) -> None:
+    def __init__(
+        self,
+        inputs: list[ReportInput],
+        coverage: list[TopicCoverage],
+        exclusions: list[ReportExclusion] | None = None,
+    ) -> None:
         self.inputs = inputs
         self.coverage = coverage
+        self.exclusions = exclusions or []
+        self.report_exclusion_calls = 0
         self.saved: dict[str, object] | None = None
 
     async def report_inputs(self, *_: object) -> list[ReportInput]:
@@ -233,13 +241,16 @@ class _FakeStore:
         return self.coverage
 
     async def report_exclusions(self, *_: object) -> list[object]:
-        return []
+        self.report_exclusion_calls += 1
+        return self.exclusions
 
     async def save_report_package(self, *args: object) -> SimpleNamespace:
         self.saved = {
             "markdown": args[2],
             "grade": args[7],
             "origin": args[9],
+            "inputs": args[10],
+            "exclusions": args[12],
             "quality_reasons": args[8],
             "attempts": args[-1],
         }
@@ -441,3 +452,61 @@ def test_ten_plus_qualified_summaries_still_render_topic_organized_report() -> N
     assert "## Agentic commerce readiness" in report.markdown
     assert "## Agentic user experience" in report.markdown
     assert "[Agentic user experience source 3](#summary:S10)" in report.markdown
+
+
+def test_exclusion_label_changes_do_not_change_supporting_report_inputs() -> None:
+    inputs = _inputs()
+    exclusions = [
+        ReportExclusion(
+            title="Publisher denied source",
+            url="https://example.test/denied",
+            topic_ids=["agent-identity"],
+            reason_code="access_denied_by_publisher",
+            reason="The publisher or website rejected automated access.",
+        )
+    ]
+    response = json.dumps({
+        "findings": [{
+            "text": "Identity can be verified through signed metadata.",
+            "source_refs": ["S01"],
+        }]
+    })
+    store = _FakeStore(inputs, _coverage(inputs), exclusions)
+    client = _Client([response])
+    service = ResearchReportingService(store, _Provider(), lambda _: client)
+
+    report = asyncio.run(service.final_report(uuid4(), uuid4(), "How do agents identify sources?"))
+
+    assert report.quality_grade == "PASS"
+    assert store.saved["inputs"] == inputs
+    assert store.saved["exclusions"] == exclusions
+
+
+def test_service_uses_store_owned_exclusion_reasons_without_model_authorship() -> None:
+    inputs = _inputs()
+    exclusions = [
+        ReportExclusion(
+            title="Unreachable source",
+            url="https://example.test/unreachable",
+            topic_ids=["agent-identity"],
+            reason_code="unreachable",
+            reason="No usable evidence was captured for report findings.",
+        )
+    ]
+    response = json.dumps({
+        "findings": [{
+            "text": "Identity can be verified through signed metadata.",
+            "source_refs": ["S01"],
+        }]
+    })
+    store = _FakeStore(inputs, _coverage(inputs), exclusions)
+    client = _Client([response])
+    service = ResearchReportingService(store, _Provider(), lambda _: client)
+
+    asyncio.run(service.final_report(uuid4(), uuid4(), "How do agents identify sources?"))
+
+    assert store.report_exclusion_calls == 1
+    assert store.saved["exclusions"] == exclusions
+    model_payload = json.loads(client.calls[0]["messages"][1]["content"])
+    assert "exclusions" not in model_payload
+    assert "No usable evidence was captured" not in client.calls[0]["messages"][1]["content"]

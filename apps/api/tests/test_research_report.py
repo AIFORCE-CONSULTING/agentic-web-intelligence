@@ -6,7 +6,11 @@ from uuid import uuid4
 
 import httpx
 
-from app.agentic_research.contracts import ReportQualityReason, ResearchReport
+from app.agentic_research.contracts import (
+    ReportExclusion,
+    ReportQualityReason,
+    ResearchReport,
+)
 from app.main import create_app
 from tests.test_web_research import authenticated_app
 
@@ -145,3 +149,66 @@ def test_report_read_preserves_historical_currentness_flag() -> None:
     assert response.status_code == 200
     assert response.json()["current"] is False
     assert response.json()["markdown"] == "# Historical report"
+
+
+def test_report_read_exposes_refined_exclusion_reason_codes_and_text() -> None:
+    run_id = uuid4()
+    app, _ = authenticated_app(create_app())
+    exclusions = [
+        ReportExclusion(
+            title=code.replace("_", " ").title(),
+            url=f"https://example.test/{code}",
+            topic_ids=["ollama-concurrency"],
+            reason_code=code,
+            reason=reason,
+        )
+        for code, reason in [
+            ("blocked_by_trust_policy", "Blocked by the local trust workflow."),
+            (
+                "access_denied_by_publisher",
+                "The publisher or website rejected automated access.",
+            ),
+            ("unreachable", "No usable evidence was captured."),
+            ("summary_failed", "Summary processing did not store a usable source summary."),
+            ("evidence_insufficient", "The captured content was insufficient."),
+            (
+                "not_relevant_to_planned_topics",
+                "It was not relevant to the planned topics for this report.",
+            ),
+        ]
+    ]
+
+    class FakeAgenticStore:
+        async def get_report(self, *_):
+            return ResearchReport(
+                run_id=run_id,
+                markdown="# Grounded report",
+                model_name="qwen3:1.7b",
+                prompt_version="agentic-research-final-report-v2",
+                contract_version="grounded-final-report-v1",
+                quality_grade="PASS",
+                report_origin="model_pass",
+                exclusions=exclusions,
+                created_at=datetime.now(UTC),
+            )
+
+    app.state.agentic_research_store = FakeAgenticStore()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return await client.get(f"/v1/research/runs/{run_id}/report")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 200
+    payload = response.json()["exclusions"]
+    assert [item["reason_code"] for item in payload] == [
+        "blocked_by_trust_policy",
+        "access_denied_by_publisher",
+        "unreachable",
+        "summary_failed",
+        "evidence_insufficient",
+        "not_relevant_to_planned_topics",
+    ]
+    assert [item["reason"] for item in payload] == [item.reason for item in exclusions]

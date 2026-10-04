@@ -155,6 +155,15 @@ ReportQualityReasonCode = Literal[
     "unsafe_model_draft",
 ]
 ReportAttemptStatus = Literal["started", "pass", "fail", "unusable"]
+ReportExclusionReasonCode = Literal[
+    "blocked_by_trust_policy",
+    "review_required",
+    "access_denied_by_publisher",
+    "unreachable",
+    "summary_failed",
+    "evidence_insufficient",
+    "not_relevant_to_planned_topics",
+]
 CitationFailureCode = Literal[
     "unknown_citation_label",
     "ambiguous_citation_label",

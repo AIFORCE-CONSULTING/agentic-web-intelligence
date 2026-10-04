@@ -19,7 +19,7 @@ from app.agentic_research.planning import (
     TOPIC_PLANNING_PROMPT_VERSION,
     topic_planning_messages,
 )
-from app.agentic_research.store import AgenticResearchStore
+from app.agentic_research.store import AgenticResearchStore, _report_exclusion_reason
 
 
 def _topic(topic_id: str, topic: str, search_query: str) -> dict[str, str]:
@@ -227,6 +227,89 @@ def test_topic_without_qualifying_evidence_is_uncovered() -> None:
 
     assert coverage[0].status == "uncovered"
     assert coverage[0].evidence == []
+
+
+def _exclusion_row(**overrides: object) -> dict[str, object]:
+    row: dict[str, object] = {
+        "preflight_status": "ready_to_extract",
+        "preflight_reason": None,
+        "preflight_trust_disposition": "eligible",
+        "summary_status": "completed",
+        "evidence_sufficient": True,
+        "failure_category": None,
+    }
+    row.update(overrides)
+    return row
+
+
+@pytest.mark.parametrize(
+    ("row", "expected_code", "expected_text"),
+    [
+        (
+            _exclusion_row(
+                preflight_status="unreachable",
+                preflight_reason="The selected source rejected automated access (HTTP 403).",
+                summary_status=None,
+                evidence_sufficient=None,
+            ),
+            "access_denied_by_publisher",
+            "rejected automated access",
+        ),
+        (
+            _exclusion_row(
+                preflight_status="blocked",
+                preflight_trust_disposition="blocked",
+                summary_status=None,
+                evidence_sufficient=None,
+            ),
+            "blocked_by_trust_policy",
+            "local trust workflow",
+        ),
+        (
+            _exclusion_row(),
+            "not_relevant_to_planned_topics",
+            "not relevant to the planned topics",
+        ),
+        (
+            _exclusion_row(
+                preflight_status="unreachable",
+                preflight_reason="Timed out while fetching source.",
+                summary_status=None,
+                evidence_sufficient=None,
+            ),
+            "unreachable",
+            "No usable evidence was captured",
+        ),
+        (
+            _exclusion_row(summary_status="failed", failure_category="model_timeout"),
+            "summary_failed",
+            "model_timeout",
+        ),
+        (
+            _exclusion_row(evidence_sufficient=False),
+            "evidence_insufficient",
+            "insufficient",
+        ),
+    ],
+)
+def test_report_exclusion_reason_uses_stored_platform_outcomes(
+    row: dict[str, object], expected_code: str, expected_text: str
+) -> None:
+    code, reason = _report_exclusion_reason(row)
+
+    assert code == expected_code
+    assert expected_text in reason
+
+
+def test_topic_irrelevance_is_not_used_without_usable_summary() -> None:
+    code, reason = _report_exclusion_reason(
+        _exclusion_row(summary_status=None, evidence_sufficient=None)
+    )
+
+    assert code == "unreachable"
+    assert "not relevant" not in reason.casefold()
+
+
 def test_clean_start_removes_only_superseded_agentic_control_tables() -> None:
     executions: list[str] = []
 

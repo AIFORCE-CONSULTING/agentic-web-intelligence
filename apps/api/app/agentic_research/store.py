@@ -11,6 +11,7 @@ from app.agentic_research.contracts import (
     FinalReportAttempt,
     RelevanceDecision,
     ReportExclusion,
+    ReportExclusionReasonCode,
     ReportInput,
     ReportQualityReason,
     ReportSupportingSource,
@@ -179,6 +180,68 @@ ALTER TABLE agentic_topic_relevance_decisions
 ALTER TABLE agentic_topic_relevance_decisions
     ADD COLUMN IF NOT EXISTS failure_reason TEXT;
 """
+
+_PUBLISHER_ACCESS_DENIED_MARKERS = (
+    "http 403",
+    "403",
+    "forbidden",
+    "rejected automated access",
+    "access denied",
+)
+
+
+def _report_exclusion_reason(row: Mapping[str, object]) -> tuple[ReportExclusionReasonCode, str]:
+    """Derive the operator-facing exclusion reason from stored platform outcomes."""
+
+    preflight_status = row.get("preflight_status")
+    preflight_reason = str(row.get("preflight_reason") or "").casefold()
+    preflight_trust_disposition = row.get("preflight_trust_disposition")
+    summary_status = row.get("summary_status")
+    evidence_sufficient = row.get("evidence_sufficient")
+    failure_category = row.get("failure_category")
+
+    if preflight_status == "blocked" or preflight_trust_disposition == "blocked":
+        return (
+            "blocked_by_trust_policy",
+            "Blocked by the local trust workflow.",
+        )
+    if preflight_status == "review_required":
+        return (
+            "review_required",
+            "Requires recorded human review before use.",
+        )
+    if preflight_status == "unreachable":
+        if any(marker in preflight_reason for marker in _PUBLISHER_ACCESS_DENIED_MARKERS):
+            return (
+                "access_denied_by_publisher",
+                (
+                    "The publisher or website rejected automated access before "
+                    "usable evidence could be captured."
+                ),
+            )
+        return (
+            "unreachable",
+            "No usable evidence was captured for report findings.",
+        )
+    if summary_status == "failed":
+        return (
+            "summary_failed",
+            str(failure_category or "Summary processing did not store a usable source summary."),
+        )
+    if evidence_sufficient is False:
+        return (
+            "evidence_insufficient",
+            "The captured content was insufficient for report findings.",
+        )
+    if summary_status == "completed" and evidence_sufficient is not False:
+        return (
+            "not_relevant_to_planned_topics",
+            "It was not relevant to the planned topics for this report.",
+        )
+    return (
+        "unreachable",
+        "No usable evidence was captured for report findings.",
+    )
 
 
 def _json_value(value: object, default: object) -> object:
@@ -616,6 +679,7 @@ class AgenticResearchStore:
                 """SELECT source.title, source.url,
                           COALESCE(source.preflight_final_url, source.url) AS evidence_url,
                           source.preflight_status,
+                          source.preflight_reason,
                           source.preflight_trust_disposition,
                           execution_source.status AS summary_status,
                           execution_source.evidence_sufficient,
@@ -641,18 +705,7 @@ class AgenticResearchStore:
             source_url = row["evidence_url"]
             if source_url in included_urls:
                 continue
-            if row["preflight_status"] == "blocked":
-                code, reason = "blocked", "Blocked by the local trust workflow."
-            elif row["preflight_status"] == "review_required":
-                code, reason = "review_required", "Requires recorded human review before use."
-            elif row["summary_status"] == "failed":
-                code = "summary_failed"
-                reason = row["failure_category"] or "A usable source summary was not stored."
-            elif row["evidence_sufficient"] is False:
-                code, reason = "evidence_insufficient", "The captured content was insufficient."
-            else:
-                code = "not_relevant"
-                reason = "It did not become qualified evidence for a planned topic."
+            code, reason = _report_exclusion_reason(row)
             exclusions.append(
                 ReportExclusion(
                     title=row["title"] or source_url,

@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
 type Health = { status: string; service: string; environment: string };
@@ -564,6 +564,7 @@ export function App() {
   const [reviewExpiresAt, setReviewExpiresAt] = useState("");
   const [candidateStatusFilter, setCandidateStatusFilter] = useState<Source["preflight_status"] | "all">("all");
   const [selectedSummaryUrl, setSelectedSummaryUrl] = useState<string | null>(null);
+  const sourceSummaryPanelRef = useRef<HTMLDivElement | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -748,6 +749,17 @@ export function App() {
     } catch {
       setTrustPolicy(null);
     }
+  }
+
+  function openStoredSummary(url: string, event?: MouseEvent<HTMLAnchorElement>) {
+    event?.preventDefault();
+    setSelectedSummaryUrl(url);
+    window.requestAnimationFrame(() => {
+      window.requestAnimationFrame(() => {
+        sourceSummaryPanelRef.current?.scrollIntoView({ block: "start", behavior: "smooth" });
+        sourceSummaryPanelRef.current?.focus({ preventScroll: true });
+      });
+    });
   }
 
   function openEvidenceReview(evidence: Evidence, evaluation: EvidenceTrustEvaluation) {
@@ -964,9 +976,9 @@ export function App() {
           </aside>}
           {keywordCards.length ? <div className="keyword-grid">{keywordCards.map((keyword) => <article className="keyword-card" key={keyword.label}>
             <h3>{keyword.label}</h3>
-            <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={() => setSelectedSummaryUrl(source.url)}>{sourceTitle(source)}</a></li>)}</ol>
+            <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={(event) => openStoredSummary(source.url, event)}>{sourceTitle(source)}</a></li>)}</ol>
           </article>)}</div> : <p className="hint">No stored source summaries with keywords are available in this workspace yet.</p>}
-          <div id="source-summary" className="source-summary-panel" tabIndex={-1}>
+          <div id="source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
             {selectedSummary && <article className="source-summary">
               <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
               <p className="source-address">{selectedSummary.url}</p>
@@ -991,7 +1003,7 @@ export function App() {
                   <a
                     href="#source-summary"
                     title={`Open stored summary ${source.source_ref}`}
-                    onClick={() => setSelectedSummaryUrl(source.url)}
+                    onClick={(event) => openStoredSummary(source.url, event)}
                   >
                     {children}
                   </a>
@@ -1000,7 +1012,12 @@ export function App() {
             }}>{report.markdown}</ReactMarkdown>
             {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">
               <h3>Sources not used for report findings</h3>
-              <ul>{report.exclusions.map((source) => <li key={`${source.url}-${source.reason_code}`}><strong>{source.title}</strong>: {source.reason}</li>)}</ul>
+              <ul>{report.exclusions.map((source) => {
+                const summary = workspaceSummaries.find((item) => item.url === source.url);
+                return <li key={`${source.url}-${source.reason_code}`}>
+                  {summary ? <a href="#source-summary" onClick={(event) => openStoredSummary(summary.url, event)}><strong>{source.title}</strong></a> : <strong>{source.title}</strong>}: {source.reason}
+                </li>;
+              })}</ul>
             </section>}
           </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
         </section>

@@ -988,7 +988,11 @@ export function App() {
           <div id="source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
             {selectedSummary && <article className="source-summary">
               <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
-              <p className="source-address">{selectedSummary.url}</p>
+              <p className="source-address">
+                <a href={selectedSummary.url} target="_blank" rel="noreferrer">
+                  {selectedSummary.url}
+                </a>
+              </p>
               {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
               {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
               {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}

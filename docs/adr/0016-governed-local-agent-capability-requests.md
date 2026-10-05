@@ -193,14 +193,18 @@ them.
 
 #### 6. Prepare the research report
 
-The model receives bounded stored source summaries, their source references, the
-planned topics, and the recorded topic-coverage status. It produces one Markdown
-research report that addresses every planned topic, cites the supplied sources,
-and identifies any topic that still lacks sufficient evidence.
+The platform loads bounded stored source summaries, their source references, the
+planned topics, and the recorded topic-coverage status. For each planned topic,
+the platform sends the model one bounded group of summaries at a time. The
+model drafts finding text with supplied citation labels only. Platform code
+merges validated findings, renders one Markdown research report, cites stored
+summary links, and identifies any topic or bounded group that still lacks
+sufficient evidence or safe model output.
 
 Raw webpages, credentials, internal policy, and unrestricted database content
-are not included in this final prompt. Platform code validates the report's
-size, required topic coverage, and source references before storing it.
+are not included in these report prompts. Platform code validates each bounded
+group response, source references, final report structure, and report quality
+before storing the report package.
 
 ### Capability and execution boundary
 
@@ -324,11 +328,13 @@ The unified graph's final-report node remains the sole report caller. It
 creates an append-only report package from qualified stored summaries grouped
 under the planned topics already stored for the research run. Platform code
 renders the final sections, source lists, citation links, and quality grade;
-the model may draft bounded findings for one supplied topic at a time. A report
-quality grade of `FAIL` identifies an incomplete or fallback report, not an
-authority, trust, relevance, or workflow failure. The graph transitions the
-research record to `completed` after that package is stored; it transitions to
-`failed` during reporting only if the package cannot be created or persisted.
+the model may draft bounded findings for one supplied topic group at a time.
+Large topics are split by summary count and prompt size before any report
+prompt is sent to the local model. A report quality grade of `FAIL` identifies
+an incomplete, partially degraded, or fallback report, not an authority, trust,
+relevance, or workflow failure. The graph transitions the research record to
+`completed` after that package is stored; it transitions to `failed` during
+reporting only if the package cannot be created or persisted.
 
 LangGraph's PostgreSQL checkpoint is an execution bookmark, not a business
 record. Temporal history is durable execution tracking, not workflow status.

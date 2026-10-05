@@ -15,8 +15,10 @@ from app.agentic_research.contracts import (
     TopicFindingDraft,
 )
 from app.agentic_research.reporting import (
+    MAX_REPORT_GROUP_INPUT_CHARACTERS,
     ResearchReportingService,
     _assess_topic_draft,
+    _bounded_report_groups,
     _render_fallback,
     assign_report_source_ref,
     normalize_citation_label,
@@ -128,6 +130,24 @@ def _many_topic_inputs() -> list[ReportInput]:
     return inputs
 
 
+def _large_single_topic_inputs(count: int = 15) -> list[ReportInput]:
+    return [
+        ReportInput(
+            topic_record_id=uuid4(),
+            topic_id="semantic-search",
+            topic="Examples of semantic search platforms",
+            summary_artifact_id=uuid4(),
+            source_ref=assign_report_source_ref(position),
+            source_url=f"https://example.test/semantic-{position}",
+            source_title=f"Semantic search source {position}",
+            summary_text=f"Stored semantic search summary {position}.",
+            content_hash=f"hash-semantic-{position}",
+            position=position,
+        )
+        for position in range(1, count + 1)
+    ]
+
+
 def _coverage_from_inputs(inputs: list[ReportInput]) -> list[TopicCoverage]:
     topics: dict[str, ReportInput] = {}
     for item in inputs:
@@ -204,12 +224,37 @@ def test_normalized_citation_labels_count_toward_source_coverage() -> None:
 
 def test_topic_finding_draft_rejects_empty_findings() -> None:
     inputs = _inputs()
-    draft = TopicFindingDraft.model_validate({"findings": []})
+    draft = TopicFindingDraft.model_construct(findings=[])
 
     assessment = _assess_topic_draft(draft, _coverage(inputs)[0], inputs)
 
     assert assessment.safe is False
     assert assessment.errors == ["Topic agent-identity did not include any findings."]
+
+
+def test_bounded_report_groups_split_fifteen_topic_summaries() -> None:
+    inputs = _large_single_topic_inputs()
+    coverage = _coverage_from_inputs(inputs)
+
+    groups = _bounded_report_groups("Find semantic search examples.", coverage[0], inputs)
+
+    assert [len(group.inputs) for group in groups] == [7, 7, 1]
+    assert [group.group_index for group in groups] == [1, 2, 3]
+    assert [source.source_ref for group in groups for source in group.inputs] == [
+        item.source_ref for item in inputs
+    ]
+
+
+def test_bounded_report_groups_honor_character_budget_and_isolate_oversized_summary() -> None:
+    inputs = _large_single_topic_inputs(3)
+    inputs[0].summary_text = "A" * (MAX_REPORT_GROUP_INPUT_CHARACTERS + 500)
+    coverage = _coverage_from_inputs(inputs)
+
+    groups = _bounded_report_groups("Find semantic search examples.", coverage[0], inputs)
+
+    assert [len(group.inputs) for group in groups] == [1, 2]
+    assert groups[0].inputs[0].source_ref == "S01"
+    assert groups[0].input_characters > MAX_REPORT_GROUP_INPUT_CHARACTERS
 
 
 def test_fallback_briefing_only_links_to_stored_summary_references() -> None:
@@ -350,6 +395,56 @@ def test_service_sends_only_one_topic_sources_to_each_model_call() -> None:
         ["S02"],
         ["S03"],
     ]
+
+
+def test_service_drafts_large_topic_in_bounded_groups_and_merges_findings() -> None:
+    inputs = _large_single_topic_inputs()
+    coverage = _coverage_from_inputs(inputs)
+    responses = [
+        json.dumps({
+            "findings": [{
+                "text": f"Finding from group {group_index}.",
+                "source_refs": [source_ref],
+            }]
+        })
+        for group_index, source_ref in [(1, "S01"), (2, "S08"), (3, "S15")]
+    ]
+    store = _FakeStore(inputs, coverage)
+    client = _Client(responses)
+    service = ResearchReportingService(store, _Provider(), lambda _: client)
+
+    report = asyncio.run(service.final_report(uuid4(), uuid4(), "Find semantic search examples."))
+
+    assert report.quality_grade == "PASS"
+    assert len(client.calls) == 3
+    assert [attempt.group_index for attempt in store.saved["attempts"]] == [1, 2, 3]
+    assert all(attempt.response_characters > 0 for attempt in store.saved["attempts"])
+    assert "Finding from group 1." in report.markdown
+    assert "Finding from group 2." in report.markdown
+    assert "Finding from group 3." in report.markdown
+    assert "[Semantic search source 15](#summary:S15)" in report.markdown
+
+
+def test_service_keeps_successful_group_findings_when_another_group_fails() -> None:
+    inputs = _large_single_topic_inputs(8)
+    coverage = _coverage_from_inputs(inputs)
+    successful = json.dumps({
+        "findings": [{
+            "text": "The first bounded group produced grounded findings.",
+            "source_refs": ["S01"],
+        }]
+    })
+    store = _FakeStore(inputs, coverage)
+    client = _Client([successful, "{}", "{}"])
+    service = ResearchReportingService(store, _Provider(), lambda _: client)
+
+    report = asyncio.run(service.final_report(uuid4(), uuid4(), "Find semantic search examples."))
+
+    assert report.quality_grade == "FAIL"
+    assert store.saved["origin"] == "model_fail"
+    assert "The first bounded group produced grounded findings." in report.markdown
+    assert store.saved["quality_reasons"][0].code == "malformed_topic_output"
+    assert "group 2" in store.saved["quality_reasons"][0].message
 
 
 def test_service_stores_fallback_after_two_malformed_model_responses() -> None:

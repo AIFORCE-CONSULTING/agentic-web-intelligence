@@ -178,17 +178,20 @@ Final-report generation receives a frozen list of eligible, relevant,
 evidence-sufficient stored summaries grouped by the planned topics already
 stored for the research run. Platform code owns the report sections, source
 membership, simple citation labels such as `S01`, source lists, links, quality
-grade, and fallback briefing. The local model receives one planned topic at a
-time as untrusted reference material and returns only topic-level finding text
-with supplied citation labels; it does not return public URLs, topic decisions,
-eligibility decisions, workflow status, or operator-facing links.
+grade, and fallback briefing. The platform splits a planned topic into bounded
+ordered report groups when the topic has too many summaries or too much prompt
+text for one reliable local-model call. The local model receives one planned
+topic group at a time as untrusted reference material and returns only
+topic-level finding text with supplied citation labels; it does not return
+public URLs, topic decisions, eligibility decisions, workflow status, or
+operator-facing links.
 
-The platform makes at most two bounded attempts per planned topic. When the
-first topic response is incomplete or invalid, the second prompt contains only
-the server's concise validation feedback for that same fixed topic input. Each
-topic attempt retains the planned topic identifier, prompt version, model
-version, raw response, telemetry, and validation outcome in the immutable
-report package.
+The platform makes at most two bounded attempts per topic group. When the first
+group response is incomplete or invalid, the second prompt contains only the
+server's concise validation feedback for that same fixed group input. Each
+attempt retains the planned topic identifier, bounded group index, prompt
+version, model version, raw response, prompt input size, response size,
+telemetry, and validation outcome in the immutable report package.
 
 Report quality is separate from evidence trust and research completion. A
 `PASS` report covers planned topics, represents qualified source summaries, and

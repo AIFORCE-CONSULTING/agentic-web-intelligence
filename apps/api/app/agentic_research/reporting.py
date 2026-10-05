@@ -29,6 +29,8 @@ TOPIC_FINDINGS_PROMPT_VERSION = "agentic-research-topic-findings-v1"
 REPORT_CONTRACT_VERSION = "grounded-final-report-v1"
 TOPIC_FINDINGS_CONTRACT_VERSION = "topic-findings-v1"
 MAX_REPORT_ATTEMPTS = 2
+MAX_REPORT_GROUP_SOURCES = 7
+MAX_REPORT_GROUP_INPUT_CHARACTERS = 10_000
 ClientFactory = Callable[[str], AsyncClient]
 
 
@@ -67,6 +69,17 @@ class TopicSectionResult:
     @property
     def supported(self) -> bool:
         return bool(self.findings)
+
+
+@dataclass(frozen=True)
+class ReportBoundedGroup:
+    """Deterministic package of topic inputs for one model report attempt."""
+
+    topic: TopicCoverage
+    group_index: int
+    inputs: list[ReportInput]
+    payload: str
+    input_characters: int
 
 
 class ResearchReportingService:
@@ -138,106 +151,133 @@ class ResearchReportingService:
                 )
                 continue
 
-            selected: tuple[TopicFindingDraft, DraftAssessment] | None = None
-            correction: list[str] = []
-            payload = _topic_report_payload(question, topic, topic_inputs)
-            input_characters = len(payload)
-            fallback_code: str | None = None
-            for attempt_number in range(1, MAX_REPORT_ATTEMPTS + 1):
-                raw_response = ""
-                started_at = time.perf_counter()
-                try:
-                    raw_response, model_name = await self._chat_report(
-                        workspace_id,
-                        _topic_report_instruction(correction),
-                        payload,
-                    )
-                    draft = TopicFindingDraft.model_validate_json(raw_response)
-                except (json.JSONDecodeError, ValidationError):
+            topic_findings: list[tuple[str, list[str]]] = []
+            topic_failure_codes: list[str] = []
+            for group in _bounded_report_groups(question, topic, topic_inputs):
+                selected: TopicFindingDraft | None = None
+                correction: list[str] = []
+                fallback_code: str | None = None
+                for attempt_number in range(1, MAX_REPORT_ATTEMPTS + 1):
+                    raw_response = ""
+                    started_at = time.perf_counter()
+                    try:
+                        raw_response, model_name = await self._chat_report(
+                            workspace_id,
+                            _topic_report_instruction(correction),
+                            group.payload,
+                        )
+                        draft = TopicFindingDraft.model_validate_json(raw_response)
+                    except (json.JSONDecodeError, ValidationError):
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        errors = _topic_output_schema_errors(raw_response)
+                        attempts.append(
+                            FinalReportAttempt(
+                                attempt_number=attempt_number,
+                                topic_id=topic.topic_id,
+                                group_index=group.group_index,
+                                status="unusable",
+                                raw_response=raw_response,
+                                validation_errors=errors,
+                                model_name=model_name,
+                                prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
+                                duration_ms=duration_ms,
+                                input_characters=group.input_characters,
+                                response_characters=len(raw_response),
+                                failure_code="malformed_topic_output",
+                            )
+                        )
+                        correction = [
+                            *errors,
+                            "Return valid JSON matching the required schema exactly.",
+                        ]
+                        fallback_code = "malformed_topic_output"
+                        continue
+                    except ResearchReportingModelTimeout as error:
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        attempts.append(
+                            FinalReportAttempt(
+                                attempt_number=attempt_number,
+                                topic_id=topic.topic_id,
+                                group_index=group.group_index,
+                                status="unusable",
+                                raw_response=raw_response,
+                                validation_errors=[str(error)],
+                                model_name=model_name,
+                                prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
+                                duration_ms=duration_ms,
+                                input_characters=group.input_characters,
+                                response_characters=len(raw_response),
+                                failure_code="model_timeout",
+                            )
+                        )
+                        fallback_code = "model_timeout"
+                        break
+                    except ResearchReportingUnavailable as error:
+                        duration_ms = int((time.perf_counter() - started_at) * 1000)
+                        attempts.append(
+                            FinalReportAttempt(
+                                attempt_number=attempt_number,
+                                topic_id=topic.topic_id,
+                                group_index=group.group_index,
+                                status="unusable",
+                                raw_response=raw_response,
+                                validation_errors=[str(error)],
+                                model_name=model_name,
+                                prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
+                                duration_ms=duration_ms,
+                                input_characters=group.input_characters,
+                                response_characters=len(raw_response),
+                                failure_code="model_unavailable",
+                            )
+                        )
+                        fallback_code = "model_unavailable"
+                        break
+
                     duration_ms = int((time.perf_counter() - started_at) * 1000)
+                    assessment = _assess_topic_draft(draft, topic, group.inputs)
+                    attempt_status = "pass" if assessment.passed else "unusable"
+                    attempt_failure_code = (
+                        None if assessment.passed else _failure_code_for_errors(assessment.errors)
+                    )
                     attempts.append(
                         FinalReportAttempt(
                             attempt_number=attempt_number,
                             topic_id=topic.topic_id,
-                            status="unusable",
+                            group_index=group.group_index,
+                            status=attempt_status,
                             raw_response=raw_response,
-                            validation_errors=[
-                                "The model response did not match the topic finding schema."
-                            ],
+                            validation_errors=assessment.errors,
                             model_name=model_name,
                             prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
                             duration_ms=duration_ms,
-                            input_characters=input_characters,
-                            failure_code="malformed_topic_output",
+                            input_characters=group.input_characters,
+                            response_characters=len(raw_response),
+                            failure_code=attempt_failure_code,
                         )
                     )
-                    correction = ["Return valid JSON matching the required schema exactly."]
-                    fallback_code = "malformed_topic_output"
+                    if assessment.passed:
+                        selected = draft
+                        break
+                    correction = assessment.errors
+                    fallback_code = _failure_code_for_errors(assessment.errors)
+
+                if selected is None:
+                    code = fallback_code or "unsafe_model_draft"
+                    topic_failure_codes.append(code)
+                    quality_reasons.append(
+                        ReportQualityReason(
+                            code=code,
+                            message=(
+                                f"{topic.topic}: group {group.group_index} - "
+                                f"{_fallback_message(code)}"
+                            ),
+                        )
+                    )
                     continue
-                except ResearchReportingModelTimeout as error:
-                    duration_ms = int((time.perf_counter() - started_at) * 1000)
-                    attempts.append(
-                        FinalReportAttempt(
-                            attempt_number=attempt_number,
-                            topic_id=topic.topic_id,
-                            status="unusable",
-                            raw_response=raw_response,
-                            validation_errors=[str(error)],
-                            model_name=model_name,
-                            prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
-                            duration_ms=duration_ms,
-                            input_characters=input_characters,
-                            failure_code="model_timeout",
-                        )
-                    )
-                    fallback_code = "model_timeout"
-                    break
-                except ResearchReportingUnavailable as error:
-                    duration_ms = int((time.perf_counter() - started_at) * 1000)
-                    attempts.append(
-                        FinalReportAttempt(
-                            attempt_number=attempt_number,
-                            topic_id=topic.topic_id,
-                            status="unusable",
-                            raw_response=raw_response,
-                            validation_errors=[str(error)],
-                            model_name=model_name,
-                            prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
-                        duration_ms=duration_ms,
-                        input_characters=input_characters,
-                        failure_code="model_unavailable",
-                        )
-                    )
-                    fallback_code = "model_unavailable"
-                    break
+                topic_findings.extend(_normalized_findings(selected, group.inputs))
 
-                duration_ms = int((time.perf_counter() - started_at) * 1000)
-                assessment = _assess_topic_draft(draft, topic, topic_inputs)
-                attempt_status = "pass" if assessment.passed else "unusable"
-                attempt_failure_code = (
-                    None if assessment.passed else _failure_code_for_errors(assessment.errors)
-                )
-                attempts.append(
-                    FinalReportAttempt(
-                        attempt_number=attempt_number,
-                        topic_id=topic.topic_id,
-                        status=attempt_status,
-                        raw_response=raw_response,
-                        validation_errors=assessment.errors,
-                        model_name=model_name,
-                        prompt_version=TOPIC_FINDINGS_PROMPT_VERSION,
-                        duration_ms=duration_ms,
-                        input_characters=input_characters,
-                        failure_code=attempt_failure_code,
-                    )
-                )
-                if assessment.passed:
-                    selected = (draft, assessment)
-                    break
-                correction = assessment.errors
-                fallback_code = _failure_code_for_errors(assessment.errors)
-
-            if selected is None:
+            if not topic_findings:
+                fallback_code = topic_failure_codes[-1] if topic_failure_codes else None
                 sections.append(
                     TopicSectionResult(
                         topic=topic,
@@ -248,23 +288,18 @@ class ResearchReportingService:
                         ),
                     )
                 )
-                quality_reasons.append(
-                    ReportQualityReason(
-                        code=fallback_code or "unsafe_model_draft",
-                        message=(
-                            f"{topic.topic}: "
-                            f"{_fallback_message(fallback_code or 'unsafe_model_draft')}"
-                        ),
-                    )
-                )
                 continue
 
-            draft, assessment = selected
-            normalized_findings = _normalized_findings(draft, topic_inputs)
             sections.append(
-                TopicSectionResult(topic=topic, inputs=topic_inputs, findings=normalized_findings)
+                TopicSectionResult(topic=topic, inputs=topic_inputs, findings=topic_findings)
             )
-            contributions.extend(assessment.contributions)
+            contributions.extend(
+                (item.topic_record_id, position, source_ref, "finding")
+                for position, (_, source_refs) in enumerate(topic_findings, start=1)
+                for source_ref in source_refs
+                for item in topic_inputs
+                if item.source_ref == source_ref
+            )
             contributions.extend(
                 (item.topic_record_id, 0, item.source_ref, "section_source_list")
                 for item in topic_inputs
@@ -363,6 +398,49 @@ def _topic_report_payload(
         },
         ensure_ascii=True,
     )
+
+
+def _bounded_report_groups(
+    question: str, topic: TopicCoverage, inputs: list[ReportInput]
+) -> list[ReportBoundedGroup]:
+    groups: list[list[ReportInput]] = []
+    current: list[ReportInput] = []
+    for item in inputs:
+        candidate = [*current, item]
+        candidate_payload = _topic_report_payload(question, topic, candidate)
+        if (
+            current
+            and (
+                len(candidate) > MAX_REPORT_GROUP_SOURCES
+                or len(candidate_payload) > MAX_REPORT_GROUP_INPUT_CHARACTERS
+            )
+        ):
+            groups.append(current)
+            current = [item]
+        else:
+            current = candidate
+    if current:
+        groups.append(current)
+    return [
+        ReportBoundedGroup(
+            topic=topic,
+            group_index=index,
+            inputs=group,
+            payload=(payload := _topic_report_payload(question, topic, group)),
+            input_characters=len(payload),
+        )
+        for index, group in enumerate(groups, start=1)
+    ]
+
+
+def _topic_output_schema_errors(raw_response: str) -> list[str]:
+    try:
+        decoded = json.loads(raw_response)
+    except json.JSONDecodeError:
+        return ["The model response did not match the topic finding schema."]
+    if decoded == {} or (isinstance(decoded, dict) and not decoded.get("findings")):
+        return ["The model response did not include any findings."]
+    return ["The model response did not match the topic finding schema."]
 
 
 def _citation_sort_key(source_ref: str) -> tuple[int, str]:

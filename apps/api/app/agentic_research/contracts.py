@@ -230,7 +230,7 @@ class TopicFindingDraft(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    findings: list[FinalReportFinding] = Field(default_factory=list, max_length=12)
+    findings: list[FinalReportFinding] = Field(min_length=1, max_length=12)
 
 
 class FinalReportAttempt(BaseModel):
@@ -238,6 +238,7 @@ class FinalReportAttempt(BaseModel):
 
     attempt_number: int = Field(ge=1, le=2)
     topic_id: str | None = None
+    group_index: int = Field(default=1, ge=1)
     status: ReportAttemptStatus
     raw_response: str = ""
     validation_errors: list[str] = Field(default_factory=list)
@@ -245,6 +246,7 @@ class FinalReportAttempt(BaseModel):
     prompt_version: str
     duration_ms: int | None = Field(default=None, ge=0)
     input_characters: int = Field(default=0, ge=0)
+    response_characters: int = Field(default=0, ge=0)
     failure_code: str | None = None
 
 

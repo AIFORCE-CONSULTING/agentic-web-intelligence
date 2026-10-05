@@ -231,13 +231,15 @@ The final report is built from a fixed snapshot of those qualified summaries.
 The platform owns the report structure: it loads the planned topics, assigns
 simple report-local source labels such as `S01`, groups the qualified summaries
 under their stored topics, and renders the final Markdown itself. The local
-model drafts only bounded findings for one supplied topic at a time. It cannot
-create report sections, choose topic IDs, decide which sources belong to a
-topic, or provide navigation links.
+model drafts only bounded findings for one supplied topic group at a time.
+When a topic has many qualified summaries, the platform splits it into smaller
+ordered groups before calling the model, then merges validated findings back
+into one topic section. It cannot create report sections, choose topic IDs,
+decide which sources belong to a topic, or provide navigation links.
 
-Each topic-level draft may receive one bounded correction with a concise
+Each bounded group draft may receive one correction with a concise
 explanation of what was invalid. The platform accepts only citations that match
-the source labels supplied for that topic, while harmless variants such as
+the source labels supplied for that group, while harmless variants such as
 `s01`, `S 01`, or `S1` may be normalized when unambiguous. The report panel
 shows a `PASS` or `FAIL` quality grade. `FAIL` does not mean the evidence failed
 trust policy or that the research run failed; it means one or more topic drafts

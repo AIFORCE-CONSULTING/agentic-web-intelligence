@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS agentic_research_report_attempts (
     id UUID PRIMARY KEY,
     report_id UUID NOT NULL REFERENCES agentic_research_reports(id) ON DELETE CASCADE,
     topic_id TEXT,
+    group_index INTEGER NOT NULL DEFAULT 1 CHECK (group_index >= 1),
     attempt_number INTEGER NOT NULL CHECK (attempt_number IN (1, 2)),
     status TEXT NOT NULL CHECK (status IN ('started', 'pass', 'fail', 'unusable')),
     input_fingerprint TEXT NOT NULL,
@@ -145,6 +146,7 @@ CREATE TABLE IF NOT EXISTS agentic_research_report_attempts (
     validation_errors JSONB NOT NULL DEFAULT '[]'::jsonb,
     duration_ms INTEGER CHECK (duration_ms IS NULL OR duration_ms >= 0),
     input_characters INTEGER NOT NULL DEFAULT 0 CHECK (input_characters >= 0),
+    response_characters INTEGER NOT NULL DEFAULT 0 CHECK (response_characters >= 0),
     failure_code TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
     UNIQUE (report_id, attempt_number)
@@ -152,18 +154,23 @@ CREATE TABLE IF NOT EXISTS agentic_research_report_attempts (
 ALTER TABLE agentic_research_report_attempts
     ADD COLUMN IF NOT EXISTS topic_id TEXT;
 ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS group_index INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE agentic_research_report_attempts
     ADD COLUMN IF NOT EXISTS duration_ms INTEGER;
 ALTER TABLE agentic_research_report_attempts
     ADD COLUMN IF NOT EXISTS input_characters INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE agentic_research_report_attempts
+    ADD COLUMN IF NOT EXISTS response_characters INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE agentic_research_report_attempts
     ADD COLUMN IF NOT EXISTS failure_code TEXT;
 ALTER TABLE agentic_research_report_attempts
     DROP CONSTRAINT IF EXISTS agentic_research_report_attempts_report_id_attempt_number_key;
+DROP INDEX IF EXISTS agentic_research_report_attempts_topic_attempt_idx;
 CREATE UNIQUE INDEX IF NOT EXISTS agentic_research_report_attempts_report_attempt_idx
     ON agentic_research_report_attempts(report_id, attempt_number)
     WHERE topic_id IS NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS agentic_research_report_attempts_topic_attempt_idx
-    ON agentic_research_report_attempts(report_id, topic_id, attempt_number)
+    ON agentic_research_report_attempts(report_id, topic_id, group_index, attempt_number)
     WHERE topic_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS agentic_research_topics_workspace_run_idx
     ON agentic_research_topics(workspace_id, run_id, created_at);
@@ -800,17 +807,20 @@ class AgenticResearchStore:
             if attempts:
                 await connection.executemany(
                     """INSERT INTO agentic_research_report_attempts
-                       (id, report_id, topic_id, attempt_number, status, input_fingerprint,
+                       (id, report_id, topic_id, group_index, attempt_number, status,
+                        input_fingerprint,
                         model_name, prompt_version, contract_version, raw_response,
-                        validation_errors, duration_ms, input_characters, failure_code)
+                        validation_errors, duration_ms, input_characters,
+                        response_characters, failure_code)
                        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10,
-                               $11::jsonb, $12, $13, $14)""",
+                               $11, $12::jsonb, $13, $14, $15, $16)""",
                     [
-                        (uuid4(), report_id, item.topic_id, item.attempt_number,
-                         item.status, input_fingerprint, item.model_name,
-                         item.prompt_version, contract_version, item.raw_response,
-                         json.dumps(item.validation_errors), item.duration_ms,
-                         item.input_characters, item.failure_code)
+                        (uuid4(), report_id, item.topic_id, item.group_index,
+                         item.attempt_number, item.status, input_fingerprint,
+                         item.model_name, item.prompt_version, contract_version,
+                         item.raw_response, json.dumps(item.validation_errors),
+                         item.duration_ms, item.input_characters,
+                         item.response_characters, item.failure_code)
                         for item in attempts
                     ],
                 )

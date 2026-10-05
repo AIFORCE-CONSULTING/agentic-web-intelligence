@@ -63,8 +63,8 @@ for every design and implementation decision.
 For significant feature, workflow, authority, durable-execution, human-approval,
 or external-effect changes, use the Specify workflow in `.agents/skills/`.
 Treat `.specify/memory/constitution.md` as the canonical project constitution.
-The active report exclusion labeling plan is
-`specs/008-fix-exclusion-labels/plan.md`. Read `.specify/feature.json` and
+The active bounded final-report batching plan is
+`specs/009-bounded-report-batching/plan.md`. Read `.specify/feature.json` and
 the selected feature's current specification, plan, and tasks before
 implementation. Specify artifacts supplement rather than
 replace the architecture reconciliation and approval required above.

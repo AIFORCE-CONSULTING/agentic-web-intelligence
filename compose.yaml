@@ -25,8 +25,11 @@ services:
       DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
     ports:
       - "8000:8000"
+    depends_on:
+      database-bootstrap:
+        condition: service_completed_successfully
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/live')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health/ready')"]
       interval: 10s
       timeout: 3s
       retries: 5
@@ -74,7 +77,6 @@ services:
       - platform
 
   postgres:
-    profiles: ["stateful-services", "web-research", "durable-execution"]
     image: postgres:16-alpine
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-enterprise_agent_platform}
@@ -89,6 +91,23 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - platform
+
+  database-bootstrap:
+    image: python:3.12-slim
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    command: ["python", "-m", "app.database_bootstrap"]
+    environment:
+      APP_ENVIRONMENT: ${APP_ENVIRONMENT:-development}
+      APP_LOG_LEVEL: ${APP_LOG_LEVEL:-INFO}
+      DATABASE_URL: postgresql://${POSTGRES_USER:-platform}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-enterprise_agent_platform}
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
     networks:
       - platform
 
@@ -142,6 +161,8 @@ services:
     depends_on:
       temporal:
         condition: service_started
+      database-bootstrap:
+        condition: service_completed_successfully
     networks:
       - platform
 

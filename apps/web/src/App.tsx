@@ -4,7 +4,7 @@ import ReactMarkdown from "react-markdown";
 type Health = { status: string; service: string; environment: string };
 type DiscoverySourceCount = 50 | 40 | 30 | 20 | 10 | 5;
 type DependencyHealth = {
-  name: string; status: "ready" | "unavailable" | "unconfigured"; detail: string;
+  name: string; status: "ready" | "degraded" | "unavailable" | "unconfigured"; detail: string;
 };
 type ServiceHealth = Health & { services: DependencyHealth[] };
 type Source = {
@@ -878,6 +878,8 @@ export function App() {
     : [];
   const selectedSummary = workspaceSummaries.find((source) => source.url === selectedSummaryUrl) ?? null;
   const sourceTitle = (source: WorkspaceSummaryArtifact) => source.title || source.url;
+  const platformReady = Boolean(health && serviceHealth?.status === "ready");
+  const bootstrapStatus = serviceHealth?.services.find((service) => service.name === "Database bootstrap");
 
   return (
     <main>
@@ -886,7 +888,12 @@ export function App() {
         <PrimaryNavigation />
         <h1>Research with a durable evidence trail.</h1>
         <p className="lead">Discover public sources, extract bounded source data, and keep an inspectable record of every platform decision.</p>
-        <p className={`connection ${health ? "online" : "offline"}`}>{health ? `API ${health.status}` : "API unavailable"}</p>
+        <p className={`connection ${platformReady ? "online" : "offline"}`}>
+          {platformReady ? "Platform ready" : health ? `Platform ${serviceHealth?.status ?? health.status}` : "API unavailable"}
+        </p>
+        {bootstrapStatus && bootstrapStatus.status !== "ready" && (
+          <p className="hint">Database initialization: {bootstrapStatus.detail}</p>
+        )}
       </header>
 
       <section aria-labelledby="run-heading">
@@ -904,7 +911,7 @@ export function App() {
               {[50, 40, 30, 20, 10, 5].map((count) => <option key={count} value={count}>{count}</option>)}
             </select>
           </label>
-          <button type="submit" disabled={busy || !health}>{busy ? "Working…" : "Discover sources"}</button>
+          <button type="submit" disabled={busy || !platformReady}>{busy ? "Working…" : "Discover sources"}</button>
         </form>
       </section>
 

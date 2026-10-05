@@ -7,7 +7,6 @@ from uuid import UUID, uuid4
 import asyncpg
 
 from app.identity.contracts import SecurityAuditEvent
-from app.persistence import execute_schema_setup
 
 _SENSITIVE_FIELD_MARKERS = frozenset(
     {"authorization", "cookie", "credential", "password", "secret", "token"}
@@ -102,8 +101,6 @@ class SecurityAuditStore:
         if self._pool is None:
             try:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
-                async with self._pool.acquire() as connection:
-                    await execute_schema_setup(connection, SCHEMA)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()

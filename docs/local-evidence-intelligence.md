@@ -101,9 +101,20 @@ docker compose --profile web-research up -d --build
 ```
 
 This standard platform profile starts the API, web console, documentation site,
-Postgres, SearXNG, Temporal, the Temporal UI, and the durable worker. Temporal
-is required platform infrastructure: the operator starts the platform once and
-never chooses an execution mechanism for an individual summary request.
+Postgres, the short-lived `database-bootstrap` service, SearXNG, Temporal, the
+Temporal UI, and the durable worker. The bootstrap service prepares the
+application tables, constraints, and indexes before the API reports ready and
+before the durable worker polls for work. Runtime requests, LangGraph nodes,
+and Temporal activities should read and write business records only; they do
+not create or repair schema during research.
+
+If database bootstrap is missing, failed, or incompatible, `/health/ready` and
+`/health/services` report a database initialization problem. The Research
+workspace shows the platform as not ready instead of treating the problem as a
+model, extraction, trust-policy, or report failure.
+
+Temporal is required platform infrastructure: the operator starts the platform
+once and never chooses an execution mechanism for an individual summary request.
 
 The unified LangGraph applies the routing threshold after summary work is
 accepted. It
@@ -195,6 +206,29 @@ grant the model or caller Temporal authority or own research status.
 If Temporal is unhealthy or unreachable when a durable route is selected, the
 summary execution fails closed. That is a platform infrastructure failure, not
 an operator routing choice.
+
+## Database bootstrap and readiness
+
+The local Docker stack runs:
+
+```powershell
+python -m app.database_bootstrap
+```
+
+inside the `database-bootstrap` container after Postgres is healthy. Developers
+can run the same command in the API environment for local troubleshooting.
+
+Readiness checks are separated:
+
+- `/health/live` means the API process is running.
+- `/health/ready` means database bootstrap has completed for the expected
+  application schema version.
+- `/health/services` includes a **Database bootstrap** row with safe
+  operator-facing details.
+
+The bootstrap status is operational readiness only. It does not rewrite
+research runs, evidence, summaries, keywords, reports, trust decisions, or
+audit history.
 
 ## Chunking and consolidation
 

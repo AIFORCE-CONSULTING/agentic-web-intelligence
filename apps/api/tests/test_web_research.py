@@ -13,6 +13,7 @@ from app.agent_runtime.research_workflow import (
     ResearchWorkflowUnavailable,
     UnifiedResearchWorkflowEntry,
 )
+from app.database_bootstrap import DatabaseBootstrapReadiness
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
     EvidenceSummaryExecutionSource,
@@ -72,6 +73,13 @@ def test_application_lifespan_builds_one_checkpointed_research_entry(
 
     app.state.research_checkpoint_lifecycle = Checkpoints()
     app.state.research_workflow_nodes = object()
+    app.state.database_bootstrap_readiness = lambda: asyncio.sleep(
+        0,
+        result=DatabaseBootstrapReadiness(
+            status="ready",
+            detail="Database bootstrap completed and runtime work may proceed.",
+        ),
+    )
 
     def compile_graph(nodes, store, requested_saver):
         assert nodes is app.state.research_workflow_nodes
@@ -106,6 +114,13 @@ def test_application_lifespan_does_not_substitute_for_failed_checkpoints() -> No
             stopped = True
 
     app.state.research_checkpoint_lifecycle = Checkpoints()
+    app.state.database_bootstrap_readiness = lambda: asyncio.sleep(
+        0,
+        result=DatabaseBootstrapReadiness(
+            status="ready",
+            detail="Database bootstrap completed and runtime work may proceed.",
+        ),
+    )
 
     async def run_lifespan() -> None:
         async with app.router.lifespan_context(app):
@@ -318,6 +333,13 @@ def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.Monke
     )
     app = create_app()
     app.state.research_store = FakeStore()
+    app.state.database_bootstrap_readiness = lambda: asyncio.sleep(
+        0,
+        result=DatabaseBootstrapReadiness(
+            status="ready",
+            detail="Database bootstrap completed and runtime work may proceed.",
+        ),
+    )
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -329,6 +351,11 @@ def test_service_health_reports_phase_two_dependencies(monkeypatch: pytest.Monke
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"
     assert response.json()["services"] == [
+        {
+            "name": "Database bootstrap",
+            "status": "ready",
+            "detail": "Database bootstrap completed and runtime work may proceed.",
+        },
         {
             "name": "Research persistence",
             "status": "ready",
@@ -373,6 +400,13 @@ def test_service_health_reports_checkpoint_cleanup_as_maintenance(
     app = create_app()
     app.state.research_store = FakeStore()
     app.state.research_checkpoint_lifecycle = FakeCheckpoints()
+    app.state.database_bootstrap_readiness = lambda: asyncio.sleep(
+        0,
+        result=DatabaseBootstrapReadiness(
+            status="ready",
+            detail="Database bootstrap completed and runtime work may proceed.",
+        ),
+    )
 
     async def request() -> httpx.Response:
         transport = httpx.ASGITransport(app=app)
@@ -382,7 +416,7 @@ def test_service_health_reports_checkpoint_cleanup_as_maintenance(
             return await client.get("/health/services")
 
     response = asyncio.run(request())
-    checkpoint = response.json()["services"][2]
+    checkpoint = response.json()["services"][3]
 
     assert response.status_code == 200
     assert response.json()["status"] == "degraded"

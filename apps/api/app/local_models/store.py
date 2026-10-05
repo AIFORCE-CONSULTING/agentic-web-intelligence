@@ -5,7 +5,6 @@ from uuid import UUID
 import asyncpg
 
 from app.local_models.contracts import LocalModelProviderConfiguration
-from app.persistence import execute_schema_setup
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS local_model_provider_configurations (
@@ -34,8 +33,6 @@ class LocalModelProviderStore:
         if self._pool is None:
             try:
                 self._pool = await asyncpg.create_pool(self._database_url, min_size=1, max_size=5)
-                async with self._pool.acquire() as connection:
-                    await execute_schema_setup(connection, SCHEMA)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()

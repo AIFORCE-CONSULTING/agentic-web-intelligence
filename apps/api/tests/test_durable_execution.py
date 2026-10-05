@@ -32,6 +32,33 @@ def test_durable_worker_exposes_the_summary_temporal_boundary() -> None:
     assert worker.EvidenceSummaryTemporalBoundary is not None
 
 
+def test_durable_worker_requires_database_bootstrap_before_polling(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from app.durable_execution import worker
+    from app.settings import Settings
+
+    async def not_ready(_: str | None) -> None:
+        raise RuntimeError("Database bootstrap has not run.")
+
+    async def connect_temporal(*_: object, **__: object):
+        raise AssertionError("Worker must not connect to Temporal before bootstrap readiness.")
+
+    monkeypatch.setattr(
+        worker,
+        "get_settings",
+        lambda: Settings(
+            database_url="postgresql://test",
+            temporal_address="temporal:7233",
+        ),
+    )
+    monkeypatch.setattr(worker, "require_database_bootstrap_ready", not_ready)
+    monkeypatch.setattr(worker.Client, "connect", connect_temporal)
+
+    with pytest.raises(RuntimeError, match="Database bootstrap has not run"):
+        asyncio.run(worker.run_worker())
+
+
 def test_runtime_execution_permission_excludes_viewers() -> None:
     viewer = AuthenticatedUser(
         id=uuid4(),

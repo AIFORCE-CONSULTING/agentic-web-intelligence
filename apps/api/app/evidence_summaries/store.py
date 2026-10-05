@@ -11,7 +11,6 @@ from app.evidence_summaries.contracts import (
     EvidenceSummaryWorkSet,
     WorkspaceEvidenceSummaryArtifact,
 )
-from app.persistence import execute_schema_setup
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS evidence_summary_executions (
@@ -194,8 +193,6 @@ class EvidenceSummaryStore:
                     min_size=1,
                     max_size=5,
                 )
-                async with self._pool.acquire() as connection:
-                    await execute_schema_setup(connection, SCHEMA)
             except (asyncpg.PostgresError, OSError) as error:
                 if self._pool is not None:
                     await self._pool.close()

@@ -27,6 +27,10 @@ from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore, AgenticResearchStoreUnavailable
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
+from app.database_bootstrap import (
+    DatabaseBootstrapReadiness,
+    database_bootstrap_readiness,
+)
 from app.evidence_summaries.contracts import (
     CreateEvidenceSummaryExecutionRequest,
     EvidenceSummaryExecution,
@@ -181,6 +185,9 @@ def create_app() -> FastAPI:
     async def lifespan(application: FastAPI):
         checkpoint_lifecycle = application.state.research_checkpoint_lifecycle
         try:
+            bootstrap_status = await application.state.database_bootstrap_readiness()
+            if not bootstrap_status.ready:
+                raise RuntimeError(bootstrap_status.detail)
             saver = await checkpoint_lifecycle.start()
             graph = compile_research_workflow(
                 application.state.research_workflow_nodes,
@@ -328,6 +335,9 @@ def create_app() -> FastAPI:
         return True
 
     app.state.research_temporal_ready = research_temporal_ready
+    app.state.database_bootstrap_readiness = lambda: database_bootstrap_readiness(
+        settings.database_url
+    )
     app.state.research_workflow_graph = None
     app.state.research_workflow_entry = None
     app.add_middleware(
@@ -880,12 +890,23 @@ def create_app() -> FastAPI:
         )
 
     @app.get("/health/ready", response_model=HealthResponse, tags=["health"])
-    async def readiness() -> HealthResponse:
+    async def readiness(response: Response) -> HealthResponse:
         """Confirm that the API can accept platform requests.
 
-        Future phases will extend this check with required dependency probes.
+        Readiness includes operational database bootstrap state. Liveness remains
+        separate so operators can tell "process is running" from "ready for work".
         """
 
+        bootstrap_status: DatabaseBootstrapReadiness = (
+            await app.state.database_bootstrap_readiness()
+        )
+        if not bootstrap_status.ready:
+            response.status_code = 503
+            return HealthResponse(
+                status=bootstrap_status.status,
+                service="agentic-web-intelligence-api",
+                environment=settings.app_environment,
+            )
         return HealthResponse(
             status="ready",
             service="agentic-web-intelligence-api",
@@ -897,6 +918,22 @@ def create_app() -> FastAPI:
         """Report whether the Phase 2 persistence and discovery dependencies are usable."""
 
         store: ResearchStore = http_request.app.state.research_store
+
+        async def bootstrap_health() -> DependencyHealth:
+            status: DatabaseBootstrapReadiness = (
+                await http_request.app.state.database_bootstrap_readiness()
+            )
+            if status.ready:
+                return DependencyHealth(
+                    name="Database bootstrap",
+                    status="ready",
+                    detail=status.detail,
+                )
+            return DependencyHealth(
+                name="Database bootstrap",
+                status="unconfigured" if status.status == "unconfigured" else "unavailable",
+                detail=status.detail,
+            )
 
         async def persistence_health() -> DependencyHealth:
             try:
@@ -948,7 +985,7 @@ def create_app() -> FastAPI:
             )
 
         services = await asyncio.gather(
-            persistence_health(), discovery_health(), checkpoint_health()
+            bootstrap_health(), persistence_health(), discovery_health(), checkpoint_health()
         )
         return ServiceHealthResponse(
             status=(

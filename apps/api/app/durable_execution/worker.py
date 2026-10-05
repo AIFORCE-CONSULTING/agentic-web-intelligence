@@ -19,6 +19,7 @@ from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore
 from app.agentic_research.topic_planning import TopicPlanningService
 from app.agentic_research.workflow_nodes import platform_research_nodes
+from app.database_bootstrap import require_database_bootstrap_ready
 from app.durable_execution.contracts import WorkflowContinuationEnvelope
 from app.evidence_summaries.service import (
     EvidenceSummaryAutomation,
@@ -235,6 +236,7 @@ async def run_worker() -> None:
     settings.validate_runtime_configuration()
     if not settings.temporal_address:
         raise RuntimeError("The durable worker requires TEMPORAL_ADDRESS.")
+    await require_database_bootstrap_ready(settings.database_url)
     client = await Client.connect(settings.temporal_address, namespace=settings.temporal_namespace)
     worker = Worker(
         client,

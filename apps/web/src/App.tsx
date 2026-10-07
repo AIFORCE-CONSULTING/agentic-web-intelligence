@@ -897,7 +897,7 @@ export function App() {
       </header>
 
       <section aria-labelledby="run-heading">
-        <h2 id="run-heading">1. Start a research run</h2>
+        <h2 id="run-heading">Start a research run</h2>
         <form onSubmit={createRun} className="form-row">
           <label>Research question
             <input value={question} onChange={(event) => setQuestion(event.target.value)} required />
@@ -908,7 +908,7 @@ export function App() {
               onChange={(event) => setDiscoverySourceCount(Number(event.target.value) as DiscoverySourceCount)}
               aria-label="Number of sources to discover"
             >
-              {[50, 40, 30, 20, 10, 5].map((count) => <option key={count} value={count}>{count}</option>)}
+              {[30, 20, 10, 5].map((count) => <option key={count} value={count}>{count}</option>)}
             </select>
           </label>
           <button type="submit" disabled={busy || !platformReady}>{busy ? "Working…" : "Discover sources"}</button>
@@ -928,13 +928,46 @@ export function App() {
         ))}</ol> : <p>No saved research runs yet. Start one above to create a durable resource.</p>}
       </section>
 
+      {run && <section aria-labelledby="report-heading">
+        <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">Final report</h2></div>{report && <span className="badge">{report.quality_grade} {report.report_origin === "fallback" ? "evidence briefing" : "report"}</span>}</div>
+        {report ? <article className="source-summary report-markdown">
+          <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.{report.model_name ? ` Model: ${report.model_name}.` : ""}</p>
+          {!report.current && <aside className="error"><strong>Historical report</strong><p>This report was created from an earlier evidence set and is not the current report for this research run.</p></aside>}
+          {report.quality_grade === "FAIL" && <aside className="error"><strong>Report quality: FAIL</strong>{report.quality_reasons.map((reason) => <p key={reason.code}>{reason.message}</p>)}</aside>}
+          <ReactMarkdown components={{
+            a: ({ href, children }) => {
+              const sourceRef = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
+              const source = sourceRef ? report.supporting_sources.find((item) => item.source_ref === sourceRef) : null;
+              return source ? (
+                <a
+                  href="#source-summary"
+                  title={`Open stored summary ${source.source_ref}`}
+                  onClick={(event) => openStoredSummary(source.url, event)}
+                >
+                  {children}
+                </a>
+              ) : <span title="Unsupported report link">{children}</span>;
+            },
+          }}>{report.markdown}</ReactMarkdown>
+          {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">
+            <h3>Sources not used for report findings</h3>
+            <ul>{report.exclusions.map((source) => {
+              const summary = workspaceSummaries.find((item) => item.url === source.url);
+              return <li key={`${source.url}-${source.reason_code}`}>
+                {summary ? <a href="#source-summary" onClick={(event) => openStoredSummary(summary.url, event)}><strong>{source.title}</strong></a> : <strong>{source.title}</strong>}: {source.reason}
+              </li>;
+            })}</ul>
+          </section>}
+        </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
+      </section>}
+
       {run && <>
         {trustPolicy && <section aria-labelledby="trust-policy-heading">
           <div className="section-heading"><div><p className="eyebrow">Read-only platform policy</p><h2 id="trust-policy-heading">Web trust policy</h2></div><span className="badge">{trustPolicy.version}</span></div>
           <dl className="trust-policy-details">{Object.entries(trustPolicy.rules).map(([rule, value]) => <div key={rule}><dt>{rule.replaceAll("_", " ")}</dt><dd>{Array.isArray(value) ? value.join(", ") : String(value)}</dd></div>)}</dl>
         </section>}
         <section aria-labelledby="sources-heading">
-          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">2. Candidate preflight</h2></div><div className="candidate-controls"><label>Status<select value={candidateStatusFilter} onChange={(event) => setCandidateStatusFilter(event.target.value as Source["preflight_status"] | "all")} aria-label="Filter candidate preflight by status"><option value="all">All statuses ({run.sources.length})</option>{candidateStatuses.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")} ({run.sources.filter((source) => source.preflight_status === status).length})</option>)}</select></label><span className="badge">{run.status.replaceAll("_", " ")}</span></div></div>
+          <div className="section-heading"><div><p className="eyebrow">Run {run.id.slice(0, 8)}</p><h2 id="sources-heading">Candidate preflight</h2></div><div className="candidate-controls"><label>Status<select value={candidateStatusFilter} onChange={(event) => setCandidateStatusFilter(event.target.value as Source["preflight_status"] | "all")} aria-label="Filter candidate preflight by status"><option value="all">All statuses ({run.sources.length})</option>{candidateStatuses.map((status) => <option key={status} value={status}>{status.replaceAll("_", " ")} ({run.sources.filter((source) => source.preflight_status === status).length})</option>)}</select></label><span className="badge">{run.status.replaceAll("_", " ")}</span></div></div>
           {run.sources.length ? visibleCandidates.length ? <ol className="sources">{visibleCandidates.map((source) => (
             <li className="source-candidate" key={`${source.rank}-${source.url}`}><div className="source">
               <span className="rank">{source.rank}</span><span><strong>{source.title}</strong>{source.snippet && <span>{source.snippet}</span>}<small>Candidate preflight: {source.preflight_status.replaceAll("_", " ")}{source.preflight_trust_disposition ? ` · trust ${source.preflight_trust_disposition.replaceAll("_", " ")}` : ""}{source.preflight_redirect_result ? ` · retrieval ${source.preflight_redirect_result.replaceAll("_", " ")}` : ""}{source.preflight_reason ? ` · ${source.preflight_reason}` : ""}</small>{source.preflight_final_url && source.preflight_final_url !== source.url && <small>Captured from: {source.preflight_final_url}</small>}</span>
@@ -975,7 +1008,7 @@ export function App() {
         </section>
 
         <section aria-labelledby="keywords-heading">
-          <div className="section-heading"><div><p className="eyebrow">Workspace source summaries</p><h2 id="keywords-heading">3. Keywords</h2></div><span className="badge">{keywordCards.length} keyword{keywordCards.length === 1 ? "" : "s"}</span></div>
+          <div className="section-heading"><div><p className="eyebrow">Workspace source summaries</p><h2 id="keywords-heading">Keywords</h2></div><span className="badge">{keywordCards.length} keyword{keywordCards.length === 1 ? "" : "s"}</span></div>
           {summaryBatch && <aside className={`extraction-status ${summaryBatch.status === "failed" ? "failure" : "success"}`}>
             <strong>{summaryBatch.status === "completed" ? "Evidence summaries complete" : summaryBatch.status === "failed" ? "Evidence summary processing failed" : "Evidence summary processing"}</strong>
             <p>{summaryBatch.status === "awaiting_execution" || summaryBatch.status === "summarizing" ? "The local model is working in the background. This panel refreshes automatically." : `${summaryBatch.sources.filter((source) => source.status === "completed").length} source${summaryBatch.sources.filter((source) => source.status === "completed").length === 1 ? "" : "s"} summarized.`}</p>
@@ -998,39 +1031,6 @@ export function App() {
               {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
             </article>}
           </div>
-        </section>
-
-        <section aria-labelledby="report-heading">
-          <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">4. Final report</h2></div>{report && <span className="badge">{report.quality_grade} {report.report_origin === "fallback" ? "evidence briefing" : "report"}</span>}</div>
-          {report ? <article className="source-summary report-markdown">
-            <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.{report.model_name ? ` Model: ${report.model_name}.` : ""}</p>
-            {!report.current && <aside className="error"><strong>Historical report</strong><p>This report was created from an earlier evidence set and is not the current report for this research run.</p></aside>}
-            {report.quality_grade === "FAIL" && <aside className="error"><strong>Report quality: FAIL</strong>{report.quality_reasons.map((reason) => <p key={reason.code}>{reason.message}</p>)}</aside>}
-            <ReactMarkdown components={{
-              a: ({ href, children }) => {
-                const sourceRef = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
-                const source = sourceRef ? report.supporting_sources.find((item) => item.source_ref === sourceRef) : null;
-                return source ? (
-                  <a
-                    href="#source-summary"
-                    title={`Open stored summary ${source.source_ref}`}
-                    onClick={(event) => openStoredSummary(source.url, event)}
-                  >
-                    {children}
-                  </a>
-                ) : <span title="Unsupported report link">{children}</span>;
-              },
-            }}>{report.markdown}</ReactMarkdown>
-            {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">
-              <h3>Sources not used for report findings</h3>
-              <ul>{report.exclusions.map((source) => {
-                const summary = workspaceSummaries.find((item) => item.url === source.url);
-                return <li key={`${source.url}-${source.reason_code}`}>
-                  {summary ? <a href="#source-summary" onClick={(event) => openStoredSummary(summary.url, event)}><strong>{source.title}</strong></a> : <strong>{source.title}</strong>}: {source.reason}
-                </li>;
-              })}</ul>
-            </section>}
-          </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
         </section>
 
         <section aria-labelledby="audit-heading">

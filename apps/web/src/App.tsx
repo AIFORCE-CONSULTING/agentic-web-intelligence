@@ -959,6 +959,19 @@ export function App() {
             })}</ul>
           </section>}
         </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
+        <div id="source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
+          {selectedSummary && <article className="source-summary">
+            <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
+            <p className="source-address">
+              <a href={selectedSummary.url} target="_blank" rel="noreferrer">
+                {selectedSummary.url}
+              </a>
+            </p>
+            {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
+            {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+            {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
+          </article>}
+        </div>
       </section>}
 
       {run && <>
@@ -1018,19 +1031,6 @@ export function App() {
             <h3>{keyword.label}</h3>
             <ol>{keyword.sources.map((source) => <li key={source.url}><a href="#source-summary" onClick={(event) => openStoredSummary(source.url, event)}>{sourceTitle(source)}</a></li>)}</ol>
           </article>)}</div> : <p className="hint">No stored source summaries with keywords are available in this workspace yet.</p>}
-          <div id="source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
-            {selectedSummary && <article className="source-summary">
-              <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
-              <p className="source-address">
-                <a href={selectedSummary.url} target="_blank" rel="noreferrer">
-                  {selectedSummary.url}
-                </a>
-              </p>
-              {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
-              {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-              {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
-            </article>}
-          </div>
         </section>
 
         <section aria-labelledby="audit-heading">

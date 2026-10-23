@@ -151,3 +151,17 @@ first-result LangGraph executor and reviewer cycle,
 Obsolete test-era rows, checkpoints, and workflow histories were removed under
 the approved clean-start policy. None is a fallback or alternate production
 path.
+
+## Topic Research Wiki
+
+The current product boundary is documented in ADR 0017. A **Research Topic** is
+a durable operator
+notebook that groups existing research runs, source provenance, and immutable
+wiki revisions. It will extend the current unified graph and stores rather than
+create a second workflow or status system.
+
+When evidence in a topic needs human review, the topic workspace
+derive a **Needs your decision** queue from the existing trust evaluation and
+override records. The queue is an operator view, not stored topic status. It
+will require the operator to use the existing accept or reject action before
+starting another question in the same topic.

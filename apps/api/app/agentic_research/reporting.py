@@ -315,6 +315,136 @@ class ResearchReportingService:
             quality_reasons, origin, inputs, contributions, exclusions, attempts,
         )
 
+    async def publish_topic_wiki(
+        self, workspace_id: UUID, notebook_id: UUID, run_id: UUID, question: str
+    ) -> tuple[UUID, bool]:
+        """Publish one bounded, source-grounded wiki revision for a notebook.
+
+        The platform chooses the notebook's qualified summaries and its report
+        structure. The local model is only asked for findings for each supplied
+        planned topic, using the same strict source-label contract as the
+        existing final report.
+        """
+
+        inputs = await self._store.topic_report_inputs(workspace_id, notebook_id)
+        exclusions = await self._store.topic_report_exclusions(workspace_id, notebook_id)
+        coverage = _topic_coverage_for_inputs(inputs)
+        fingerprint = _input_fingerprint(inputs, coverage)
+        if not inputs:
+            revision, created = await self._store.save_topic_wiki_revision(
+                workspace_id,
+                notebook_id,
+                run_id,
+                "# Research wiki\n\nNo qualified evidence is available yet.",
+                fingerprint,
+                None,
+                REPORT_PROMPT_VERSION,
+                REPORT_CONTRACT_VERSION,
+                "FAIL",
+                [
+                    ReportQualityReason(
+                        code="missing_topic_coverage",
+                        message="No eligible, relevant stored summaries are available yet.",
+                    )
+                ],
+                "fallback",
+                exclusions,
+                [],
+                [],
+                "The latest question did not add qualified evidence to this wiki.",
+            )
+            return revision.id, created
+
+        model_name: str | None = None
+        sections: list[TopicSectionResult] = []
+        quality_reasons: list[ReportQualityReason] = []
+        contributions: list[tuple[int, str]] = []
+        inputs_by_topic = _inputs_by_topic(inputs)
+        for topic in coverage:
+            topic_inputs = inputs_by_topic.get(topic.topic_id, [])
+            topic_findings: list[tuple[str, list[str]]] = []
+            failure_code: str | None = None
+            for group in _bounded_report_groups(question, topic, topic_inputs):
+                selected: TopicFindingDraft | None = None
+                correction: list[str] = []
+                for _ in range(MAX_REPORT_ATTEMPTS):
+                    try:
+                        raw_response, model_name = await self._chat_report(
+                            workspace_id, _topic_report_instruction(correction), group.payload
+                        )
+                        draft = TopicFindingDraft.model_validate_json(raw_response)
+                    except (json.JSONDecodeError, ValidationError):
+                        correction = [
+                            "Return one or more findings in valid JSON matching the schema exactly."
+                        ]
+                        failure_code = "malformed_topic_output"
+                        continue
+                    except ResearchReportingModelTimeout:
+                        failure_code = "model_timeout"
+                        break
+                    except ResearchReportingUnavailable:
+                        failure_code = "model_unavailable"
+                        break
+                    assessment = _assess_topic_draft(draft, topic, group.inputs)
+                    if assessment.passed:
+                        selected = draft
+                        break
+                    correction = assessment.errors
+                    failure_code = _failure_code_for_errors(assessment.errors)
+                if selected is not None:
+                    topic_findings.extend(_normalized_findings(selected, group.inputs))
+                else:
+                    quality_reasons.append(
+                        ReportQualityReason(
+                            code=failure_code or "unsafe_model_draft",
+                            message=(
+                                f"{topic.topic}: the platform used the stored source list "
+                                "because the local model could not produce valid findings."
+                            ),
+                        )
+                    )
+            if topic_findings:
+                sections.append(
+                    TopicSectionResult(topic=topic, inputs=topic_inputs, findings=topic_findings)
+                )
+                contributions.extend(
+                    (position, source_ref)
+                    for position, (_, source_refs) in enumerate(topic_findings, start=1)
+                    for source_ref in source_refs
+                )
+            else:
+                sections.append(
+                    TopicSectionResult(
+                        topic=topic,
+                        inputs=topic_inputs,
+                        findings=[],
+                        fallback_message=_fallback_message(
+                            failure_code or "unsafe_model_draft"
+                        ),
+                    )
+                )
+        grade = "PASS" if not quality_reasons else "FAIL"
+        revision, created = await self._store.save_topic_wiki_revision(
+            workspace_id,
+            notebook_id,
+            run_id,
+            _render_topic_sections(sections).replace(
+                "# Executive research report", "# Research wiki", 1
+            ),
+            fingerprint,
+            model_name,
+            REPORT_PROMPT_VERSION,
+            REPORT_CONTRACT_VERSION,
+            grade,
+            quality_reasons,
+            "model_pass" if grade == "PASS" else "model_fail",
+            inputs,
+            contributions,
+            exclusions,
+            _topic_wiki_change_summary(question, inputs),
+        )
+        return revision.id, created
+
     async def _chat_report(
         self, workspace_id: UUID, instruction: str, content: str
     ) -> tuple[str, str]:
@@ -475,6 +605,32 @@ def _inputs_by_topic(inputs: list[ReportInput]) -> dict[str, list[ReportInput]]:
     for item in inputs:
         grouped.setdefault(item.topic_id, []).append(item)
     return grouped
+
+
+def _topic_coverage_for_inputs(inputs: list[ReportInput]) -> list[TopicCoverage]:
+    """Build report grouping metadata from already-qualified notebook inputs."""
+
+    coverage: dict[str, TopicCoverage] = {}
+    for item in inputs:
+        coverage.setdefault(
+            item.topic_id,
+            TopicCoverage(
+                topic_id=item.topic_id,
+                topic=item.topic,
+                search_query="stored notebook evidence",
+                status="covered",
+            ),
+        )
+    return list(coverage.values())
+
+
+def _topic_wiki_change_summary(question: str, inputs: list[ReportInput]) -> str:
+    """Provide an operator-readable, deterministic revision explanation."""
+
+    return (
+        f"The question '{question}' updated this wiki using "
+        f"{len(inputs)} qualified stored source summaries."
+    )
 
 
 def _assess_topic_draft(

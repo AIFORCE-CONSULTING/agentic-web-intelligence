@@ -6,7 +6,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN useradd --create-home --uid 10001 platform
+RUN if ! id -u platform >/dev/null 2>&1; then useradd --create-home --uid 10001 platform; fi
 
 COPY apps/api/requirements.lock ./requirements.lock
 COPY apps/api/app ./app

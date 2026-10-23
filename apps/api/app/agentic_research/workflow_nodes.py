@@ -394,6 +394,11 @@ def topic_coverage_node(
         coverage = await agentic_store.list_topic_coverage(
             state["workspace_id"], state["run_id"]
         )
+        topic_id = state.get("topic_id")
+        if topic_id is not None:
+            await agentic_store.associate_qualified_topic_sources(
+                state["workspace_id"], topic_id, state["run_id"], coverage
+            )
         uncovered = [topic.topic_id for topic in coverage if topic.status == "uncovered"]
         return {
             "stage": "coverage_incomplete" if uncovered else "coverage_complete",
@@ -475,9 +480,15 @@ def final_report_node(reporting: ResearchReportingService) -> ResearchNode:
     """Generate and store the report from qualified summaries only."""
 
     async def report(state: ResearchWorkflowState) -> ResearchWorkflowState:
-        await reporting.final_report(
-            state["workspace_id"], state["run_id"], state["question"]
-        )
+        notebook_id = state.get("topic_id")
+        if notebook_id is None:
+            await reporting.final_report(
+                state["workspace_id"], state["run_id"], state["question"]
+            )
+        else:
+            await reporting.publish_topic_wiki(
+                state["workspace_id"], notebook_id, state["run_id"], state["question"]
+            )
         return {"stage": "report_stored"}
 
     return report

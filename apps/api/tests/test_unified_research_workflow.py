@@ -444,6 +444,58 @@ def test_workflow_entry_reuses_canonical_run_and_stable_checkpoint_identity() ->
     assert graph_calls[0][0]["source_limit"] == 20
 
 
+def test_workflow_entry_carries_topic_identity_without_changing_run_status_owner() -> None:
+    workspace_id, topic_id, run_id = uuid4(), uuid4(), uuid4()
+    now = datetime.now(UTC)
+    run = ResearchRun(
+        id=run_id,
+        question="How are WebMCP tools being adopted?",
+        status="planning",
+        created_at=now,
+        updated_at=now,
+    )
+    states: list[dict] = []
+
+    class Store:
+        async def get_run(self, *_: object) -> ResearchRun:
+            return run
+
+    class Runtime:
+        async def ensure_research_assignment(self, *_: object) -> None:
+            return None
+
+    class Checkpoints:
+        async def readiness(self) -> CheckpointReadiness:
+            return CheckpointReadiness(True, 0, "ready")
+
+        def graph_config(self, requested_run_id: object) -> dict[str, object]:
+            return ResearchCheckpointLifecycle.graph_config(requested_run_id)
+
+    class Graph:
+        async def ainvoke(self, state: dict, _config: dict) -> dict:
+            states.append(state)
+            return state
+
+    async def temporal_ready() -> bool:
+        return True
+
+    persisted = asyncio.run(
+        UnifiedResearchWorkflowEntry(
+            Store(), Runtime(), Checkpoints(), Graph(), temporal_ready
+        ).start_existing(
+            workspace_id,
+            run,
+            run.question,
+            10,
+            topic_id=topic_id,
+        )
+    )
+
+    assert persisted == run
+    assert states[0]["topic_id"] == topic_id
+    assert states[0]["canonical_status"] == "planning"
+
+
 def test_workflow_entry_fails_before_record_creation_when_temporal_is_unavailable() -> None:
     class Store:
         async def get_or_create_run(self, *_):

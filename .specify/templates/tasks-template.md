@@ -19,6 +19,15 @@ resolved in the approved specification and plan. They MUST NOT be used as a
 place to postpone ownership, state-transition, continuation,
 dependency-failure, or conflict-resolution decisions.
 
+When a feature includes a required human decision, tasks MUST also cover the
+operator-facing attention item, its accept/reject or other resolution action,
+the enforcement point that prevents bypass, and integration tests proving a
+later action cannot ignore it.
+
+Tasks that change an operator-visible decision, status, review, blocking rule,
+or external effect MUST name the user scenario they implement or verify. Keep
+the task concise; the corresponding plan provides the fuller worked example.
+
 ## Format: `[ID] [P?] [Story] Description`
 
 - **[P]**: Can run in parallel (different files, no dependencies)

@@ -24,6 +24,131 @@ class ResearchTopic(BaseModel):
     search_query: str = Field(min_length=3, max_length=512)
 
 
+class CreateResearchTopicRequest(BaseModel):
+    """Create or reopen one operator-owned durable research notebook."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    name: str = Field(min_length=1, max_length=160)
+
+
+class TopicQuestionRequest(BaseModel):
+    """One operator question to research within an existing notebook."""
+
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    question: str = Field(min_length=1, max_length=512)
+    max_results: Literal[30, 20, 10, 5] = 20
+
+
+class TopicAttentionItem(BaseModel):
+    """One existing evidence decision that needs an operator response."""
+
+    run_id: UUID
+    source_url: str
+    content_hash: str
+    title: str
+    reason: str
+
+
+class TopicWorkspaceSummary(BaseModel):
+    """A durable workspace-scoped research notebook."""
+
+    id: UUID
+    name: str
+    current_revision_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    latest_run_status: str | None = None
+
+
+class TopicWorkspace(BaseModel):
+    """Topic metadata plus the derived operator attention queue."""
+
+    topic: TopicWorkspaceSummary
+    attention_required: list[TopicAttentionItem] = Field(default_factory=list)
+
+
+class TopicQuestionSummary(BaseModel):
+    """One existing research question shown in a Topic workspace."""
+
+    run_id: UUID
+    question: str
+    status: str
+    created_at: datetime
+    updated_at: datetime
+    contribution_revision_id: UUID | None = None
+    outcome: Literal["contributed", "no_change", "in_progress", "failed"]
+
+
+class TopicSourceSummary(BaseModel):
+    """One retained evidence item visible in a notebook's source library."""
+
+    evidence_id: UUID
+    first_run_id: UUID
+    title: str
+    url: str
+    summary: str | None = None
+    keywords: list[str] = Field(default_factory=list)
+    trust_disposition: str | None = None
+    introduced_at: datetime
+    introduced_by_questions: list[str] = Field(default_factory=list)
+
+
+class TopicSourceExclusion(BaseModel):
+    """A discovered source that remains visible but cannot support the wiki."""
+
+    run_id: UUID
+    title: str
+    url: str
+    reason_code: str
+    reason: str
+
+
+class TopicSourceLibrary(BaseModel):
+    """Retained topic evidence and separately explained exclusions."""
+
+    sources: list[TopicSourceSummary] = Field(default_factory=list)
+    exclusions: list[TopicSourceExclusion] = Field(default_factory=list)
+
+
+class TopicWikiRevision(BaseModel):
+    """Immutable source-grounded wiki content for one Topic."""
+
+    id: UUID
+    topic_id: UUID
+    revision_number: int = Field(ge=1)
+    triggering_run_id: UUID
+    previous_revision_id: UUID | None = None
+    markdown: str
+    input_fingerprint: str
+    quality_grade: Literal["PASS", "FAIL"]
+    quality_reasons: list[dict[str, str]] = Field(default_factory=list)
+    created_at: datetime
+
+
+class TopicWikiSource(BaseModel):
+    """A revision-local source label that resolves to retained evidence."""
+
+    source_label: str
+    title: str
+    url: str
+
+
+class TopicWikiRead(BaseModel):
+    """Current wiki and the deterministic explanation of its latest change."""
+
+    revision: TopicWikiRevision | None = None
+    change_summary: str | None = None
+    previous_revision_id: UUID | None = None
+    no_qualified_evidence: bool = False
+    supporting_sources: list[TopicWikiSource] = Field(default_factory=list)
+    source_additions: list[str] = Field(default_factory=list)
+    source_exclusions: list[dict[str, str]] = Field(default_factory=list)
+    changed_sections: list[str] = Field(default_factory=list)
+    remaining_gaps: list[str] = Field(default_factory=list)
+
+
 TopicList = Annotated[list[ResearchTopic], Field(min_length=1, max_length=MAX_RESEARCH_TOPICS)]
 
 

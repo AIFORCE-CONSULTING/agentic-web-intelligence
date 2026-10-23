@@ -255,13 +255,13 @@ valid summaries from other sources.
 Final summaries include an `evidence_sufficient` flag. When the extracted
 evidence is insufficient, the summary must say so instead of filling gaps. That
 source remains visible and reusable, but it does not count toward topic coverage
-or final-report input. The final report uses only stored summaries that are
+or wiki input. The topic wiki uses only stored summaries that are
 eligible under trust policy, relevant to a planned topic, and evidence
 sufficient.
 
-## Final report quality
+## Wiki quality
 
-The final report is built from a fixed snapshot of those qualified summaries.
+Each wiki revision is built from a fixed snapshot of those qualified summaries.
 The platform owns the report structure: it loads the planned topics, assigns
 simple report-local source labels such as `S01`, groups the qualified summaries
 under their stored topics, and renders the final Markdown itself. The local
@@ -286,6 +286,21 @@ platform's stored source summaries. It never turns a model-provided URL into a
 navigation target. A separate disclosure lists known sources that were not used
 and why, such as blocked, awaiting review, insufficient, failed to summarize,
 or not relevant to a planned topic.
+
+## Topic Research Wiki
+
+ADR 0017 defines the operator experience: a durable Research Topic that
+collects multiple related research questions and turns qualified stored evidence
+into a versioned wiki. This does not change the current trust, summary, keyword,
+or report eligibility rules. It will reuse qualified summaries and retain links
+to their original evidence.
+
+Each completed question may add an immutable wiki revision
+and a concise explanation of what changed. A topic will also show a derived
+**Needs your decision** item whenever existing evidence requires human review.
+The operator will use the established accept/reject decision before starting a
+new question in that same topic. The topic workspace is the active operator
+interface; the earlier standalone final-report panel is retired.
 
 ## Failure behavior
 

@@ -213,12 +213,31 @@ class UnifiedResearchWorkflowEntry:
         question: str,
         source_limit: int,
     ) -> tuple[ResearchRun, bool]:
+        await self.ensure_start_ready()
+        run, created = await self._store.get_or_create_run(workspace_id, question)
+        return await self.start_existing(workspace_id, run, question, source_limit), created
+
+    async def ensure_start_ready(self) -> None:
+        """Verify required execution services before creating a research record."""
+
         checkpoint_status = await self._checkpoints.readiness()
         if not checkpoint_status.ready:
             raise ResearchWorkflowUnavailable(checkpoint_status.detail)
         if not await self._temporal_ready():
             raise ResearchWorkflowUnavailable("Durable execution is unavailable.")
-        run, created = await self._store.get_or_create_run(workspace_id, question)
+
+    async def start_existing(
+        self,
+        workspace_id: UUID,
+        run: ResearchRun,
+        question: str,
+        source_limit: int,
+        *,
+        topic_id: UUID | None = None,
+    ) -> ResearchRun:
+        """Run an already-persisted research record through the one graph."""
+
+        await self.ensure_start_ready()
         await self._runtime_service.ensure_research_assignment(
             workspace_id, run.id, question
         )
@@ -258,6 +277,7 @@ class UnifiedResearchWorkflowEntry:
                     "run_id": run.id,
                     "question": question,
                     "source_limit": source_limit,
+                    "topic_id": topic_id,
                     "stage": run.status,
                     "canonical_status": run.status,
                     "status_version": run.status_version,
@@ -271,7 +291,7 @@ class UnifiedResearchWorkflowEntry:
             )
         if run.status != "completed" and persisted.status == "completed":
             await self._checkpoints.delete_thread(persisted.id)
-        return persisted, created
+        return persisted
 
     async def resume_after_review(
         self,
@@ -527,6 +547,7 @@ class ResearchWorkflowState(TypedDict, total=False):
     run_id: UUID
     question: str
     source_limit: int
+    topic_id: UUID | None
     stage: ResearchStage
     topics: list[ResearchTopic]
     new_source_urls: list[str]

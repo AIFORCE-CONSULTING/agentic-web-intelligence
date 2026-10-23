@@ -43,6 +43,14 @@
   and where PostgreSQL retains canonical state.
 - **Model boundary:** Identify model proposals, deterministic validation, stored
   capability grants, human-only decisions, and excluded capabilities.
+- **Feedback loops:** For every required human decision, identify the canonical
+  decision record, the operator-facing attention item, the action that resolves
+  it, the enforcement point that prevents bypass, and the rule that keeps
+  ordinary informational outcomes from becoming blockers.
+- **Worked examples:** For every consequential workflow decision, state change,
+  human approval, blocking rule, or external effect, include a short
+  plain-language example explaining what the operator sees, what they do, which
+  official record changes, and what happens next.
 - **Migration and retirement:** Identify existing callers and stored state, how
   each caller moves, what remains readable, and when superseded code is removed.
 - **Operational checkpoint:** State the trigger, authority owner, canonical
@@ -57,6 +65,18 @@ unknown. Do not defer these architecture decisions into implementation tasks.
 
 | State or decision | Business question | Canonical record and field | Authorized writer | Readers | Derived copies | Allowed transitions | Conflict resolution |
 | --- | --- | --- | --- | --- | --- | --- | --- |
+
+### Plain-Language Decision Examples
+
+For each consequential workflow decision, approval, state transition, blocking
+rule, or external effect, add a concise worked example. Do not repeat table
+field names without explaining their business meaning. Each example must state:
+
+1. what happened;
+2. what the operator sees;
+3. what action the operator can take, if any;
+4. which official record changes; and
+5. what the platform does next.
 | [Name] | [What official question does this answer?] | [Exact persisted record and field] | [Single component] | [Consumers] | [Checkpoints, histories, caches, or views] | [Complete start, waiting, terminal, and failure transitions] | [Which value wins and how disagreement is repaired or surfaced] |
 
 For workflows, also state:

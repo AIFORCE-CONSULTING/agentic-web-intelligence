@@ -2,7 +2,7 @@ import { FormEvent, MouseEvent, useEffect, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 
 type Health = { status: string; service: string; environment: string };
-type DiscoverySourceCount = 50 | 40 | 30 | 20 | 10 | 5;
+type DiscoverySourceCount = 30 | 20 | 10 | 5;
 type DependencyHealth = {
   name: string; status: "ready" | "degraded" | "unavailable" | "unconfigured"; detail: string;
 };
@@ -52,6 +52,46 @@ type ResearchRunSummary = {
   failure_code?: string | null; failure_explanation?: string | null; retryable: boolean;
 };
 type ResearchRunList = { runs: ResearchRunSummary[] };
+type TopicAttentionItem = {
+  run_id: string; source_url: string; content_hash: string; title: string; reason: string;
+};
+type ResearchTopicSummary = {
+  id: string; name: string; current_revision_id?: string | null; created_at: string;
+  updated_at: string; latest_run_status?: string | null;
+};
+type ResearchTopicWorkspace = {
+  topic: ResearchTopicSummary; attention_required: TopicAttentionItem[];
+};
+type TopicWikiRevision = {
+  id: string; topic_id: string; revision_number: number; triggering_run_id: string;
+  previous_revision_id?: string | null; markdown: string; input_fingerprint: string;
+  quality_grade: "PASS" | "FAIL"; quality_reasons: { code: string; message: string }[];
+  created_at: string;
+};
+type TopicWikiRead = {
+  revision?: TopicWikiRevision | null; change_summary?: string | null;
+  previous_revision_id?: string | null; no_qualified_evidence: boolean;
+  supporting_sources: { source_label: string; title: string; url: string }[];
+  source_additions: string[];
+  source_exclusions: { title: string; url: string; reason_code: string; reason: string }[];
+  changed_sections: string[];
+  remaining_gaps: string[];
+};
+type TopicQuestionSummary = {
+  run_id: string; question: string; status: string; created_at: string; updated_at: string;
+  contribution_revision_id?: string | null; outcome: "contributed" | "no_change" | "in_progress" | "failed";
+};
+type TopicSourceSummary = {
+  evidence_id: string; first_run_id: string; title: string; url: string; summary?: string | null;
+  keywords: string[]; trust_disposition?: string | null; introduced_at: string;
+  introduced_by_questions: string[];
+};
+type TopicSourceExclusion = {
+  run_id: string; title: string; url: string; reason_code: string; reason: string;
+};
+type TopicSourceLibrary = {
+  sources: TopicSourceSummary[]; exclusions: TopicSourceExclusion[];
+};
 type EvidenceSummaryBatch = {
   id: string; workSetId?: string; route: "undetermined" | "direct" | "durable"; status: string;
   sources: {
@@ -68,15 +108,6 @@ type EvidenceSummaryBatch = {
 };
 type EvidenceSummaryWorkSet = {
   id: string; status: "created" | "waiting" | "completed" | "failed"; execution_ids: string[];
-};
-type ResearchReport = {
-  id?: string | null; run_id: string; markdown: string; model_name?: string | null;
-  prompt_version: string; contract_version: string; quality_grade: "PASS" | "FAIL";
-  quality_reasons: { code: string; message: string }[];
-  report_origin: "model_pass" | "model_fail" | "fallback"; current: boolean;
-  supporting_sources: { source_ref: string; topic_id: string; title: string; url: string }[];
-  exclusions: { title: string; url: string; topic_ids: string[]; reason_code: string; reason: string }[];
-  created_at: string;
 };
 type WorkspaceSummaryArtifact = {
   run_id: string; url: string; title: string; chunk_count?: number | null;
@@ -142,11 +173,20 @@ const apiBaseUrl = import.meta.env.VITE_PLATFORM_API_URL ?? "http://localhost:80
 const isDeveloperRoute = window.location.pathname === "/developer";
 const isAdminRoute = window.location.pathname === "/admin";
 
+class ApiRequestError extends Error {
+  detail: unknown;
+
+  constructor(detail: unknown) {
+    super(typeof detail === "string" ? detail : "The platform request could not be completed.");
+    this.detail = detail;
+  }
+}
+
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(`${apiBaseUrl}${path}`, { credentials: "include", ...options });
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as { detail?: string } | null;
-    throw new Error(payload?.detail ?? "The platform request could not be completed.");
+    const payload = (await response.json().catch(() => null)) as { detail?: unknown } | null;
+    throw new ApiRequestError(payload?.detail);
   }
   return (await response.json()) as T;
 }
@@ -550,13 +590,20 @@ export function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [serviceHealth, setServiceHealth] = useState<ServiceHealth | null>(null);
   const [question, setQuestion] = useState("What is agentic web intelligence?");
-  const [discoverySourceCount, setDiscoverySourceCount] = useState<DiscoverySourceCount>(50);
+  const [discoverySourceCount, setDiscoverySourceCount] = useState<DiscoverySourceCount>(20);
   const [run, setRun] = useState<ResearchRun | null>(null);
   const [runLibrary, setRunLibrary] = useState<ResearchRunSummary[]>([]);
+  const [topics, setTopics] = useState<ResearchTopicSummary[]>([]);
+  const [selectedTopic, setSelectedTopic] = useState<ResearchTopicWorkspace | null>(null);
+  const [topicWiki, setTopicWiki] = useState<TopicWikiRead | null>(null);
+  const [topicWikiRevisions, setTopicWikiRevisions] = useState<TopicWikiRevision[]>([]);
+  const [topicQuestions, setTopicQuestions] = useState<TopicQuestionSummary[]>([]);
+  const [topicSources, setTopicSources] = useState<TopicSourceSummary[]>([]);
+  const [topicSourceExclusions, setTopicSourceExclusions] = useState<TopicSourceExclusion[]>([]);
+  const [newTopicName, setNewTopicName] = useState("");
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
-  const [report, setReport] = useState<ResearchReport | null>(null);
   const [trustEvaluations, setTrustEvaluations] = useState<EvidenceTrustEvaluation[]>([]);
   const [trustPolicy, setTrustPolicy] = useState<EffectiveWebTrustPolicy | null>(null);
   const [reviewForm, setReviewForm] = useState<ReviewFormState | null>(null);
@@ -601,9 +648,42 @@ export function App() {
     }
   }
 
+  async function refreshTopics() {
+    try {
+      setTopics(await apiRequest<ResearchTopicSummary[]>("/v1/research/topics"));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to load research topics.");
+    }
+  }
+
+  async function openTopic(topicId: string) {
+    setBusy(true);
+    setError(null);
+    try {
+      const [topic, wiki, questions, sources, revisions] = await Promise.all([
+        apiRequest<ResearchTopicWorkspace>(`/v1/research/topics/${topicId}`),
+        apiRequest<TopicWikiRead>(`/v1/research/topics/${topicId}/wiki`),
+        apiRequest<TopicQuestionSummary[]>(`/v1/research/topics/${topicId}/research`),
+        apiRequest<TopicSourceLibrary>(`/v1/research/topics/${topicId}/sources`),
+        apiRequest<TopicWikiRevision[]>(`/v1/research/topics/${topicId}/wiki/revisions`),
+      ]);
+      setSelectedTopic(topic);
+      setTopicWiki(wiki);
+      setTopicQuestions(questions);
+      setTopicSources(sources.sources);
+      setTopicSourceExclusions(sources.exclusions);
+      setTopicWikiRevisions(revisions);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to open the research topic.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
   useEffect(() => {
     if (health && !isDeveloperRoute && !isAdminRoute) {
       void refreshRunLibrary();
+      void refreshTopics();
       void loadWorkspaceSummaries();
       void loadTrustPolicy();
     }
@@ -619,7 +699,7 @@ export function App() {
             setSummaryBatch(updated);
             if (updated.status === "completed") {
               void loadWorkspaceSummaries();
-              if (run) void loadReport(run.id);
+              if (selectedTopic) void openTopic(selectedTopic.topic.id);
             }
           });
       void update.catch(() => undefined);
@@ -635,7 +715,7 @@ export function App() {
         if (["completed", "failed", "awaiting_review"].includes(refreshed.status)) {
           void refreshRunLibrary();
           void loadSummaryBatch(refreshed.id);
-          void loadReport(refreshed.id);
+          if (selectedTopic) void openTopic(selectedTopic.topic.id);
         }
       }).catch(() => undefined);
     }, 2000);
@@ -656,7 +736,6 @@ export function App() {
       setQuestion(reopened.question);
       await loadSummaryBatch(reopened.id);
       await loadWorkspaceSummaries();
-      await loadReport(reopened.id);
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to reopen the research run.");
     } finally {
@@ -666,10 +745,25 @@ export function App() {
 
   async function createRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    if (!selectedTopic && !newTopicName.trim()) {
+      setError("Choose an existing topic or name a new topic before asking a question.");
+      return;
+    }
     setBusy(true);
     setError(null);
     try {
-      const created = await apiRequest<ResearchRun>("/v1/research/runs", {
+      let topic = selectedTopic;
+      if (!topic) {
+        const createdTopic = await apiRequest<ResearchTopicSummary>("/v1/research/topics", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: newTopicName }),
+        });
+        topic = await apiRequest<ResearchTopicWorkspace>(`/v1/research/topics/${createdTopic.id}`);
+        setSelectedTopic(topic);
+        setNewTopicName("");
+      }
+      const created = await apiRequest<ResearchRun>(`/v1/research/topics/${topic.topic.id}/questions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -684,12 +778,20 @@ export function App() {
       setReviewForm(null);
       setCandidateStatusFilter("all");
       setSummaryBatch(null);
-      setReport(null);
       await loadSummaryBatch(created.id);
       await loadWorkspaceSummaries();
-      await loadReport(created.id);
       await refreshRunLibrary();
+      await refreshTopics();
+      await openTopic(topic.topic.id);
     } catch (reason) {
+      if (reason instanceof ApiRequestError && typeof reason.detail === "object" && reason.detail !== null) {
+        const detail = reason.detail as { message?: string; attention_required?: TopicAttentionItem[] };
+        if (detail.attention_required && selectedTopic) {
+          setSelectedTopic({ ...selectedTopic, attention_required: detail.attention_required });
+        }
+        setError(detail.message ?? "This topic needs an operator decision before another question can start.");
+        return;
+      }
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
     } finally {
       setBusy(false);
@@ -727,11 +829,17 @@ export function App() {
     }
   }
 
-  async function loadReport(runId: string) {
+  async function openTopicRevision(topicId: string, revisionId: string) {
+    setBusy(true);
+    setError(null);
     try {
-      setReport(await apiRequest<ResearchReport>(`/v1/research/runs/${runId}/report`));
-    } catch {
-      setReport(null);
+      setTopicWiki(await apiRequest<TopicWikiRead>(
+        `/v1/research/topics/${topicId}/wiki?revision_id=${encodeURIComponent(revisionId)}`,
+      ));
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to open that wiki revision.");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -801,6 +909,7 @@ export function App() {
       );
       await refreshTrustEvaluations(run.id);
       await loadSummaryBatch(run.id);
+      if (selectedTopic) await openTopic(selectedTopic.topic.id);
       closeEvidenceReview();
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Unable to accept the evidence.");
@@ -829,12 +938,14 @@ export function App() {
       );
       await refreshTrustEvaluations(run.id);
       await loadSummaryBatch(run.id);
+      if (selectedTopic) await openTopic(selectedTopic.topic.id);
       closeEvidenceReview();
     } catch (reason) {
       const message = reason instanceof Error ? reason.message : "Unable to reject the evidence.";
       try {
         const evaluations = await refreshTrustEvaluations(run.id);
         await loadSummaryBatch(run.id);
+        if (selectedTopic) await openTopic(selectedTopic.topic.id);
         const updated = evaluations.find((candidate) =>
           candidate.source_url === reviewForm.evidence.url
           && candidate.content_hash === reviewForm.evidence.content_hash
@@ -878,7 +989,16 @@ export function App() {
     : [];
   const selectedSummary = workspaceSummaries.find((source) => source.url === selectedSummaryUrl) ?? null;
   const sourceTitle = (source: WorkspaceSummaryArtifact) => source.title || source.url;
-  const platformReady = Boolean(health && serviceHealth?.status === "ready");
+  const checkpointMaintenanceOnly = Boolean(
+    serviceHealth?.services.every((service) => (
+      service.status === "ready" || (
+        service.name === "Research workflow checkpoints" && service.status === "degraded"
+      )
+    )),
+  );
+  const platformReady = Boolean(
+    health && (serviceHealth?.status === "ready" || checkpointMaintenanceOnly),
+  );
   const bootstrapStatus = serviceHealth?.services.find((service) => service.name === "Database bootstrap");
 
   return (
@@ -889,7 +1009,11 @@ export function App() {
         <h1>Research with a durable evidence trail.</h1>
         <p className="lead">Discover public sources, extract bounded source data, and keep an inspectable record of every platform decision.</p>
         <p className={`connection ${platformReady ? "online" : "offline"}`}>
-          {platformReady ? "Platform ready" : health ? `Platform ${serviceHealth?.status ?? health.status}` : "API unavailable"}
+          {platformReady
+            ? checkpointMaintenanceOnly && serviceHealth?.status === "degraded"
+              ? "Platform ready - maintenance pending"
+              : "Platform ready"
+            : health ? `Platform ${serviceHealth?.status ?? health.status}` : "API unavailable"}
         </p>
         {bootstrapStatus && bootstrapStatus.status !== "ready" && (
           <p className="hint">Database initialization: {bootstrapStatus.detail}</p>
@@ -897,8 +1021,33 @@ export function App() {
       </header>
 
       <section aria-labelledby="run-heading">
-        <h2 id="run-heading">Start a research run</h2>
+        <h2 id="run-heading">Ask a research question</h2>
         <form onSubmit={createRun} className="form-row">
+          <label>Research topic
+            <select
+              value={selectedTopic?.topic.id ?? ""}
+              onChange={(event) => {
+                const topicId = event.target.value;
+                setNewTopicName("");
+                if (topicId) void openTopic(topicId);
+                else {
+                  setSelectedTopic(null);
+                  setTopicWiki(null);
+                  setTopicWikiRevisions([]);
+                  setTopicQuestions([]);
+                  setTopicSources([]);
+                  setTopicSourceExclusions([]);
+                }
+              }}
+              aria-label="Research topic"
+            >
+              <option value="">Create a new topic below</option>
+              {topics.map((topic) => <option key={topic.id} value={topic.id}>{topic.name}</option>)}
+            </select>
+          </label>
+          {!selectedTopic && <label>New topic name
+            <input value={newTopicName} onChange={(event) => setNewTopicName(event.target.value)} placeholder="For example, Agentic web" />
+          </label>}
           <label>Research question
             <input value={question} onChange={(event) => setQuestion(event.target.value)} required />
           </label>
@@ -919,60 +1068,77 @@ export function App() {
       {run?.status === "failed" && <p className="error" role="alert">{run.failure_explanation ?? "Research processing failed."}{run.failed_stage ? ` Failed during ${run.failed_stage.replaceAll("_", " ")}.` : ""}{run.retryable ? " Select Discover sources to retry this research run." : ""}</p>}
 
       <section aria-labelledby="library-heading">
-        <div className="section-heading"><div><p className="eyebrow">Persistent resources</p><h2 id="library-heading">Research run library</h2></div><button type="button" className="secondary" onClick={() => void refreshRunLibrary()} disabled={busy || !health}>Refresh</button></div>
+        <div className="section-heading"><div><p className="eyebrow">Persistent resources</p><h2 id="library-heading">Research topics</h2></div><button type="button" className="secondary" onClick={() => void refreshTopics()} disabled={busy || !health}>Refresh</button></div>
+        {topics.length ? <ol className="run-library">{topics.map((topic) => (
+          <li key={topic.id}><button type="button" className="run-card" onClick={() => void openTopic(topic.id)} disabled={busy}>
+            <span><strong>{topic.name}</strong><small>Updated {new Date(topic.updated_at).toLocaleString()}</small></span>
+            <span className="run-counts">{topic.latest_run_status?.replaceAll("_", " ") ?? "No questions yet"}</span>
+          </button></li>
+        ))}</ol> : <p>No research topics yet. Name one above to begin building a durable notebook.</p>}
+      </section>
+
+      {selectedTopic && <section className="topic-attention" aria-labelledby="topic-heading">
+        <div className="section-heading"><div><p className="eyebrow">Current research topic</p><h2 id="topic-heading">{selectedTopic.topic.name}</h2></div><span className="badge">{selectedTopic.attention_required.length ? "Needs your decision" : "Ready for research"}</span></div>
+        {selectedTopic.attention_required.length > 0 ? <aside className="error">
+          <strong>Resolve evidence review before asking another question</strong>
+          <p>These sources need an accept or reject decision. Open the originating research question to review the captured evidence.</p>
+          <ul>{selectedTopic.attention_required.map((item) => <li key={`${item.run_id}-${item.content_hash}`}><button type="button" className="secondary" onClick={() => void reopenRun(item.run_id)} disabled={busy}>{item.title}</button><small>{item.reason}</small></li>)}</ul>
+        </aside> : <p className="hint">Ask another question to add evidence and findings to this topic.</p>}
+      </section>}
+
+      {selectedTopic && <section aria-labelledby="wiki-heading">
+        <div className="section-heading"><div><p className="eyebrow">Living research notebook</p><h2 id="wiki-heading">Wiki</h2></div>{topicWiki?.revision && <span className="badge">Revision {topicWiki.revision.revision_number} · {topicWiki.revision.quality_grade}</span>}</div>
+        {topicWiki?.revision ? <article className="source-summary report-markdown">
+          {topicWiki.change_summary && <aside className="topic-attention"><strong>Latest update</strong><p>{topicWiki.change_summary}</p>{topicWiki.source_additions.length > 0 && <p>New sources: {topicWiki.source_additions.join(", ")}</p>}{topicWiki.changed_sections.length > 0 && <p>Sections revised: {topicWiki.changed_sections.join(", ")}</p>}{topicWiki.source_exclusions.length > 0 && <p>Sources excluded from findings: {topicWiki.source_exclusions.length}</p>}{topicWiki.remaining_gaps.length > 0 && <p>Remaining gaps: {topicWiki.remaining_gaps.join(" ")}</p>}</aside>}
+          {topicWiki.revision.quality_grade === "FAIL" && <aside className="error"><strong>Wiki quality needs attention</strong>{topicWiki.revision.quality_reasons.map((reason) => <p key={reason.code}>{reason.message}</p>)}</aside>}
+          <ReactMarkdown components={{
+            a: ({ href, children }) => {
+              const sourceLabel = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
+              const source = sourceLabel ? topicWiki.supporting_sources.find((item) => item.source_label === sourceLabel) : null;
+              return source ? <a href="#topic-source-summary" onClick={(event) => openStoredSummary(source.url, event)}>{children}</a> : <span title="Unsupported wiki link">{children}</span>;
+            },
+          }}>{topicWiki.revision.markdown}</ReactMarkdown>
+          <div id="topic-source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
+            {selectedSummary && <article className="source-summary">
+              <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
+              <p className="source-address"><a href={selectedSummary.url} target="_blank" rel="noreferrer">{selectedSummary.url}</a></p>
+              {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
+              {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
+            </article>}
+          </div>
+          {topicWikiRevisions.length > 1 && <section aria-label="Wiki revision history">
+            <h3>Revision history</h3>
+            <ol className="run-library">{topicWikiRevisions.map((revision) => <li key={revision.id}><button type="button" className="run-card" onClick={() => void openTopicRevision(selectedTopic.topic.id, revision.id)} disabled={busy}><span><strong>Revision {revision.revision_number}</strong><small>{new Date(revision.created_at).toLocaleString()}</small></span><span className="run-counts">{revision.quality_grade}</span></button></li>)}</ol>
+          </section>}
+        </article> : <p className="hint">The wiki will appear after this topic has eligible, relevant stored source summaries.</p>}
+      </section>}
+
+      {selectedTopic && <section aria-labelledby="topic-research-heading">
+        <div className="section-heading"><div><p className="eyebrow">Research history</p><h2 id="topic-research-heading">Research</h2></div></div>
+        {topicQuestions.length ? <ol className="run-library">{topicQuestions.map((item) => <li key={item.run_id}><button type="button" className="run-card" onClick={() => void reopenRun(item.run_id)} disabled={busy}><span><strong>{item.question}</strong><small>Asked {new Date(item.created_at).toLocaleString()}</small></span><span className="run-counts">{item.outcome.replaceAll("_", " ")}</span></button></li>)}</ol> : <p className="hint">Questions asked for this topic will appear here.</p>}
+      </section>}
+
+      {selectedTopic && <section aria-labelledby="topic-sources-heading">
+        <div className="section-heading"><div><p className="eyebrow">Retained evidence</p><h2 id="topic-sources-heading">Sources</h2></div><span className="badge">{topicSources.length}</span></div>
+        {topicSources.length ? <ol className="sources">{topicSources.map((source) => <li className="source-candidate" key={source.evidence_id}><div className="source"><span><strong>{source.title}</strong><span>{source.trust_disposition?.replaceAll("_", " ") ?? "stored evidence"}</span></span></div><a className="source-link" href={source.url} target="_blank" rel="noreferrer">Open original source</a>{source.summary && <button type="button" className="link-button" onClick={() => openStoredSummary(source.url)}>Open stored summary</button>}{source.keywords.length ? <p className="hint">Keywords: {source.keywords.join(", ")}</p> : null}{source.introduced_by_questions.length ? <p className="hint">Introduced by: {source.introduced_by_questions.join("; ")}</p> : null}</li>)}</ol> : <p className="hint">Eligible, relevant evidence will be retained here as research completes.</p>}
+        {topicSourceExclusions.length > 0 && <section className="topic-exclusions" aria-label="Sources excluded from this topic"><h3>Sources not used in the wiki</h3><p className="hint">These sources remain visible for review, but they did not qualify as evidence for this topic.</p><ul>{topicSourceExclusions.map((source) => <li key={`${source.run_id}-${source.url}-${source.reason_code}`}><a href={source.url} target="_blank" rel="noreferrer">{source.title}</a><span>{source.reason}</span><button type="button" className="link-button" onClick={() => void reopenRun(source.run_id)} disabled={busy}>Open research question</button></li>)}</ul></section>}
+      </section>}
+
+      {selectedTopic && <section aria-labelledby="studio-heading">
+        <div className="section-heading"><div><p className="eyebrow">Future grounded outputs</p><h2 id="studio-heading">Studio</h2></div><span className="badge">Read only</span></div>
+        <p className="hint">Briefings, slide decks, mind maps, comparison tables, flashcards, infographics, and video outlines will be created here from the stored wiki and evidence. Studio does not start model work in this release.</p>
+      </section>}
+
+      <section aria-labelledby="run-library-heading">
+        <div className="section-heading"><div><p className="eyebrow">Research history</p><h2 id="run-library-heading">Recent research questions</h2></div><button type="button" className="secondary" onClick={() => void refreshRunLibrary()} disabled={busy || !health}>Refresh</button></div>
         {runLibrary.length ? <ol className="run-library">{runLibrary.map((item) => (
           <li key={item.id}><button type="button" className="run-card" onClick={() => void reopenRun(item.id)} disabled={busy}>
             <span><strong>{item.question}</strong><small>Run {item.id.slice(0, 8)} · {new Date(item.updated_at).toLocaleString()}</small></span>
             <span className="run-counts">{item.source_count} sources · {item.evidence_count} evidence</span>
           </button></li>
-        ))}</ol> : <p>No saved research runs yet. Start one above to create a durable resource.</p>}
+        ))}</ol> : <p>No saved research questions yet.</p>}
       </section>
 
-      {run && <section aria-labelledby="report-heading">
-        <div className="section-heading"><div><p className="eyebrow">Grounded stored evidence</p><h2 id="report-heading">Final report</h2></div>{report && <span className="badge">{report.quality_grade} {report.report_origin === "fallback" ? "evidence briefing" : "report"}</span>}</div>
-        {report ? <article className="source-summary report-markdown">
-          <p className="hint">Generated {new Date(report.created_at).toLocaleString()} from eligible, relevant, evidence-sufficient stored source summaries.{report.model_name ? ` Model: ${report.model_name}.` : ""}</p>
-          {!report.current && <aside className="error"><strong>Historical report</strong><p>This report was created from an earlier evidence set and is not the current report for this research run.</p></aside>}
-          {report.quality_grade === "FAIL" && <aside className="error"><strong>Report quality: FAIL</strong>{report.quality_reasons.map((reason) => <p key={reason.code}>{reason.message}</p>)}</aside>}
-          <ReactMarkdown components={{
-            a: ({ href, children }) => {
-              const sourceRef = href?.startsWith("#summary:") ? href.slice("#summary:".length) : null;
-              const source = sourceRef ? report.supporting_sources.find((item) => item.source_ref === sourceRef) : null;
-              return source ? (
-                <a
-                  href="#source-summary"
-                  title={`Open stored summary ${source.source_ref}`}
-                  onClick={(event) => openStoredSummary(source.url, event)}
-                >
-                  {children}
-                </a>
-              ) : <span title="Unsupported report link">{children}</span>;
-            },
-          }}>{report.markdown}</ReactMarkdown>
-          {report.exclusions.length > 0 && <section className="report-exclusions" aria-label="Sources excluded from report findings">
-            <h3>Sources not used for report findings</h3>
-            <ul>{report.exclusions.map((source) => {
-              const summary = workspaceSummaries.find((item) => item.url === source.url);
-              return <li key={`${source.url}-${source.reason_code}`}>
-                {summary ? <a href="#source-summary" onClick={(event) => openStoredSummary(summary.url, event)}><strong>{source.title}</strong></a> : <strong>{source.title}</strong>}: {source.reason}
-              </li>;
-            })}</ul>
-          </section>}
-        </article> : <p className="hint">A final report will appear here after the research workflow has enough eligible, relevant source summaries.</p>}
-        <div id="source-summary" className="source-summary-panel" tabIndex={-1} ref={sourceSummaryPanelRef}>
-          {selectedSummary && <article className="source-summary">
-            <div className="section-heading"><div><p className="eyebrow">Stored source summary</p><h3>{sourceTitle(selectedSummary)}</h3></div><span className="badge">{selectedSummary.chunk_count ?? 0} chunk{selectedSummary.chunk_count === 1 ? "" : "s"}</span></div>
-            <p className="source-address">
-              <a href={selectedSummary.url} target="_blank" rel="noreferrer">
-                {selectedSummary.url}
-              </a>
-            </p>
-            {selectedSummary.evidence_sufficient === false && <p className="error">The extracted evidence was insufficient for a confident source summary.</p>}
-            {selectedSummary.summary.split(/\n{2,}/).map((paragraph, index) => <p key={index}>{paragraph}</p>)}
-            {selectedSummary.keywords.length ? <p className="hint">Keywords: {selectedSummary.keywords.join(", ")}</p> : null}
-          </article>}
-        </div>
-      </section>}
 
       {run && <>
         {trustPolicy && <section aria-labelledby="trust-policy-heading">

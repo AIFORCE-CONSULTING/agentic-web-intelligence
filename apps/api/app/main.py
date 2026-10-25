@@ -25,6 +25,7 @@ from app.agentic_research.contracts import (
     CreateResearchTopicRequest,
     TopicQuestionRequest,
     TopicQuestionSummary,
+    TopicResearchActivityEvent,
     TopicSourceLibrary,
     TopicWikiRead,
     TopicWikiRevision,
@@ -1317,6 +1318,34 @@ def create_app() -> FastAPI:
             if await service.get(user.workspace_id, parsed_topic_id) is None:
                 raise HTTPException(status_code=404, detail="Research topic was not found.")
             return await service.questions(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/activity",
+        response_model=list[TopicResearchActivityEvent],
+        tags=["research"],
+    )
+    async def list_topic_research_activity(
+        topic_id: str, http_request: Request
+    ) -> list[TopicResearchActivityEvent]:
+        """Read the existing research activity for all questions in one topic."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = http_request.app.state.topic_workspace_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            if await service.get(user.workspace_id, parsed_topic_id) is None:
+                raise HTTPException(status_code=404, detail="Research topic was not found.")
+            return await service.activity(user.workspace_id, parsed_topic_id)
         except AgenticResearchStoreUnavailable as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
 

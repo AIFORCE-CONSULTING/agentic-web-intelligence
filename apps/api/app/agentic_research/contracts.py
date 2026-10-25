@@ -81,6 +81,16 @@ class TopicQuestionSummary(BaseModel):
     outcome: Literal["contributed", "no_change", "in_progress", "failed"]
 
 
+class TopicResearchActivityEvent(BaseModel):
+    """One existing research audit event shown in a Topic workspace."""
+
+    run_id: UUID
+    question: str
+    event_type: str
+    occurred_at: datetime
+    details: dict[str, object] = Field(default_factory=dict)
+
+
 class TopicSourceSummary(BaseModel):
     """One retained evidence item visible in a notebook's source library."""
 

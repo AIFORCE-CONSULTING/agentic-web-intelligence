@@ -27,6 +27,7 @@ from app.agentic_research.contracts import (
     TopicQuestionSummary,
     TopicRelevanceInput,
     TopicRelevanceRecord,
+    TopicResearchActivityEvent,
     TopicSourceAssociation,
     TopicSourceExclusion,
     TopicSourceLibrary,
@@ -932,6 +933,33 @@ class AgenticResearchStore:
             )
             results.append(TopicQuestionSummary(**dict(row), outcome=outcome))
         return results
+
+    async def list_topic_activity(
+        self, workspace_id: UUID, topic_id: UUID, limit: int = 250
+    ) -> list[TopicResearchActivityEvent]:
+        """Read existing run audit events for one topic without creating new state."""
+
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection:
+            rows = await connection.fetch(
+                """SELECT membership.run_id, run.question, audit.event_type,
+                          audit.occurred_at, audit.details
+                   FROM research_topic_runs AS membership
+                   JOIN research_topics AS topic ON topic.id = membership.topic_id
+                   JOIN research_runs AS run ON run.id = membership.run_id
+                   JOIN research_audit_events AS audit ON audit.run_id = run.id
+                   WHERE topic.workspace_id = $1 AND membership.topic_id = $2
+                   ORDER BY audit.occurred_at DESC LIMIT $3""",
+                workspace_id,
+                topic_id,
+                limit,
+            )
+        return [
+            TopicResearchActivityEvent(
+                **{**dict(row), "details": _json_value(row["details"], {})}
+            )
+            for row in rows
+        ]
 
     async def list_topic_sources(
         self, workspace_id: UUID, topic_id: UUID, limit: int = 200

@@ -16,6 +16,7 @@ from app.agent_runtime.research_workflow import (
 from app.agentic_research.contracts import (
     TopicAttentionItem,
     TopicQuestionSummary,
+    TopicResearchActivityEvent,
     TopicSourceLibrary,
     TopicSourceSummary,
     TopicWikiRead,
@@ -1392,6 +1393,18 @@ def test_topic_wiki_research_and_source_routes_are_scoped_to_the_topic() -> None
                 )]
             )
 
+        async def activity(self, _workspace_id, requested_topic_id):
+            assert requested_topic_id == topic_id
+            return [
+                TopicResearchActivityEvent(
+                    run_id=run_id,
+                    question="How is WebMCP adopted?",
+                    event_type="research.search.completed",
+                    occurred_at=now,
+                    details={"source_count": 3},
+                )
+            ]
+
         async def revisions(self, _workspace_id, requested_topic_id):
             assert requested_topic_id == topic_id
             return [
@@ -1440,7 +1453,8 @@ def test_topic_wiki_research_and_source_routes_are_scoped_to_the_topic() -> None
     app.state.agentic_research_store = FakeAgenticStore()
 
     async def request() -> tuple[
-        httpx.Response, httpx.Response, httpx.Response, httpx.Response, httpx.Response
+        httpx.Response, httpx.Response, httpx.Response, httpx.Response, httpx.Response,
+        httpx.Response,
     ]:
         transport = httpx.ASGITransport(app=app)
         async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
@@ -1450,17 +1464,20 @@ def test_topic_wiki_research_and_source_routes_are_scoped_to_the_topic() -> None
                 await client.get(f"/v1/research/topics/{topic_id}/wiki/revisions"),
                 await client.get(f"/v1/research/topics/{topic_id}/research"),
                 await client.get(f"/v1/research/topics/{topic_id}/sources"),
+                await client.get(f"/v1/research/topics/{topic_id}/activity"),
             )
 
-    wiki, historical_wiki, revisions, questions, sources = asyncio.run(request())
+    wiki, historical_wiki, revisions, questions, sources, activity = asyncio.run(request())
 
     assert wiki.status_code == 200
     assert historical_wiki.status_code == 200
     assert revisions.status_code == 200
     assert questions.status_code == 200
     assert sources.status_code == 200
+    assert activity.status_code == 200
     assert questions.json()[0]["outcome"] == "contributed"
     assert sources.json()["sources"][0]["keywords"] == ["WebMCP"]
+    assert activity.json()[0]["event_type"] == "research.search.completed"
 
 
 def test_run_endpoint_rejects_unsupported_source_count() -> None:

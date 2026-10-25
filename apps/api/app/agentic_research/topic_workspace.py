@@ -9,6 +9,7 @@ from app.agent_runtime.research_workflow import UnifiedResearchWorkflowEntry
 from app.agentic_research.contracts import (
     TopicAttentionItem,
     TopicQuestionSummary,
+    TopicResearchActivityEvent,
     TopicSourceLibrary,
     TopicWikiRevision,
     TopicWorkspace,
@@ -61,6 +62,11 @@ class TopicWorkspaceService:
         self, workspace_id: UUID, topic_id: UUID
     ) -> list[TopicQuestionSummary]:
         return await self._agentic_store.list_topic_questions(workspace_id, topic_id)
+
+    async def activity(
+        self, workspace_id: UUID, topic_id: UUID
+    ) -> list[TopicResearchActivityEvent]:
+        return await self._agentic_store.list_topic_activity(workspace_id, topic_id)
 
     async def sources(self, workspace_id: UUID, topic_id: UUID) -> TopicSourceLibrary:
         return await self._agentic_store.topic_source_library(workspace_id, topic_id)

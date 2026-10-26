@@ -314,6 +314,22 @@ storage, and execution action.
 - [x] Show report grade, origin, quality reasons, safe stored-summary links, and
   exclusions in the existing Final report panel.
 
+## Phase 9 - Topic Research Wiki
+
+Turn individual research runs into durable, source-grounded notebooks. A
+Research Topics collect related questions, retained source provenance, and
+immutable wiki revisions while preserving the existing LangGraph, RuntimeService,
+Temporal, and local trust-policy boundaries.
+
+- [x] Create workspace-scoped Research Topics and topic-scoped question reuse.
+- [x] Associate qualified evidence and its introducing questions with a topic.
+- [x] Replace the standalone report as the primary experience with a versioned
+  topic wiki, latest-update summary, citation links, and revision history.
+- [x] Surface unresolved human evidence reviews as **Needs your decision** and
+  require their existing accept/reject decision before another question begins
+  in the same topic.
+- [x] Provide topic Research, Sources, and read-only Studio views.
+
 ## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete
@@ -386,6 +402,12 @@ product and deployment requirements justify it.
   clickable external link that opens in a new browser tab, and request/display
   longer article descriptions so an operator has more context before choosing
   a source for extraction.
+- **Manual topic-source intake** — let an operator deliberately submit a known
+  URL, document, or file to an existing research topic. It must enter the same
+  governed research path as discovered material, retain its operator-provided
+  origin, and never bypass RuntimeService, web trust, human review, relevance,
+  summary, or provenance. Define the document/file intake boundary separately
+  before implementation.
 - **Grounded Research Chat** — an authenticated, evidence-grounded chat
   experience on the local model-provider boundary. It would answer only from
   selected workspace-owned research evidence, cite sources, surface uncertainty

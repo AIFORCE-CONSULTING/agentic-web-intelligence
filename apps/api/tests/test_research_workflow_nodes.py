@@ -5,12 +5,22 @@ from datetime import UTC, datetime
 from types import SimpleNamespace
 from uuid import uuid4
 
-from app.agentic_research.contracts import ResearchTopic
+from app.agentic_research.contracts import (
+    ResearchTopic,
+    TopicCoverage,
+    TopicCoverageEvidence,
+)
 from app.agentic_research.workflow_nodes import (
     evidence_acquisition_node,
+    topic_coverage_node,
     topic_search_node,
 )
-from app.web_research.contracts import ResearchRun, SearchResponse, SearchResult
+from app.web_research.contracts import (
+    ResearchRun,
+    SearchResponse,
+    SearchResult,
+    SourceCandidate,
+)
 
 
 def state(**updates: object) -> dict[str, object]:
@@ -183,3 +193,85 @@ def test_acquisition_pauses_after_temporal_accepts_larger_batch() -> None:
     assert direct.called is False
     assert direct.routes[0][1:] == ("temporal", 3)
     assert temporal.called is True
+
+
+def test_topic_coverage_adds_only_qualified_evidence_to_the_selected_topic() -> None:
+    topic_id = uuid4()
+    evidence_id = uuid4()
+
+    class CoverageResearchStore:
+        async def get_run(self, _workspace_id: object, run_id: object) -> ResearchRun:
+            now = datetime.now(UTC)
+            return ResearchRun(
+                id=run_id,
+                question="Compare identity and provenance",
+                status="assessing_coverage",
+                created_at=now,
+                updated_at=now,
+                sources=[
+                    SourceCandidate(
+                        rank=1,
+                        title="Qualified source",
+                        url="https://example.com/qualified",
+                        preflight_content_hash="sha256:qualified",
+                        preflight_final_url="https://example.com/qualified",
+                    ),
+                    SourceCandidate(
+                        rank=2,
+                        title="Unqualified source",
+                        url="https://example.com/unqualified",
+                        preflight_content_hash="sha256:unqualified",
+                        preflight_final_url="https://example.com/unqualified",
+                    ),
+                ],
+            )
+
+    class CoverageStore:
+        def __init__(self) -> None:
+            self.qualified: list[str] = []
+            self.associations: list[tuple[object, object, object, object]] = []
+
+        async def qualify_evidence(self, _workspace, _run, _planned_topic, url, _hash):
+            self.qualified.append(url)
+
+        async def list_topic_coverage(self, *_: object) -> list[TopicCoverage]:
+            return [
+                TopicCoverage(
+                    topic_id="identity",
+                    topic="How websites communicate agent identity",
+                    search_query="agent identity",
+                    status="covered",
+                    evidence=[
+                        TopicCoverageEvidence(
+                            source_url="https://example.com/qualified",
+                            content_hash="sha256:qualified",
+                            evidence_id=evidence_id,
+                            trust_evaluation_id=uuid4(),
+                            relevance_decision_id=uuid4(),
+                            summary_artifact_id=uuid4(),
+                            qualified_at=datetime.now(UTC),
+                        )
+                    ],
+                )
+            ]
+
+        async def associate_qualified_topic_sources(self, *args: object) -> None:
+            self.associations.append(args)
+
+    coverage_store = CoverageStore()
+    update = asyncio.run(
+        topic_coverage_node(CoverageResearchStore(), coverage_store)(
+            state(
+                topic_id=topic_id,
+                relevant_sources=[
+                    SimpleNamespace(topic_id="identity", source_url="https://example.com/qualified"),
+                    SimpleNamespace(topic_id="identity", source_url="https://example.com/unqualified"),
+                ],
+            )
+        )
+    )
+
+    assert update["stage"] == "coverage_complete"
+    assert coverage_store.qualified == ["https://example.com/qualified", "https://example.com/unqualified"]
+    assert len(coverage_store.associations) == 1
+    assert coverage_store.associations[0][1] == topic_id

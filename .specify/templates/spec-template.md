@@ -103,6 +103,9 @@
 - **Canonical record**: [Business decisions and evidence that must survive execution]
 - **Operator-visible states**: [Plain-language meaning of each active, waiting,
   failed, and completed state the operator may see]
+- **Feedback loops**: [For every required human decision, the visible attention
+  item, the exact action that resolves it, and the later action it blocks until
+  resolution]
 - **Decision authority**: [Which outcomes are proposed by a model, decided by
   platform rules, or reserved for a human]
 - **Conflict outcome**: [What the operator experiences if execution records

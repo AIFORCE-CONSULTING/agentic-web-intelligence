@@ -109,3 +109,15 @@ summary records and does not control a retired runtime.
 See [ADR 0016](adr/0016-governed-local-agent-capability-requests.md), the
 [current architecture](current-platform-architecture.md), and the
 [architecture glossary](architecture-glossary.md).
+
+## Topic Research Wiki
+
+ADR 0017 adds a Topic layer around existing research runs. It does not give
+the model another capability, change RuntimeService authority, or create a
+second LangGraph workflow. RuntimeService will continue to authorize search and
+acquisition requests for each topic-associated run exactly as it does today.
+
+The Topic workspace derives a pending human-review queue from existing
+WebTrustStore records. Before a later question starts in the same Topic, the
+Topic service will require the existing human accept/reject decision. The queue
+is a user-facing reminder and gate, not a new runtime status.

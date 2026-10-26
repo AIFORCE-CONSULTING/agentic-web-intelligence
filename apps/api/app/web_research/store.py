@@ -213,6 +213,10 @@ class ResearchStatusTransitionError(ValueError):
     """Raised when a caller requests a transition outside the approved table."""
 
 
+class TopicReviewPendingError(ValueError):
+    """Raised when an unresolved human decision blocks a Topic question."""
+
+
 class ResearchStore:
     """Lazy Postgres store so API startup does not race optional Compose services."""
 
@@ -318,6 +322,89 @@ class ResearchStore:
             )
             await self._append_audit(
                 connection, run_id, "research.run.created", {"question": question}
+            )
+        return ResearchRun(**dict(row)), True
+
+    async def get_or_create_topic_run(
+        self, workspace_id: UUID, topic_id: UUID, question: str
+    ) -> tuple[ResearchRun, bool]:
+        """Create or reuse a question only within one durable Topic.
+
+        The membership write is part of the same transaction as run creation,
+        so a run can never be created without a Topic owner for this entry path.
+        """
+
+        run_id = uuid4()
+        normalized_question = self._normalize_question(question)
+        pool = await self._connection_pool()
+        async with pool.acquire() as connection, connection.transaction():
+            owns_topic = await connection.fetchval(
+                "SELECT 1 FROM research_topics WHERE id = $1 AND workspace_id = $2",
+                topic_id,
+                workspace_id,
+            )
+            if not owns_topic:
+                raise KeyError(topic_id)
+            review_pending = await connection.fetchval(
+                """SELECT 1
+                   FROM research_topic_runs AS membership
+                   JOIN web_evidence_trust_evaluations AS evaluation
+                     ON evaluation.run_id = membership.run_id
+                   LEFT JOIN LATERAL (
+                       SELECT override.outcome
+                       FROM web_evidence_trust_overrides AS override
+                       WHERE override.evaluation_id = evaluation.id
+                         AND (override.expires_at IS NULL OR override.expires_at > now())
+                       ORDER BY override.created_at DESC
+                       LIMIT 1
+                   ) AS active_override ON TRUE
+                   WHERE membership.topic_id = $1
+                     AND evaluation.disposition = 'review_required'
+                     AND active_override.outcome IS NULL
+                   LIMIT 1""",
+                topic_id,
+            )
+            if review_pending:
+                raise TopicReviewPendingError(
+                    "Evidence in this topic needs an operator decision before another "
+                    "question can start."
+                )
+            await connection.execute(
+                "SELECT pg_advisory_xact_lock(hashtextextended($1, 0))",
+                f"{workspace_id}:{topic_id}:{normalized_question}",
+            )
+            existing = await connection.fetchrow(
+                """SELECT runs.*
+                   FROM research_topic_runs AS membership
+                   JOIN research_runs AS runs ON runs.id = membership.run_id
+                   WHERE membership.topic_id = $1
+                     AND membership.normalized_question = $2""",
+                topic_id,
+                normalized_question,
+            )
+            if existing is not None:
+                return ResearchRun(**dict(existing)), False
+            row = await connection.fetchrow(
+                """INSERT INTO research_runs (id, workspace_id, question, status)
+                   VALUES ($1, $2, $3, 'planning')
+                   RETURNING *""",
+                run_id,
+                workspace_id,
+                question,
+            )
+            await connection.execute(
+                """INSERT INTO research_topic_runs
+                   (topic_id, run_id, input_kind, normalized_question)
+                   VALUES ($1, $2, 'question', $3)""",
+                topic_id,
+                run_id,
+                normalized_question,
+            )
+            await self._append_audit(
+                connection,
+                run_id,
+                "research.topic_question.created",
+                {"question": question, "topic_id": str(topic_id)},
             )
         return ResearchRun(**dict(row)), True
 

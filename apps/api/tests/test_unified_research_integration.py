@@ -9,7 +9,12 @@ from uuid import uuid4
 import pytest
 
 from app.agent_runtime.research_workflow import build_research_workflow
-from app.agentic_research.contracts import ResearchTopic, TopicCoverage, TopicPlan
+from app.agentic_research.contracts import (
+    ResearchTopic,
+    TopicCoverage,
+    TopicCoverageEvidence,
+    TopicPlan,
+)
 from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.web_research.contracts import (
     ResearchRun,
@@ -38,6 +43,7 @@ class Harness:
         self.associations = []
         self.relevant = set()
         self.qualified = set()
+        self.associated_topic_sources: list[tuple[object, object, object]] = []
         self.search_queries: set[str] = set()
         self.gap_rounds = 0
         self.preflight_scheduled = False
@@ -216,6 +222,7 @@ class Harness:
         return SimpleNamespace(counts_toward_topic=(topic_id, url) in self.qualified)
 
     async def list_topic_coverage(self, *_: object) -> list[TopicCoverage]:
+        evidence_id = uuid4()
         return [
             TopicCoverage(
                 topic_id=topic_id,
@@ -226,9 +233,29 @@ class Harness:
                     if any(item[0] == topic_id for item in self.qualified)
                     else "uncovered"
                 ),
+                evidence=(
+                    [
+                        TopicCoverageEvidence(
+                            source_url=f"https://{topic_id}1.example",
+                            content_hash=f"hash:https://{topic_id}1.example",
+                            evidence_id=evidence_id,
+                            trust_evaluation_id=uuid4(),
+                            relevance_decision_id=uuid4(),
+                            summary_artifact_id=uuid4(),
+                            qualified_at=datetime.now(UTC),
+                        )
+                    ]
+                    if any(item[0] == topic_id for item in self.qualified)
+                    else []
+                ),
             )
             for topic_id in ("identity", "provenance")
         ]
+
+    async def associate_qualified_topic_sources(
+        self, workspace_id: object, topic_id: object, run_id: object, coverage: object
+    ) -> None:
+        self.associated_topic_sources.append((workspace_id, topic_id, run_id))
 
     async def missing_topic_query(self, _workspace: object, topic: ResearchTopic, _: object) -> str:
         return f"{topic.topic_id} missing evidence round {self.gap_rounds}"
@@ -238,8 +265,15 @@ class Harness:
         assert all(url in self.summary_urls for _, url in self.qualified)
         return SimpleNamespace(markdown="# Report")
 
+    async def publish_topic_wiki(self, *_: object) -> tuple[object, bool]:
+        self.report_created = True
+        assert all(url in self.summary_urls for _, url in self.qualified)
+        return uuid4(), True
 
-def run(harness: Harness, source_limit: int = 5) -> dict[str, object]:
+
+def run(
+    harness: Harness, source_limit: int = 5, topic_id: object | None = None
+) -> dict[str, object]:
     nodes = platform_research_nodes(
         topic_planning=harness,
         authority=harness,
@@ -260,6 +294,7 @@ def run(harness: Harness, source_limit: int = 5) -> dict[str, object]:
                 "run_id": harness.run_id,
                 "question": "Research identity and provenance",
                 "source_limit": source_limit,
+                "topic_id": topic_id,
                 "stage": "requested",
                 "gap_search_rounds": 0,
                 "uncovered_topic_ids": [],
@@ -313,6 +348,16 @@ def test_replay_does_not_duplicate_sources() -> None:
 
     assert set(harness.sources) == first_urls
     assert len(harness.sources) == len(first_urls)
+
+
+def test_topic_run_associates_only_qualified_evidence_with_its_notebook() -> None:
+    harness = Harness(source_count=1)
+    topic_id = uuid4()
+
+    run(harness, source_limit=2, topic_id=topic_id)
+
+    assert harness.associated_topic_sources
+    assert all(item[1] == topic_id for item in harness.associated_topic_sources)
 
 
 def test_every_mcp_search_has_one_matching_prior_allow_decision() -> None:

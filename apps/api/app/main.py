@@ -21,11 +21,25 @@ from app.agent_runtime.research_workflow import (
 )
 from app.agent_runtime.service import RuntimeService
 from app.agent_runtime.store import RuntimeStore
-from app.agentic_research.contracts import ResearchReport
+from app.agentic_research.contracts import (
+    CreateResearchTopicRequest,
+    TopicQuestionRequest,
+    TopicQuestionSummary,
+    TopicResearchActivityEvent,
+    TopicSourceLibrary,
+    TopicWikiRead,
+    TopicWikiRevision,
+    TopicWorkspace,
+    TopicWorkspaceSummary,
+)
 from app.agentic_research.relevance import TopicRelevanceService
 from app.agentic_research.reporting import ResearchReportingService
 from app.agentic_research.store import AgenticResearchStore, AgenticResearchStoreUnavailable
 from app.agentic_research.topic_planning import TopicPlanningService
+from app.agentic_research.topic_workspace import (
+    TopicWorkspaceConflict,
+    TopicWorkspaceService,
+)
 from app.agentic_research.workflow_nodes import platform_research_nodes
 from app.database_bootstrap import (
     DatabaseBootstrapReadiness,
@@ -202,10 +216,16 @@ def create_app() -> FastAPI:
                 graph,
                 application.state.research_temporal_ready,
             )
+            application.state.topic_workspace_service = TopicWorkspaceService(
+                application.state.agentic_research_store,
+                application.state.research_store,
+                application.state.research_workflow_entry,
+            )
         except RuntimeError:
             # Health and research entry points expose the unavailable dependency.
             application.state.research_workflow_graph = None
             application.state.research_workflow_entry = None
+            application.state.topic_workspace_service = None
         try:
             yield
         finally:
@@ -340,6 +360,7 @@ def create_app() -> FastAPI:
     )
     app.state.research_workflow_graph = None
     app.state.research_workflow_entry = None
+    app.state.topic_workspace_service = None
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[settings.web_origin],
@@ -1130,27 +1151,286 @@ def create_app() -> FastAPI:
     async def create_research_run(
         request: ResearchRunRequest, http_request: Request, response: Response
     ) -> ResearchRun:
-        """Start or resume the one governed research workflow."""
+        """Retired direct entry point retained only for a clear migration response."""
+
+        del request, http_request, response
+        raise HTTPException(
+            status_code=410,
+            detail=(
+                "Research now starts from a Research Topic. Create or select a topic, "
+                "then submit a question through its topic workspace."
+            ),
+        )
+
+    @app.post(
+        "/v1/research/topics",
+        response_model=TopicWorkspaceSummary,
+        status_code=200,
+        tags=["research"],
+    )
+    async def create_research_topic(
+        request: CreateResearchTopicRequest, http_request: Request
+    ) -> TopicWorkspaceSummary:
+        """Create one durable research notebook in the authenticated workspace."""
 
         user = await require_workspace_permission(http_request, "research.write")
-        entry: UnifiedResearchWorkflowEntry | None = (
-            http_request.app.state.research_workflow_entry
+        service: TopicWorkspaceService | None = (
+            http_request.app.state.topic_workspace_service
         )
-        if entry is None:
+        if service is None:
             raise HTTPException(
                 status_code=503,
                 detail="The governed research workflow is unavailable.",
             )
         try:
-            persisted_run, created = await entry.start_or_resume(
+            return await service.create_or_get(user.workspace_id, request.name)
+        except (AgenticResearchStoreUnavailable, ResearchStoreUnavailable) as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/topics",
+        response_model=list[TopicWorkspaceSummary],
+        tags=["research"],
+    )
+    async def list_research_topics(http_request: Request) -> list[TopicWorkspaceSummary]:
+        """Return the authenticated workspace's durable research notebooks."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        service: TopicWorkspaceService | None = (
+            http_request.app.state.topic_workspace_service
+        )
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            return await service.list(user.workspace_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get("/v1/research/topics/{topic_id}", response_model=TopicWorkspace, tags=["research"])
+    async def get_research_topic(topic_id: str, http_request: Request) -> TopicWorkspace:
+        """Return one Topic and its derived human-review attention queue."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = (
+            http_request.app.state.topic_workspace_service
+        )
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            topic = await service.get(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if topic is None:
+            raise HTTPException(status_code=404, detail="Research topic was not found.")
+        return topic
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/wiki",
+        response_model=TopicWikiRead,
+        tags=["research"],
+    )
+    async def get_research_topic_wiki(
+        topic_id: str,
+        http_request: Request,
+        revision_id: str | None = Query(default=None),
+    ) -> TopicWikiRead:
+        """Return the current immutable wiki revision for one research topic."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+            parsed_revision_id = UUID(revision_id) if revision_id else None
+        except ValueError as error:
+            raise HTTPException(
+                status_code=422, detail="topic_id and revision_id must be UUIDs."
+            ) from error
+        store: AgenticResearchStore = http_request.app.state.agentic_research_store
+        try:
+            wiki = await store.get_topic_wiki(
+                user.workspace_id, parsed_topic_id, parsed_revision_id
+            )
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+        if wiki is None:
+            raise HTTPException(status_code=404, detail="Research topic was not found.")
+        return wiki
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/wiki/revisions",
+        response_model=list[TopicWikiRevision],
+        tags=["research"],
+    )
+    async def list_research_topic_wiki_revisions(
+        topic_id: str, http_request: Request
+    ) -> list[TopicWikiRevision]:
+        """List prior immutable wiki revisions for one research topic."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = http_request.app.state.topic_workspace_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            if await service.get(user.workspace_id, parsed_topic_id) is None:
+                raise HTTPException(status_code=404, detail="Research topic was not found.")
+            return await service.revisions(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/research",
+        response_model=list[TopicQuestionSummary],
+        tags=["research"],
+    )
+    async def list_topic_research_questions(
+        topic_id: str, http_request: Request
+    ) -> list[TopicQuestionSummary]:
+        """List the stored questions that have contributed to one topic."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = http_request.app.state.topic_workspace_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            if await service.get(user.workspace_id, parsed_topic_id) is None:
+                raise HTTPException(status_code=404, detail="Research topic was not found.")
+            return await service.questions(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/activity",
+        response_model=list[TopicResearchActivityEvent],
+        tags=["research"],
+    )
+    async def list_topic_research_activity(
+        topic_id: str, http_request: Request
+    ) -> list[TopicResearchActivityEvent]:
+        """Read the existing research activity for all questions in one topic."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = http_request.app.state.topic_workspace_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            if await service.get(user.workspace_id, parsed_topic_id) is None:
+                raise HTTPException(status_code=404, detail="Research topic was not found.")
+            return await service.activity(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.get(
+        "/v1/research/topics/{topic_id}/sources",
+        response_model=TopicSourceLibrary,
+        tags=["research"],
+    )
+    async def list_topic_sources(
+        topic_id: str, http_request: Request
+    ) -> TopicSourceLibrary:
+        """List retained evidence sources belonging to one topic notebook."""
+
+        user = await require_workspace_permission(http_request, "research.read")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = http_request.app.state.topic_workspace_service
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            if await service.get(user.workspace_id, parsed_topic_id) is None:
+                raise HTTPException(status_code=404, detail="Research topic was not found.")
+            return await service.sources(user.workspace_id, parsed_topic_id)
+        except AgenticResearchStoreUnavailable as error:
+            raise HTTPException(status_code=503, detail=str(error)) from error
+
+    @app.post(
+        "/v1/research/topics/{topic_id}/questions",
+        response_model=ResearchRun,
+        status_code=201,
+        tags=["research"],
+    )
+    async def create_topic_research_question(
+        topic_id: str,
+        request: TopicQuestionRequest,
+        http_request: Request,
+        response: Response,
+    ) -> ResearchRun:
+        """Start the existing governed workflow for one Topic-scoped question."""
+
+        user = await require_workspace_permission(http_request, "research.write")
+        try:
+            parsed_topic_id = UUID(topic_id)
+        except ValueError as error:
+            raise HTTPException(status_code=422, detail="topic_id must be a UUID.") from error
+        service: TopicWorkspaceService | None = (
+            http_request.app.state.topic_workspace_service
+        )
+        if service is None:
+            raise HTTPException(
+                status_code=503,
+                detail="The governed research workflow is unavailable.",
+            )
+        try:
+            result = await service.start_question(
                 user.workspace_id,
+                parsed_topic_id,
                 request.question,
                 request.max_results,
             )
-            if not created:
+            if not result.created:
                 response.status_code = 200
-            return persisted_run
-        except (ResearchWorkflowUnavailable, ResearchStoreUnavailable) as error:
+            return result.run
+        except TopicWorkspaceConflict as error:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": str(error),
+                    "attention_required": [
+                        item.model_dump(mode="json") for item in error.items
+                    ],
+                },
+            ) from error
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="Research topic was not found.") from error
+        except (
+            AgenticResearchStoreUnavailable,
+            ResearchStoreUnavailable,
+            ResearchWorkflowUnavailable,
+        ) as error:
             raise HTTPException(status_code=503, detail=str(error)) from error
         except ResearchWorkflowConflict as error:
             raise HTTPException(status_code=409, detail=str(error)) from error
@@ -1222,31 +1502,6 @@ def create_app() -> FastAPI:
         if run is None:
             raise HTTPException(status_code=404, detail="Research run was not found.")
         return run
-
-    @app.get(
-        "/v1/research/runs/{run_id}/report",
-        response_model=ResearchReport,
-        tags=["research"],
-    )
-    async def get_research_report(run_id: str, http_request: Request) -> ResearchReport:
-        """Read the newest grounded report without starting model work."""
-
-        from uuid import UUID
-
-        user = await require_workspace_permission(http_request, "research.read")
-        try:
-            parsed_run_id = UUID(run_id)
-        except ValueError as error:
-            raise HTTPException(status_code=422, detail="run_id must be a UUID.") from error
-        try:
-            report = await http_request.app.state.agentic_research_store.get_report(
-                user.workspace_id, parsed_run_id
-            )
-        except AgenticResearchStoreUnavailable as error:
-            raise HTTPException(status_code=503, detail=str(error)) from error
-        if report is None:
-            raise HTTPException(status_code=404, detail="No final report exists for this run.")
-        return report
 
     @app.get(
         "/v1/web-trust-policy",

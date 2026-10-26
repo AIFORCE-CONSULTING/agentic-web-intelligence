@@ -12,6 +12,7 @@ from app.agentic_research.contracts import (
     TopicCoverageFacts,
     TopicPlan,
     TopicPlanValidationError,
+    TopicWorkspaceSummary,
     assess_topic_coverage,
     parse_topic_plan,
 )
@@ -347,3 +348,30 @@ def test_clean_start_removes_only_superseded_agentic_control_tables() -> None:
     assert "agentic_research_topics" not in cleanup
     assert "agentic_topic_relevance_decisions" not in cleanup
     assert "agentic_topic_coverage_evidence" not in cleanup
+
+
+def test_topic_schema_keeps_notebook_identity_separate_from_run_status() -> None:
+    """A Topic groups many runs but never becomes a second workflow state machine."""
+
+    from app.agentic_research.store import SCHEMA
+
+    assert "CREATE TABLE IF NOT EXISTS research_topics" in SCHEMA
+    assert "CREATE TABLE IF NOT EXISTS research_topic_runs" in SCHEMA
+    assert "UNIQUE (topic_id, normalized_question)" in SCHEMA
+    assert "run_id UUID NOT NULL UNIQUE REFERENCES research_runs" in SCHEMA
+    topic_schema = SCHEMA.split("CREATE TABLE IF NOT EXISTS research_topics", 1)[1].split(
+        "CREATE TABLE IF NOT EXISTS research_topic_runs", 1
+    )[0]
+    assert "status TEXT" not in topic_schema
+
+
+def test_topic_name_normalization_is_stable_and_workspace_local() -> None:
+    assert AgenticResearchStore.normalize_topic_name("  Agentic   Web ") == "agentic web"
+
+    topic = TopicWorkspaceSummary(
+        id=uuid4(),
+        name="Agentic Web",
+        created_at=datetime.now(UTC),
+        updated_at=datetime.now(UTC),
+    )
+    assert topic.current_revision_id is None

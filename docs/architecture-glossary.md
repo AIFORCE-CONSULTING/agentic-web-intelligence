@@ -136,6 +136,25 @@ facts or requests; outputs are validated results, not merely model text.
 - **Outputs:** Validated Markdown report or typed failure.
 - **Connected to:** Unified graph, local model, AgenticResearchStore.
 
+### Research Topic
+- **Purpose:** Durable operator notebook that groups related research
+  questions, retained sources, and immutable wiki revisions.
+- **Inputs:** Workspace identity, operator-chosen topic name, and existing
+  research-run identifiers.
+- **Outputs:** Topic membership, source provenance, current wiki pointer, and
+  revision history.
+- **Connected to:** TopicWorkspaceService, ResearchStore, AgenticResearchStore,
+  Unified LangGraph workflow, and the topic workspace UI.
+
+- **Purpose:** Creates and reads Topics, attaches a research question to one
+  Topic, and derive whether a required evidence-review decision is pending.
+- **Inputs:** Workspace identity, topic identity, question, canonical run state,
+  and existing trust-review records.
+- **Outputs:** Topic-scoped run creation or reuse, and a derived **Needs your
+  decision** queue when a human decision is required.
+- **Connected to:** AgenticResearchStore, ResearchStore, WebTrustStore, topic
+  API routes, and the UnifiedResearchWorkflowEntry.
+
 ### Local Ollama model
 - **Purpose:** Supplies bounded semantic proposals without platform authority.
 - **Inputs:** Versioned prompt, bounded content, schema, fixed settings.

@@ -13,7 +13,7 @@ from app.persistence import SCHEMA_SETUP_LOCK_ID
 from app.settings import get_settings
 
 BOOTSTRAP_NAME = "platform_application_schema"
-SCHEMA_VERSION = "platform-schema:v1"
+SCHEMA_VERSION = "platform-schema:v2"
 
 BOOTSTRAP_STATUS_SCHEMA = """
 CREATE TABLE IF NOT EXISTS database_bootstrap_status (

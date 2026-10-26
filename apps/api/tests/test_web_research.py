@@ -13,6 +13,21 @@ from app.agent_runtime.research_workflow import (
     ResearchWorkflowUnavailable,
     UnifiedResearchWorkflowEntry,
 )
+from app.agentic_research.contracts import (
+    TopicAttentionItem,
+    TopicQuestionSummary,
+    TopicResearchActivityEvent,
+    TopicSourceLibrary,
+    TopicSourceSummary,
+    TopicWikiRead,
+    TopicWikiRevision,
+    TopicWorkspace,
+    TopicWorkspaceSummary,
+)
+from app.agentic_research.topic_workspace import (
+    TopicQuestionStart,
+    TopicWorkspaceConflict,
+)
 from app.database_bootstrap import DatabaseBootstrapReadiness
 from app.evidence_summaries.contracts import (
     EvidenceSummaryExecution,
@@ -1163,7 +1178,7 @@ def test_search_endpoint_returns_provider_unavailability(monkeypatch: pytest.Mon
     assert response.json()["detail"] == "The search provider is unavailable."
 
 
-def test_run_endpoint_delegates_new_research_to_unified_workflow() -> None:
+def test_run_endpoint_requires_a_research_topic() -> None:
     run_id = uuid4()
     calls: list[tuple[object, str, int]] = []
 
@@ -1190,9 +1205,279 @@ def test_run_endpoint_delegates_new_research_to_unified_workflow() -> None:
 
     response = asyncio.run(request())
 
-    assert response.status_code == 201
-    assert response.json()["status"] == "discovering"
-    assert calls == [(user.workspace_id, "evidence", 10)]
+    assert response.status_code == 410
+    assert "Research Topic" in response.json()["detail"]
+    assert calls == []
+
+
+def test_topic_routes_are_workspace_scoped_and_start_only_the_existing_workflow() -> None:
+    topic_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+    calls: list[tuple[str, object]] = []
+
+    class FakeTopicService:
+        async def create_or_get(self, workspace_id, name):
+            calls.append(("create", workspace_id))
+            return TopicWorkspaceSummary(
+                id=topic_id,
+                name=name,
+                created_at=now,
+                updated_at=now,
+            )
+
+        async def list(self, workspace_id):
+            calls.append(("list", workspace_id))
+            return []
+
+        async def get(self, workspace_id, requested_topic_id):
+            calls.append(("get", requested_topic_id))
+            if requested_topic_id != topic_id:
+                return None
+            return TopicWorkspace(
+                topic=TopicWorkspaceSummary(
+                    id=topic_id,
+                    name="Agentic web",
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        async def start_question(
+            self, workspace_id, requested_topic_id, question, source_limit
+        ):
+            calls.append(
+                ("question", (workspace_id, requested_topic_id, question, source_limit))
+            )
+            return TopicQuestionStart(
+                run=ResearchRun(
+                    id=run_id,
+                    question=question,
+                    status="discovering",
+                    created_at=now,
+                    updated_at=now,
+                ),
+                created=True,
+            )
+
+    app, user = authenticated_app(create_app())
+    app.state.topic_workspace_service = FakeTopicService()
+
+    async def request() -> tuple[
+        httpx.Response, httpx.Response, httpx.Response, httpx.Response
+    ]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return (
+                await client.post("/v1/research/topics", json={"name": "Agentic web"}),
+                await client.get("/v1/research/topics"),
+                await client.get(f"/v1/research/topics/{topic_id}"),
+                await client.post(
+                    f"/v1/research/topics/{topic_id}/questions",
+                    json={"question": "How is WebMCP adopted?", "max_results": 10},
+                ),
+            )
+
+    created, listed, retrieved, started = asyncio.run(request())
+
+    assert created.status_code == 200
+    assert listed.status_code == 200
+    assert retrieved.status_code == 200
+    assert started.status_code == 201
+    assert started.json()["id"] == str(run_id)
+    assert calls == [
+        ("create", user.workspace_id),
+        ("list", user.workspace_id),
+        ("get", topic_id),
+        ("question", (user.workspace_id, topic_id, "How is WebMCP adopted?", 10)),
+    ]
+
+
+def test_topic_question_returns_pending_review_items_without_starting_work() -> None:
+    topic_id = uuid4()
+    item = TopicAttentionItem(
+        run_id=uuid4(),
+        source_url="https://example.com/review",
+        content_hash="sha256:review",
+        title="Review source",
+        reason="The source needs an operator decision.",
+    )
+
+    class FakeTopicService:
+        async def start_question(self, *_: object):
+            raise TopicWorkspaceConflict([item])
+
+    app, _ = authenticated_app(create_app())
+    app.state.topic_workspace_service = FakeTopicService()
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.post(
+                f"/v1/research/topics/{topic_id}/questions",
+                json={"question": "A follow-up question", "max_results": 10},
+            )
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["attention_required"] == [item.model_dump(mode="json")]
+
+
+def test_topic_routes_reject_malformed_identifier() -> None:
+    app, _ = authenticated_app(create_app())
+
+    async def request() -> httpx.Response:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(
+            transport=transport, base_url="http://testserver"
+        ) as client:
+            return await client.get("/v1/research/topics/not-a-uuid")
+
+    response = asyncio.run(request())
+
+    assert response.status_code == 422
+
+
+def test_topic_wiki_research_and_source_routes_are_scoped_to_the_topic() -> None:
+    topic_id = uuid4()
+    revision_id = uuid4()
+    run_id = uuid4()
+    now = datetime.now(UTC)
+
+    class FakeTopicService:
+        async def get(self, _workspace_id, requested_topic_id):
+            if requested_topic_id != topic_id:
+                return None
+            return TopicWorkspace(
+                topic=TopicWorkspaceSummary(
+                    id=topic_id,
+                    name="Agentic web",
+                    current_revision_id=revision_id,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+        async def questions(self, _workspace_id, requested_topic_id):
+            assert requested_topic_id == topic_id
+            return [
+                TopicQuestionSummary(
+                    run_id=run_id,
+                    question="How is WebMCP adopted?",
+                    status="completed",
+                    created_at=now,
+                    updated_at=now,
+                    contribution_revision_id=revision_id,
+                    outcome="contributed",
+                )
+            ]
+
+        async def sources(self, _workspace_id, requested_topic_id):
+            assert requested_topic_id == topic_id
+            return TopicSourceLibrary(
+                sources=[TopicSourceSummary(
+                    evidence_id=uuid4(),
+                    first_run_id=run_id,
+                    title="WebMCP overview",
+                    url="https://example.com/webmcp",
+                    summary="Stored summary",
+                    keywords=["WebMCP"],
+                    trust_disposition="eligible",
+                    introduced_at=now,
+                    introduced_by_questions=["How is WebMCP adopted?"],
+                )]
+            )
+
+        async def activity(self, _workspace_id, requested_topic_id):
+            assert requested_topic_id == topic_id
+            return [
+                TopicResearchActivityEvent(
+                    run_id=run_id,
+                    question="How is WebMCP adopted?",
+                    event_type="research.search.completed",
+                    occurred_at=now,
+                    details={"source_count": 3},
+                )
+            ]
+
+        async def revisions(self, _workspace_id, requested_topic_id):
+            assert requested_topic_id == topic_id
+            return [
+                TopicWikiRevision(
+                    id=revision_id,
+                    topic_id=topic_id,
+                    revision_number=1,
+                    triggering_run_id=run_id,
+                    markdown="# Research wiki",
+                    input_fingerprint="fingerprint",
+                    quality_grade="PASS",
+                    created_at=now,
+                )
+            ]
+
+    class FakeAgenticStore:
+        async def get_topic_wiki(
+            self, _workspace_id, requested_topic_id, requested_revision_id=None
+        ):
+            assert requested_topic_id == topic_id
+            assert requested_revision_id in {None, revision_id}
+            return TopicWikiRead(
+                revision=TopicWikiRevision(
+                    id=revision_id,
+                    topic_id=topic_id,
+                    revision_number=1,
+                    triggering_run_id=run_id,
+                    markdown="# Research wiki",
+                    input_fingerprint="fingerprint",
+                    quality_grade="PASS",
+                    created_at=now,
+                ),
+                change_summary="The latest question added one source.",
+                source_exclusions=[
+                    {
+                        "title": "Unavailable source",
+                        "url": "https://example.com/unavailable",
+                        "reason_code": "unreachable",
+                        "reason": "No usable evidence was captured.",
+                    }
+                ],
+            )
+
+    app, _ = authenticated_app(create_app())
+    app.state.topic_workspace_service = FakeTopicService()
+    app.state.agentic_research_store = FakeAgenticStore()
+
+    async def request() -> tuple[
+        httpx.Response, httpx.Response, httpx.Response, httpx.Response, httpx.Response,
+        httpx.Response,
+    ]:
+        transport = httpx.ASGITransport(app=app)
+        async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+            return (
+                await client.get(f"/v1/research/topics/{topic_id}/wiki"),
+                await client.get(f"/v1/research/topics/{topic_id}/wiki?revision_id={revision_id}"),
+                await client.get(f"/v1/research/topics/{topic_id}/wiki/revisions"),
+                await client.get(f"/v1/research/topics/{topic_id}/research"),
+                await client.get(f"/v1/research/topics/{topic_id}/sources"),
+                await client.get(f"/v1/research/topics/{topic_id}/activity"),
+            )
+
+    wiki, historical_wiki, revisions, questions, sources, activity = asyncio.run(request())
+
+    assert wiki.status_code == 200
+    assert historical_wiki.status_code == 200
+    assert revisions.status_code == 200
+    assert questions.status_code == 200
+    assert sources.status_code == 200
+    assert activity.status_code == 200
+    assert questions.json()[0]["outcome"] == "contributed"
+    assert sources.json()["sources"][0]["keywords"] == ["WebMCP"]
+    assert activity.json()[0]["event_type"] == "research.search.completed"
 
 
 def test_run_endpoint_rejects_unsupported_source_count() -> None:
@@ -1210,7 +1495,7 @@ def test_run_endpoint_rejects_unsupported_source_count() -> None:
     assert response.status_code == 422
 
 
-def test_run_endpoint_returns_safe_workflow_unavailability() -> None:
+def test_run_endpoint_does_not_start_work_outside_a_research_topic() -> None:
     class FakeEntry:
         async def start_or_resume(self, *_: object):
             raise ResearchWorkflowUnavailable(
@@ -1232,13 +1517,11 @@ def test_run_endpoint_returns_safe_workflow_unavailability() -> None:
 
     response = asyncio.run(request())
 
-    assert response.status_code == 503
-    assert response.json() == {
-        "detail": "Research checkpoint persistence is unavailable."
-    }
+    assert response.status_code == 410
+    assert "Research Topic" in response.json()["detail"]
 
 
-def test_run_endpoint_does_not_report_cleanup_backlog_as_start_blocker() -> None:
+def test_run_endpoint_does_not_start_cleanup_work_outside_a_research_topic() -> None:
     run_id = uuid4()
 
     class FakeEntry:
@@ -1266,11 +1549,8 @@ def test_run_endpoint_does_not_report_cleanup_backlog_as_start_blocker() -> None
 
     response = asyncio.run(request())
 
-    assert response.status_code == 201
-    assert response.json()["status"] == "planning"
-    assert response.json().get("detail") != (
-        "Completed research checkpoint cleanup is pending."
-    )
+    assert response.status_code == 410
+    assert "Research Topic" in response.json()["detail"]
 
 
 def test_research_durable_work_endpoints_are_workspace_scoped_and_read_only() -> None:
@@ -1323,7 +1603,7 @@ def test_research_durable_work_endpoints_are_workspace_scoped_and_read_only() ->
     assert workspaces == [user.workspace_id, user.workspace_id]
 
 
-def test_run_endpoint_reuses_existing_unified_research_record() -> None:
+def test_run_endpoint_does_not_reuse_a_run_outside_a_research_topic() -> None:
     prior_run_id = uuid4()
     calls = 0
 
@@ -1352,10 +1632,9 @@ def test_run_endpoint_reuses_existing_unified_research_record() -> None:
 
     response = asyncio.run(request())
 
-    assert response.status_code == 200
-    assert response.json()["id"] == str(prior_run_id)
-    assert response.json()["status"] == "assessing_coverage"
-    assert calls == 1
+    assert response.status_code == 410
+    assert "Research Topic" in response.json()["detail"]
+    assert calls == 0
 
 
 def test_latest_summary_execution_restores_persisted_source_results() -> None:

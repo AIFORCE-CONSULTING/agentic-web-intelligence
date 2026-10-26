@@ -1,8 +1,9 @@
 <!--
 Sync Impact Report
-- Version change: 1.1.0 -> 1.2.0
+- Version change: 1.3.0 -> 1.3.1
 - Modified principle: One owner for each responsibility -> One owner for each
   responsibility, business decision, and workflow state.
+- Added principle: Feedback loops must be surfaced, actionable, and resolved.
 - Expanded sections: Required Specification and Design Workflow; Quality Gates;
   Governance.
 - Templates updated: .specify/templates/plan-template.md,
@@ -10,8 +11,13 @@ Sync Impact Report
 - Runtime guidance updated: AGENTS.md.
 - Published constitution page: docs/architecture-constitution.md includes this
   canonical file and requires no duplicate edit.
-- Deferred follow-up: the active 001-consolidate-research-architecture feature
-  artifacts must be revised against the new ownership matrix before implementation.
+- Templates updated: feedback-loop requirements added to specification, plan,
+  and task templates. The repository has no `.specify/templates/commands/`
+  directory, so there are no command templates to update.
+- Runtime guidance updated: AGENTS.md requires feedback-loop ownership,
+  enforcement, and resolution in design checkpoints.
+- Clarified planning standard: consequential decisions require a plain-language
+  worked example in addition to their ownership-matrix row.
 -->
 # Agentic Web Intelligence Constitution
 
@@ -124,10 +130,36 @@ the business problem, actors, desired outcomes, scope, exclusions, acceptance
 scenarios, and measurable success criteria. They MUST identify any human-only
 decision or agent limitation that is part of the product requirement.
 
+For every consequential workflow decision, human approval, state transition,
+blocking rule, or external effect, the plan MUST also include a brief
+plain-language worked example. The example MUST explain what the operator sees,
+what action they may take, which official record changes, and what happens
+next. The ownership matrix remains the precise implementation reference; the
+worked example makes its business meaning reviewable without requiring the
+reader to infer behavior from table fields.
+
 Implementation plans MUST then reconcile the specification with the current
 architecture. A specification describes what the platform must accomplish; it
 does not silently select a new service, authority, store, framework, or workflow
 owner.
+
+### VII. Feedback loops must be actionable
+
+When a workflow requires a human decision, the platform MUST make that decision
+plainly visible to the responsible operator at the next relevant point of work.
+The platform MUST identify the exact record that holds the decision, the action
+the operator can take, the effect of each outcome, and the point that enforces
+the decision.
+
+Required feedback MUST NOT quietly become background information that a later
+operator action can bypass. A later action that would move the same work forward
+without the required decision MUST be prevented or directed back to the pending
+decision until it is recorded. A derived attention view is a convenience for
+the operator; it MUST NOT become a second authoritative workflow state.
+
+Not every failure or exclusion is a feedback loop. The platform SHOULD show
+informational outcomes clearly, but it MUST reserve blocking attention items
+for decisions a human is actually required to make.
 
 ## Required Specification and Design Workflow
 
@@ -182,6 +214,12 @@ requirement.
 - Every plan MUST identify the trigger, authority owner, canonical state,
   direct-or-durable execution rule, human-decision record, and excluded callers
   or capabilities.
+- A feature with a required human decision MUST specify how the operator sees
+  it, the exact action required, the enforcement point that prevents bypass,
+  the resolution behavior, and the tests that prove the loop cannot be ignored.
+- Plans MUST include plain-language worked examples for consequential workflow
+  and human-decision rules. Tasks that change operator-visible behavior MUST
+  identify the user scenario they implement or verify.
 - Every business decision and workflow state MUST have one canonical record,
   one authorized writer, complete transitions, and an explicit reconciliation
   rule for every derived copy.
@@ -218,4 +256,4 @@ does not excuse an incomplete specification or plan. Any approved exception
 MUST be documented in the plan's Complexity Tracking table with the rejected
 simpler alternative and a retirement or review condition.
 
-**Version**: 1.2.0 | **Ratified**: 2026-09-24 | **Last Amended**: 2026-09-26
+**Version**: 1.3.1 | **Ratified**: 2026-09-24 | **Last Amended**: 2026-10-22

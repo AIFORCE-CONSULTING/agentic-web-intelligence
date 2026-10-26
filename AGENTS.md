@@ -46,6 +46,10 @@ The checkpoint must explain:
 5. how any human decision is recorded and enforced independently of the
    execution mechanism; and
 6. which callers or capabilities are explicitly excluded.
+7. how every required human feedback loop is surfaced, enforced, and resolved
+   without creating a second authoritative workflow state.
+8. a plain-language worked example for every consequential workflow decision,
+   state change, human approval, blocking rule, or external effect.
 
 The checkpoint must include the State and Decision Ownership Matrix required by
 the constitution. It cannot be approved while ownership, transitions,
@@ -63,8 +67,8 @@ for every design and implementation decision.
 For significant feature, workflow, authority, durable-execution, human-approval,
 or external-effect changes, use the Specify workflow in `.agents/skills/`.
 Treat `.specify/memory/constitution.md` as the canonical project constitution.
-The active database bootstrap plan is
-`specs/010-database-bootstrap/plan.md`. Read `.specify/feature.json` and
+The active feature plan is
+`specs/011-topic-research-wiki/plan.md`. Read `.specify/feature.json` and
 the selected feature's current specification, plan, and tasks before
 implementation. Specify artifacts supplement rather than
 replace the architecture reconciliation and approval required above.

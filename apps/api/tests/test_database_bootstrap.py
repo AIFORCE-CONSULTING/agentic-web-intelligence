@@ -167,7 +167,7 @@ def test_readiness_reports_incompatible_schema_version(monkeypatch: pytest.Monke
 
 def test_bootstrap_status_contract_is_stable() -> None:
     assert BOOTSTRAP_NAME == "platform_application_schema"
-    assert SCHEMA_VERSION == "platform-schema:v1"
+    assert SCHEMA_VERSION == "platform-schema:v2"
     assert "database_bootstrap_status" in database_bootstrap.BOOTSTRAP_STATUS_SCHEMA
     assert "bootstrap_name TEXT PRIMARY KEY" in database_bootstrap.BOOTSTRAP_STATUS_SCHEMA
 

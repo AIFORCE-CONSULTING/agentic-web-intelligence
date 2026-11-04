@@ -1,46 +1,72 @@
 # Agentic Web Intelligence
 
-An open-source, production-quality platform for governed web discovery, extraction, and AI-agent research workflows.
+Agentic Web Intelligence is a local-first, source-grounded research platform.
+It helps an operator turn a question into governed web research: the platform
+discovers sources, evaluates whether evidence is safe and useful to use,
+preserves evidence and its provenance, and builds a traceable research wiki for
+each topic.
 
-The platform helps teams turn web-derived evidence into documented, governed, observable, and deployable AI solutions. It is inspired by the operating model of a Forward Deployed Engineer: discover, design, prototype, validate, and deliver without sacrificing enterprise standards.
+The platform is designed to make credible research available without requiring
+cloud-model access or an expensive research subscription.
 
-## Phase 1: Foundation
+## What It Does
 
-Phase 1 establishes the engineering foundation: repository standards, React and FastAPI application boundaries, a Docker-first local environment, versioned documentation, and continuous integration.
+- Creates durable **Research Topics** that collect related questions, evidence,
+  source summaries, keywords, and immutable wiki revisions over time.
+- Uses LangGraph to coordinate one research workflow and Temporal for work that
+  needs durable execution. The operator starts research once; the platform
+  selects the execution path automatically.
+- Keeps web search and extraction behind a governed MCP host. Models may request
+  approved capabilities, but cannot directly use a browser, shell, database,
+  credentials, or arbitrary network tools.
+- Applies a local web-trust policy before evidence reaches a model. The platform
+  preserves retrieval facts and decisions, blocks unsafe evidence, and requires
+  a recorded human decision for evidence that needs review.
+- Uses a local Ollama model for bounded semantic work: topic planning,
+  relevance decisions, summaries, keywords, and source-grounded wiki findings.
 
-## Phase 2: Governed web intelligence
+## Quick Start
 
-Phase 2 delivers the first practical vertical slice: an evidence-producing web-research workflow that reaches approved search and extraction tools through Model Context Protocol (MCP). React remains the operator experience and FastAPI the platform boundary.
+The shortest path to a working local platform is documented in the
+[Quickstart](docs/quickstart.md). In outline:
 
-## Planned components
+1. Install Docker Desktop and [Ollama](https://ollama.com/), then pull the
+   local model: `ollama pull qwen3:1.7b`.
+2. Copy `.env.example` to `.env` and replace every sample secret.
+3. Start the full local research platform:
 
-```text
-apps/
-  web/                 React operator console
-  api/                 FastAPI gateway and platform API
-platform-common/       Shared Python contracts and utilities
-platform-core/         Agent-runtime and orchestration components
-sample-mcp-servers/    Reference MCP servers and adapters
-sample-agents/         Production-oriented agent examples
-examples/              End-to-end use cases
-docker/                Local Compose environment
-diagrams/              Versioned architecture diagrams
-docs/                  Documentation-site source
-```
+   ```powershell
+   docker compose --profile web-research up -d --build
+   ```
 
-## Status
+4. Open the Research Workspace at `http://localhost:3000/` and documentation at
+   `http://localhost:8001/`.
 
-Phases 1 through 6 are complete. See [PROJECT.md](PROJECT.md), [ARCHITECTURE.md](ARCHITECTURE.md), [ROADMAP.md](ROADMAP.md), and the published [documentation site](https://aiforce-consulting.github.io/agentic-web-intelligence/) for the project contract and delivery plan.
+The platform remains local by default. Do not expose a development deployment
+to the public internet.
 
-## Technology direction
+## Documentation
 
-- React + TypeScript
-- FastAPI + Python
-- MCP + LangGraph
-- Docker Compose, PostgreSQL, Redis
-- Observability and evaluation designed in from the outset
+- [Documentation site](https://aiforce-consulting.github.io/agentic-web-intelligence/)
+- [Current platform architecture](docs/current-platform-architecture.md)
+- [Architecture decisions](docs/decisions.md)
+- [Roadmap](ROADMAP.md)
+- [Local Evidence Intelligence](docs/local-evidence-intelligence.md)
+- [Contribution guide](CONTRIBUTING.md)
 
-## License and community
+## Contributing and Community
 
-This project is licensed under the [Apache License 2.0](LICENSE). Participation
-is governed by the [Contributor Covenant Code of Conduct](CODE_OF_CONDUCT.md).
+This project welcomes bug reports, documentation improvements, research
+findings, and carefully scoped code contributions. Please read
+[CONTRIBUTING.md](CONTRIBUTING.md) before beginning work. Community conduct is
+governed by [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md), and the maintainer decision
+process is described in [GOVERNANCE.md](GOVERNANCE.md).
+
+For help, bugs, feature proposals, and security reporting, see
+[SUPPORT.md](SUPPORT.md). Do not report security vulnerabilities in public
+issues or pull requests.
+
+## License
+
+Copyright 2026 Agentic Web Intelligence contributors. Licensed under the
+[Apache License 2.0](LICENSE).

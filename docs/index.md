@@ -59,6 +59,7 @@ not treated as current behavior.
 
 ## Start Here
 
+- Follow the [Quickstart](quickstart.md) to start a private local platform.
 - Review the [roadmap](foundation/roadmap.md) for current phases, completed
   work, refactoring, and deferred ideas.
 - Read the [current platform architecture](current-platform-architecture.md)
@@ -72,3 +73,5 @@ not treated as current behavior.
   [ADR 0016](adr/0016-governed-local-agent-capability-requests.md) for the
   model and agentic-research decisions.
 - Use the [contribution guide](contributing.md) to run the platform locally.
+- Read [Governance](governance.md) and [Support](support.md) before opening a
+  public contribution or support request.

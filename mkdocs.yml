@@ -58,6 +58,7 @@ extra_javascript:
 
 nav:
   - Home: index.md
+  - Quickstart: quickstart.md
   - Foundation:
       - Project vision: foundation/project.md
       - Engineering principles: foundation/principles.md
@@ -72,7 +73,8 @@ nav:
       - Architecture constitution: architecture-constitution.md
       - Architecture diagrams: diagrams/index.md
       - Repository organization: repositories.md
-      - Decisions (ADRs): decisions.md
+  - Architecture decisions:
+      - ADR index: decisions.md
       - ADR 0001 — Monorepo: adr/0001-monorepo.md
       - ADR 0002 — React and FastAPI: adr/0002-react-fastapi.md
       - ADR 0003 — Web intelligence via MCP: adr/0003-web-intelligence-mcp.md
@@ -101,6 +103,8 @@ nav:
   - Governed research prompt: governed-research-prompt.md
   - Contributing:
       - Contribution guide: contributing.md
+      - Governance: governance.md
+      - Support: support.md
       - Style guide: style-guide.md
 
 copyright: Copyright &copy; 2026 Enterprise Agent Platform contributors

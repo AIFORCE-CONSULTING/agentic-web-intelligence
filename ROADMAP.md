@@ -1,360 +1,72 @@
 # Roadmap
 
-## Phase 1 - Foundation (complete)
+This roadmap emphasizes what the platform will do next. Earlier work is retained
+in the [Completed work](#completed-work) section for context, not as the main
+planning view.
 
-- Repository scaffold and contribution standards
-- React + FastAPI application boundaries
-- Docker Compose local environment
-- MkDocs Material documentation site
-- Architecture Decision Records
-- CI validation and repository templates
+## Phase 10 - Automated Wiki Builder
 
-## Phase 2 - Governed Web Intelligence (complete)
+Turn the completed topic wiki foundation into a research assistant that keeps a
+topic current over time. The operator remains responsible for choosing the
+research goal and resolving consequential feedback; the platform performs the
+bounded, repeatable research work.
 
-Deliver an evidence-producing web-research workflow through a governed MCP boundary.
+- [ ] Let an operator schedule recurring research for a topic, including the
+  question or research angle, cadence, and an initial limit of **30 discovered
+  sources per scheduled research cycle**.
+- [ ] Run scheduled discovery, source reuse, acquisition, trust evaluation,
+  relevance, summarization, and topic coverage through the existing governed
+  workflow. A schedule must never bypass the local trust policy, human evidence
+  review, source de-duplication, or platform-selected direct/Temporal routing.
+- [ ] Incorporate qualified findings from each completed cycle into the living
+  wiki as a dated update. Clearly show what was added, revised, excluded, or
+  remains unanswered since the preceding update.
+- [ ] Surface a pending human decision prominently and stop the affected topic's
+  automated progression until the operator accepts or rejects the exact evidence
+  version. A scheduled job must not silently ignore a feedback loop.
+- [ ] Provide a simple operator view to inspect, pause, resume, and remove a
+  topic schedule and review its completed and skipped research cycles.
 
-- LangGraph workflow with approved web-search and extraction tools
-- MCP host, source provenance, basic tool policy, and execution audit history
-- Developer and operator portal for the console, API reference, documentation, and service health
-- Publish the MkDocs documentation site with GitHub Pages
+## Phase 11 - Private Access and Portable Wiki Sharing
 
-## Phase 3 - Agent Runtime (complete)
+Make a locally run wiki useful beyond the computer that created it, without
+turning the current local development deployment into an accidental public
+service.
 
-- Server-only LangGraph planning, execution, and review workflows
-- Fixed roles and capabilities, typed state, policy-validated handoffs, and audit events
-- Run-scoped, expiring provenance memory
-- Bounded reviewer-to-researcher revision pattern with safe escalation
+- [ ] Design and implement authenticated private-network access so an operator
+  can use their local wiki from another personal device, such as a phone. Define
+  the network, identity, session, and device-trust boundary before exposing the
+  platform beyond `localhost`.
+- [ ] Export a selected topic as a portable wiki package containing its readable
+  wiki revisions, source summaries, original URLs, provenance, keywords, and
+  clearly labeled inclusion or exclusion outcomes.
+- [ ] Let another locally run platform import a shared package without treating
+  imported material as newly retrieved or automatically trusted evidence. Keep
+  the package origin and its source history visible to the receiving operator.
+- [ ] Provide an intentional sharing path for publishing a downloadable topic
+  package online, with operator control over what is included and no automatic
+  exposure of local credentials, audit-only information, or private workspace
+  data.
 
-## Phase 4 - Enterprise Services (complete)
+## Phase 12 - Personal Email Organizer
 
-Add authentication, authorization, tool registry, secrets, and governance.
+After the automated wiki builder is reliable, apply the same source-grounded
+research and organization approach to a person's email.
 
-## Phase 5 - Durable Execution (complete)
-
-Add Temporal, long-running workflows, and human-in-the-loop operations.
-
-- Define the durable-workflow contract, including authority, retry, timeout,
-  cancellation, idempotency, retention, and escalation rules.
-- Add a local Temporal deployment and a server-only adapter for one approved
-  runtime execution path.
-- Persist validated checkpoints and let authenticated operators inspect,
-  cancel, and resolve durable work.
-- Add explicit human approval and revision wait states without creating an
-  agent-controlled authority path.
-- Validate restart, resume, workspace isolation, cancellation, and ambiguous
-  effect behavior end to end.
-
-## Phase 6 - Local Evidence Intelligence (complete)
-
-Add a local-first, optional open-weight model capability for generated evidence
-summaries and page-level keywords.
-
-- Define the [local-model provider boundary](../adr/0014-governed-local-model-provider.md):
-  native local Ollama by default, no automatic model download, no model tools,
-  and no new agent authority.
-- Add local-model configuration, model-artifact verification, health, and
-  resource guidance for Qwen3 1.7B on modest local hardware.
-- Create evidence-only summarization and keyword contracts with strict input,
-  output, provenance, and schema validation rules.
-- Process complete pages through bounded overlapping chunks, then consolidate
-  page summaries and key phrases with coverage and source-chunk references.
-- Run Temporal as mandatory platform infrastructure. The platform selects a
-  direct path for one-source, one-chunk summaries and automatically uses the
-  durable workflow for multi-source or multi-chunk processing; an operator
-  never chooses the execution mechanism.
-- Add an operator UI to request, inspect, and distinguish generated summaries
-  from extracted source evidence.
-- Validate local quality, model-unavailable behavior, prompt-injection
-  resistance, workspace isolation, and direct-versus-durable routing.
-
-## Phase 7 (complete)
-
-#### Refactoring
-
-- [x] Keep one canonical research run for each normalized web-search target. A
-  repeated **Discover sources** action performs a fresh provider search but
-  never creates a duplicate target container.
-- [x] On repeated discovery, append and acquire/preflight only source URLs that
-  are not already present anywhere in the workspace database. Preserve prior
-  evidence, trust evaluations, and summaries without re-fetching or
-  re-summarizing them.
-- [x] Add a workspace-wide keyword-centered operator view: render each keyword
-  as a visual card and list every related stored source summary beneath it. A
-  source may appear under more than one keyword, and each source link opens its
-  stored source summary rather than the original external webpage.
-- [x] Raise the governed discovery result limit from 5 to 50 sources so the
-  platform can acquire and evaluate a broader initial evidence set.
-- [x] Revisit both the chunk and final summarization prompts and their output
-  contracts. Every stored keyword now has a persisted, validated supporting
-  sentence from its source summary, and source summaries record the fixed
-  prompt version used to create them.
-
-#### Local Policy-Controlled Web Trust
-
-Add a browser-agnostic control point that determines whether a captured web
-evidence version may enter the platform's evidence and AI workflows. This phase
-governs local eligibility; it does not make a universal claim about a source's
-truthfulness or replace browser safety protections.
-
-- [x] Define the source-trust boundary, authority, and enforcement rules in an ADR.
-- [x] Establish the initial, versioned local trust policy and expose it for
-  read-only operator review. The current policy deterministically evaluates
-  HTTPS, supported content types, extraction integrity, and extracted-size
-  limits. It records redirects only as retrieval diagnostics: requested
-  candidate URL, final evidence URL, and one bounded result (`no_redirect`,
-  `redirected`, `redirect_limit_exceeded`, or `unsafe_destination_blocked`).
-  Redirect metadata explains how evidence was reached but does not independently
-  allow, flag, or block it.
-- [x] Discover and automatically preflight every returned candidate before the
-  operator selects it. Persist useful evidence, trust results, and failed or
-  blocked candidate metadata so future agents can reuse the findings without
-  treating a past URL result as a permanent verdict.
-- [x] Automatically summarize eligible preflight evidence and accepted reviewed
-  evidence through platform-selected direct or Temporal execution without
-  exposing manual extraction or regeneration controls.
-- [x] Evaluate an evidence version after acquisition and before it is eligible for
-  summaries, keywords, or future evidence-grounded capabilities.
-- [x] Enforce `eligible`, `eligible_with_notice`, `review_required`, and `blocked`
-  dispositions. Preserve raw capture for audit regardless of disposition, but
-  prevent evidence requiring review or blocked evidence from automated model
-  context.
-
-- [x] Add a review experience for evidence requiring review. A human acceptance
-  records its identity, reason, exact evidence-version scope, and optional expiry
-  independently of the UI and execution mechanism.
-
-## Phase 7.5 - Architecture Refactoring
-
-Close the architecture gaps identified while introducing the agentic research
-workflow. Preserve `RuntimeService` as the single boundary that determines what
-an agent, reviewer, and human operator may do. LangGraph coordinates research,
-but it does not grant authority. The governed MCP host executes only authorized
-tool requests, EvidenceTrustService controls whether evidence may enter model
-context, Temporal makes qualifying work durable, and PostgreSQL remains the
-official record.
-
-Implementation proceeds in this order:
-
-1. [x] **Define the unified workflow state and graph structure.** The LangGraph
-   working state carries the research run and workspace identifiers, operator
-   question, total source limit, planned topics, source progress, uncovered
-   topics, gap-search count, workflow stage, and failure information. The graph
-   coordinates topic planning, searches, acquisition, relevance, summaries,
-   coverage, no more than two missing-topic search rounds, final reporting, and
-   waits for human or durable work. This is temporary execution context;
-   PostgreSQL remains the official business and audit record.
-2. [x] **Authorize from canonical stored authority.** Replace the narrow
-   object-based capability check with a RuntimeService request containing stable
-   workspace, run, step, action, resource, and bounded-context identifiers.
-   RuntimeService reloads the stored run, active step, role, and capability grant
-   before deciding. A LangGraph node cannot authorize itself by supplying a
-   `RuntimeStep` object or a capability collection.
-3. [x] **Evaluate the complete capability request.** In addition to the stored
-   role grant, RuntimeService verifies that the run and step are active, the
-   resource belongs to the same workspace and research task, the requested URL
-   was discovered for that task, the current workflow stage permits the action,
-   and applicable source, attempt, retry, and gap-search limits remain. Evidence
-   review and trust decisions remain owned by their existing services and become
-   bounded authorization facts, not caller assertions.
-4. [x] **Version the authority policy.** Give the RuntimeService rules an
-   explicit version and persist that version with every runtime run and
-   capability decision. Changing role grants, handoffs, human gates, or
-   authorization conditions creates a new version so historical decisions remain
-   explainable without reconstructing them from Git history.
-5. [x] **Return and retain structured authorization decisions.** Every
-   capability request produces `allow` or `deny`, a stable reason code, a safe
-   human-readable explanation, the authority-policy version, and bounded request
-   facts. Persist both allowed and denied decisions before any allowed action is
-   sent to the governed MCP host. Never retain credentials, secrets, or raw page
-   content in these records.
-6. [x] **Add a complete authorization test matrix.** Prove the expected decision
-   for every role and protected capability across active, inactive, terminal,
-   wrong-workspace, wrong-run, undiscovered-source, exhausted-limit,
-   missing-human-approval, malformed-context, and unknown-action cases. Every
-   combination without an explicit allow must demonstrate default deny.
-7. [x] **Consolidate the duplicate agent-authority path.** Move the useful query
-   reservation, source-attempt, source-scope, and gap-search checks currently in
-   `AgenticResearchControlService` under RuntimeService's strengthened authority
-   boundary. Update LangGraph to request decisions from RuntimeService using the
-   stored agent assignment. Remove hardcoded node-supplied grants and retire
-   `AgenticResearchControlService` only after its callers, records, and tests have
-   migrated.
-8. [x] **Finish connecting existing services through typed graph nodes.** The
-   topic-planning, search, acquisition, trust, relevance, summary, coverage, and
-   reporting nodes exist, but their authority connection is incomplete. Finish
-   the nodes using RuntimeService for authority and the established service owner
-   for each business operation, without copying policy or creating replacement
-   stores.
-9. [x] **Complete end-to-end integration tests after authority consolidation.**
-   Existing tests already cover much of the research sequence. Extend and rerun
-   them through RuntimeService to prove task-wide source limits, known-URL reuse,
-   direct and Temporal-backed work, exclusion of blocked and review-required
-   evidence, safe relevance failures, two-round gap limits, retry
-   de-duplication, and reports grounded only in eligible, relevant stored
-   evidence.
-10. [x] **Connect the existing Discover Sources action to LangGraph.** Preserve
-    the current operator workflow: enter a question, choose the total source
-    count, and click **Discover Sources**. Refactor `POST /v1/research/runs` so it
-    authenticates and validates the request, finds or creates the research
-    record, creates the RuntimeService-controlled agent assignment, starts the
-    unified graph, and returns stored status. The route no longer owns the
-    detailed sequence, and no additional start button or agent interface is
-    introduced.
-11. [x] **Verify UI polling and durable continuation under the clean-start
-    policy.** The UI displays canonical research progress while Temporal
-    completes qualifying work and returns control to the correct LangGraph
-    stage. Obsolete test-era runtime, checkpoint, and Temporal history was
-    removed rather than carried through a compatibility layer. Preserve
-    `CandidatePreflightWorkflow` and `EvidenceSummaryWorkflow`; neither the model
-    nor the operator chooses the execution mechanism.
-12. [x] **Remove the standalone plain-Python agentic router.** Its useful typed
-    stages, bounded transitions, human-review wait, gap-search limit, and
-    incomplete-report behavior belong in the unified LangGraph and established
-    services. Transfer remaining useful tests before deleting the second
-    workflow path. Keep the offline model evaluation as an independent test
-    suite.
-13. [x] **Retire the obsolete earlier executor and durable workflow.** All
-    callers use the unified graph. The old deterministic planner, first-result
-    executor, reviewer cycle, unused scheduling boundary and activities,
-    `GovernedRuntimeWorkflow`, and obsolete test data have been removed.
-    `RuntimeService` and the RuntimeStore records needed by the unified workflow
-    remain. The Admin **Durable Work** view now provides read-only visibility
-    from current preflight and summary stores.
-14. [x] **Update the architecture records and close the refactor.** Update the
-    architecture diagram, glossary, ADR 0016, runtime documentation, and caller
-    descriptions to show one LangGraph coordination path and one RuntimeService
-    authority path. Record what was migrated or retired and mark Phase 7.5
-    complete only after the implementation and tests agree with those records.
-
-## Phase 8 - Agentic Research Workflow
-
-Build a local research agent that can carry out a bounded web-research task.
-The operator owns the research question. The agent identifies useful research
-steps, while platform code validates and performs each search, evidence, trust,
-storage, and execution action.
-
-#### Foundations already completed
-
-- [x] Define the general capability boundary in ADR 0016. A local model may
-  request an approved platform capability, but platform code remains responsible
-  for validating, executing, recording, and routing the request.
-- [x] Complete a narrow offline evaluation of `qwen3:1.7b` requesting a future
-  public cookie-preference capability. Retain the result as preliminary evidence
-  about that one request. It does not establish that the model can complete the
-  full research workflow.
-
-#### Research-agent design and evaluation
-
-- [x] Rewrite ADR 0016 around the complete agentic research workflow, including
-  topic planning, source research, evidence eligibility, topic coverage, bounded
-  gap searches, final reporting, platform authority, and human review.
-- [x] Update ADR 0014 so the existing evidence summarizer remains a separate,
-  no-tool model role while ADR 0016 governs the research agent.
-- [x] Define and validate the topic-planning response. For one operator question,
-  the model may propose no more than three focused topics. Each topic contains a
-  stable `topic_id`, a plain-language topic description, and one web-search query.
-- [x] Store topic coverage separately from source keywords. Evidence counts
-  toward a topic only after the platform has acquired usable content, allowed it
-  through the trust workflow, accepted it as relevant to that topic, and stored
-  its summary and keywords.
-- [x] Add a strict topic-relevance decision using the topic description and a
-  bounded excerpt from an eligible evidence version. Accept only an exact `YES`
-  or `NO`; record every malformed response as a model failure instead of
-  silently interpreting it as approval.
-- [x] Define the agent's initial research capability catalog. It begins with
-  bounded search and evidence-acquisition requests through the existing governed
-  runtime and MCP host. Cookie-preference handling may be added only after that
-  capability is separately implemented and approved.
-- [x] Keep request validation, source reuse and de-duplication, trust-policy
-  enforcement, database writes, retry limits, loop counters, and audit records
-  in platform code. The model may suggest the next research action, but the
-  application checks whether it is allowed, prevents repeated searches, limits
-  evidence-acquisition attempts, and stops additional missing-evidence searches
-  after two rounds. These decisions and counts are stored in the database so a
-  restart cannot erase them. Existing application components continue to reuse
-  evidence, prevent duplicate sources, apply the trust policy, save records, and
-  retain the history of accepted and denied requests.
-- [x] Build a versioned offline evaluation for the complete workflow. Cover topic
-  planning, relevance decisions, duplicate sources, eligible, blocked, and
-  review-required evidence, malformed model responses, hostile webpage
-  instructions, missing-topic searches, loop limits, and final-report grounding.
-- [x] Run every evaluation case repeatedly with fixed model settings. Record the
-  model version, prompt version, test version, expected result, actual result,
-  and resource use.
-- [x] Select `qwen3:1.7b` for the bounded research workflow after it passed all
-  20 complete-workflow evaluation cases in five repeated attempts. Fourteen of
-  15 topic plans passed on the first response; the remaining response omitted
-  the website perspective and passed after the one permitted correction. Keep
-  prompt and response validation, one bounded correction, and fail-closed
-  handling as required parts of the selected system. This decision prioritizes
-  useful local research on modest hardware without requiring a paid cloud model.
-  It clears the model-evaluation gate but does not by itself enable live research
-  capabilities.
-
-#### Grounded final reports
-
-- [x] Define the report-quality boundary: report quality is separate from
-  evidence trust and research completion. A readable but incomplete report is
-  visible with a `FAIL` grade rather than failing the research task.
-- [x] Create a frozen, append-only report package containing the exact qualified
-  summary inputs, source references, model attempts, quality result, and a
-  separate list of noncontributing sources.
-- [x] Use the local model's native JSON schema for report drafts and validate
-  each claim against known, topic-scoped stored source references before the
-  platform renders Markdown.
-- [x] Refine final report generation so platform code owns planned topic
-  sections, topic source lists, source-summary links, and report quality while
-  the local model drafts only one topic's findings at a time.
-- [x] Use simple report-local citation labels such as `S01`, normalize harmless
-  variants only when unambiguous, and reject unsupported or cross-topic labels
-  before rendering.
-- [x] Use at most one model correction per planned topic. When no safe topic
-  draft is available, render that topic from the same qualified summaries and
-  store a visible `FAIL` reason.
-- [x] Show report grade, origin, quality reasons, safe stored-summary links, and
-  exclusions in the existing Final report panel.
-
-## Phase 9 - Topic Research Wiki
-
-Turn individual research runs into durable, source-grounded notebooks. A
-Research Topics collect related questions, retained source provenance, and
-immutable wiki revisions while preserving the existing LangGraph, RuntimeService,
-Temporal, and local trust-policy boundaries.
-
-- [x] Create workspace-scoped Research Topics and topic-scoped question reuse.
-- [x] Associate qualified evidence and its introducing questions with a topic.
-- [x] Replace the standalone report as the primary experience with a versioned
-  topic wiki, latest-update summary, citation links, and revision history.
-- [x] Surface unresolved human evidence reviews as **Needs your decision** and
-  require their existing accept/reject decision before another question begins
-  in the same topic.
-- [x] Provide topic Research, Sources, and read-only Studio views.
+- [ ] Design narrowly scoped, provider-approved email intake for major email
+  services, with explicit account consent, read-only access, and local handling
+  of message content.
+- [ ] Organize email-derived information into topic wikis using the established
+  evidence, summary, keyword, provenance, review, and feedback-loop patterns.
+- [ ] Define separate privacy, retention, deletion, and sharing controls for
+  email before any provider integration is enabled.
 
 ## Parking Lot
 
 The following work remains planned but is intentionally deferred until concrete
 product and deployment requirements justify it.
 
-- **Monitor Cerbos for future authorization needs** — the documented initial
-  Cerbos and `RuntimeService` evaluation recommends retaining `RuntimeService`
-  and incorporating several authorization
-  practices without adding Cerbos today. Revisit Cerbos as a possible policy
-  evaluator behind `RuntimeService` when the platform has substantially more
-  roles, tools, resource types, tenant-specific policies, or policy changes that
-  must be managed independently of application releases. Monitoring Cerbos is
-  not approval to replace the current authority boundary or create another live
-  capability path.
-- **Trust-policy re-evaluation after refresh or policy change** — re-evaluate
-  evidence when governed refresh functionality or an applicable policy change
-  exists. Use direct execution for one ordinary evaluation and mandatory
-  Temporal infrastructure when workload, retry, or review thresholds require
-  durable execution.
-- **C2PA provenance validation** — validate C2PA provenance for supported file
-  assets while recording ordinary HTML as a distinct case, not as invalid solely
-  because it has no asset-level provenance manifest.
-- **Expanded trust-policy validation** — validate policy enforcement, policy
-  changes, refresh, overrides, workspace isolation, prompt-injection resistance,
-  and direct-versus-durable routing.
+### Later product and collaboration opportunities
 
 - **Topic-plan feedback** — add optional thumbs-up and thumbs-down feedback to
   the operator's topic-plan view. For negative feedback, record a simple reason
@@ -363,38 +75,6 @@ product and deployment requirements justify it.
   with the research task, plan, model artifact, and prompt version so recurring
   failures can become new offline evaluation cases. Do not automatically train
   or change the model from an individual response.
-
-- **Trust-policy management** — design a separately authorized workflow for
-  changing local trust-policy rules, potentially through a purpose-built MCP
-  capability. The current operator view remains read-only; no UI or agent may
-  change enforcement rules directly.
-- **Evidence freshness and re-capture** — design a governed way to refresh a
-  stored source before enforcing a freshness limit. Today the platform reuses
-  evidence already retained for a source and intentionally does not re-fetch it
-  during discovery, so a freshness rule would otherwise make evidence stale
-  without a way to renew it.
-- **Agent-readiness profile** — record observed agent-facing capabilities for a
-  source without treating them as a trust score or eligibility decision. Future
-  observations may include semantic structure, JSON-LD, documented APIs,
-  declared WebMCP tools, and read-only or consequential tool hints. The profile
-  may use statuses such as `no_agent_interface_observed`,
-  `structured_content_observed`, `machine_interface_declared`, and
-  `agent_tools_observed` to inform future agent behavior only.
-- **Evidence adequacy** — determine whether extraction produced meaningful
-  source content rather than a navigation shell, paywall, login page, or shared
-  template. This is needed before an automated workflow treats a technically
-  successful capture as substantive research evidence.
-- **Publisher access declaration** — record applicable `robots.txt` instructions
-  for the platform's declared automated client identity. Use this to inform
-  responsible retrieval behavior, never as authorization or a source trust
-  score.
-- **Agent-action boundary and safe inspection** — when a source declares
-  WebMCP, OpenAPI, MCP, or another machine-action interface, record its
-  existence while keeping it outside the research extractor. A future tightly
-  controlled browser-inspection capability may observe declared WebMCP tools,
-  but must never invoke them. The platform remains read-only with respect to
-  website-provided tools.
-
 - **GitHub Projects integration** — connect the platform's planning workflow
   to GitHub Projects so an operator can build a roadmap, create tasks, and
   update their priority quickly.
@@ -422,3 +102,103 @@ product and deployment requirements justify it.
   security audit history remains separately governed.
 - **Production deployment** — Kubernetes, Azure deployment patterns, scaling,
   security hardening, and release automation.
+
+### Later security and policy work
+
+These items remain important, but they are not on the critical path to the
+automated wiki-builder outcome above. Revisit them when their related product
+capability is ready to use them.
+
+- **Monitor Cerbos for future authorization needs** — revisit Cerbos as a
+  possible policy evaluator behind `RuntimeService` when the platform has many
+  more roles, tools, resource types, tenant-specific policies, or policy changes
+  managed independently of application releases. This is not approval to replace
+  the current authority boundary or create another live capability path.
+- **Trust-policy re-evaluation after refresh or policy change** — re-evaluate
+  evidence when governed refresh functionality or an applicable policy change
+  exists.
+- **C2PA provenance validation** — validate C2PA provenance for supported file
+  assets while recording ordinary HTML as a distinct case, not as invalid solely
+  because it has no asset-level provenance manifest.
+- **Expanded trust-policy validation** — validate policy enforcement, policy
+  changes, refresh, overrides, workspace isolation, prompt-injection resistance,
+  and direct-versus-durable routing.
+- **Trust-policy management** — design a separately authorized workflow for
+  changing local trust-policy rules, potentially through a purpose-built MCP
+  capability. The current operator view remains read-only; no UI or agent may
+  change enforcement rules directly.
+- **Evidence freshness and re-capture** — design a governed way to refresh a
+  stored source before enforcing a freshness limit. Today the platform reuses
+  evidence already retained for a source and intentionally does not re-fetch it
+  during discovery.
+- **Agent-readiness profile** — record observed agent-facing capabilities for a
+  source without treating them as a trust score or eligibility decision. Future
+  observations may include semantic structure, JSON-LD, documented APIs,
+  declared WebMCP tools, and read-only or consequential tool hints.
+- **Evidence adequacy** — determine whether extraction produced meaningful
+  source content rather than a navigation shell, paywall, login page, or shared
+  template.
+- **Publisher access declaration** — record applicable `robots.txt` instructions
+  for the platform's declared automated client identity. Use this to inform
+  responsible retrieval behavior, never as authorization or a source trust score.
+- **Agent-action boundary and safe inspection** — when a source declares
+  WebMCP, OpenAPI, MCP, or another machine-action interface, record its
+  existence while keeping it outside the research extractor. A future tightly
+  controlled browser-inspection capability may observe declared tools, but must
+  never invoke them.
+
+## Completed work
+
+<details>
+<summary>Show completed Phases 1–9</summary>
+
+### Phases 1–2 - Foundation and Governed Web Intelligence
+
+Established the monorepo, React/FastAPI applications, Docker environment,
+documentation site, CI, governed MCP web discovery and extraction, provenance,
+operator/developer experiences, and GitHub Pages documentation publishing.
+
+### Phase 3 - Agent Runtime
+
+Established server-owned LangGraph workflows, typed capability boundaries,
+bounded roles and handoffs, audit events, and expiring run-scoped provenance
+memory.
+
+### Phase 4 - Enterprise Services
+
+Added authentication, authorization, tool governance, secret handling, and
+related operational controls.
+
+### Phase 5 - Durable Execution
+
+Added mandatory Temporal infrastructure for qualifying long-running work,
+durable workflow contracts, checkpointing, restart/resume behavior, and
+operator-visible durable-work controls.
+
+### Phase 6 - Local Evidence Intelligence
+
+Added a governed local Ollama provider, chunked evidence summarization,
+keywords, prompt and output validation, and automatic direct-versus-Temporal
+routing without an operator choosing the execution mechanism.
+
+### Phase 7 - Governed Web Trust and Architecture Refactoring
+
+Added the local web-trust policy, candidate preflight, redirect diagnostics,
+human evidence review, and the unified architecture that keeps RuntimeService
+as the authority boundary, LangGraph as the one research coordination path,
+Temporal as the durable-execution mechanism, and PostgreSQL as the canonical
+business record.
+
+### Phase 8 - Agentic Research Workflow
+
+Added bounded topic planning, topic coverage, relevance decisions, offline
+model evaluation, governed capability requests, quality-graded final reports,
+topic-scoped source references, and resilient topic-report rendering.
+
+### Phase 9 - Topic Research Wiki
+
+Added durable Research Topics, topic-scoped question reuse, evidence and source
+history, versioned wiki revisions, latest-update summaries, visible human
+review feedback loops, and Wiki, Sources, and Tools views.
+
+</details>

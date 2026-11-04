@@ -10,7 +10,7 @@ COPY docs ./docs
 COPY .specify/memory/constitution.md ./.specify/memory/constitution.md
 COPY diagrams ./diagrams
 COPY PROJECT.md PRINCIPLES.md TECH_STACK.md ROADMAP.md ./
-COPY ARCHITECTURE.md REPOSITORIES.md DECISIONS.md CONTRIBUTING.md STYLE_GUIDE.md ./
+COPY ARCHITECTURE.md REPOSITORIES.md DECISIONS.md CONTRIBUTING.md GOVERNANCE.md SUPPORT.md STYLE_GUIDE.md ./
 
 RUN python -m mkdocs build --strict
 

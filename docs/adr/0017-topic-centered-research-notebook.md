@@ -74,11 +74,11 @@ excluded. The stored rejection resolves the required review, so the operator
 can ask the next question in **Agentic web** without waiting for the rejected
 source to become eligible.
 
-### Read-only Studio boundary
+### Read-only Tools boundary
 
-The Topic workspace will show a Studio area as the future home for grounded
+The Topic workspace will show a Tools area as the future home for grounded
 briefings, slides, mind maps, tables, flashcards, and other outputs. This ADR
-does not authorize creating any Studio artifact. Each output requires a later
+does not authorize creating any new artifact. Each output requires a later
 specification for grounding, cost, persistence, and review.
 
 ## Consequences

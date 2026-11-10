@@ -199,6 +199,13 @@ function PrimaryNavigation() {
   );
 }
 
+function CopyIcon() {
+  return <svg aria-hidden="true" className="copy-icon" viewBox="0 0 24 24">
+    <path d="M8 3.75A2.25 2.25 0 0 0 5.75 6v9A2.25 2.25 0 0 0 8 17.25h.75V15H8a.75.75 0 0 1-.75-.75v-7.5A.75.75 0 0 1 8 6h7.5a.75.75 0 0 1 .75.75v.75h2.25V6A2.25 2.25 0 0 0 16.25 3.75H8Z" />
+    <path d="M11 8.25A2.25 2.25 0 0 0 8.75 10.5v7.5A2.25 2.25 0 0 0 11 20.25h7.5A2.25 2.25 0 0 0 20.75 18v-7.5a2.25 2.25 0 0 0-2.25-2.25H11Zm0 2.25h7.5a.75.75 0 0 1 .75.75v6.75a.75.75 0 0 1-.75.75H11a.75.75 0 0 1-.75-.75v-6.75a.75.75 0 0 1 .75-.75Z" />
+  </svg>;
+}
+
 function DeveloperHub({
   health,
   serviceHealth,
@@ -600,6 +607,7 @@ export function App() {
   const [topicActivity, setTopicActivity] = useState<TopicResearchActivityEvent[]>([]);
   const [newTopicName, setNewTopicName] = useState("");
   const [selectedAuditIndex, setSelectedAuditIndex] = useState<number | null>(null);
+  const [copiedQuestionRunId, setCopiedQuestionRunId] = useState<string | null>(null);
   const [studioModal, setStudioModal] = useState<"keywords" | "activity" | "history" | null>(null);
   const [summaryBatch, setSummaryBatch] = useState<EvidenceSummaryBatch | null>(null);
   const [workspaceSummaries, setWorkspaceSummaries] = useState<WorkspaceSummaryArtifact[]>([]);
@@ -739,25 +747,14 @@ export function App() {
 
   async function createRun(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!selectedTopic && !newTopicName.trim()) {
-      setError("Choose an existing topic or name a new topic before asking a question.");
+    if (!selectedTopic) {
+      setError("Create or select a research topic before asking a question.");
       return;
     }
     setBusy(true);
     setError(null);
     try {
-      let topic = selectedTopic;
-      if (!topic) {
-        const createdTopic = await apiRequest<ResearchTopicSummary>("/v1/research/topics", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ name: newTopicName }),
-        });
-        topic = await apiRequest<ResearchTopicWorkspace>(`/v1/research/topics/${createdTopic.id}`);
-        setSelectedTopic(topic);
-        setNewTopicName("");
-      }
-      const created = await apiRequest<ResearchRun>(`/v1/research/topics/${topic.topic.id}/questions`, {
+      const created = await apiRequest<ResearchRun>(`/v1/research/topics/${selectedTopic.topic.id}/questions`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -775,7 +772,7 @@ export function App() {
       await loadSummaryBatch(created.id);
       await loadWorkspaceSummaries();
       await refreshTopics();
-      await openTopic(topic.topic.id);
+      await openTopic(selectedTopic.topic.id);
     } catch (reason) {
       if (reason instanceof ApiRequestError && typeof reason.detail === "object" && reason.detail !== null) {
         const detail = reason.detail as { message?: string; attention_required?: TopicAttentionItem[] };
@@ -788,6 +785,42 @@ export function App() {
       setError(reason instanceof Error ? reason.message : "Unable to create a research run.");
     } finally {
       setBusy(false);
+    }
+  }
+
+  async function createTopic() {
+    const name = newTopicName.trim();
+    if (!name) {
+      setError("Enter a topic name before creating a topic.");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    try {
+      const created = await apiRequest<ResearchTopicSummary>("/v1/research/topics", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name }),
+      });
+      setNewTopicName("");
+      await refreshTopics();
+      await openTopic(created.id);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Unable to create the research topic.");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function copyResearchQuestion(runId: string, text: string) {
+    try {
+      await navigator.clipboard.writeText(text);
+      setCopiedQuestionRunId(runId);
+      window.setTimeout(() => {
+        setCopiedQuestionRunId((copiedRunId) => copiedRunId === runId ? null : copiedRunId);
+      }, 1800);
+    } catch {
+      setError("Your browser could not copy the research question.");
     }
   }
 
@@ -1048,6 +1081,7 @@ export function App() {
           {!selectedTopic && <label>New topic name
             <input value={newTopicName} onChange={(event) => setNewTopicName(event.target.value)} placeholder="For example, Agentic web" />
           </label>}
+          {!selectedTopic && <button type="button" onClick={() => void createTopic()} disabled={busy || !health || !newTopicName.trim()}>Create topic</button>}
         </div>
       </section>
 
@@ -1182,7 +1216,7 @@ export function App() {
       </>}
       {studioModal === "keywords" && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setStudioModal(null)}><section className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="keywords-heading" onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{selectedTopic.topic.name}</p><h2 id="keywords-heading">Keywords</h2></div><button type="button" className="secondary" onClick={() => setStudioModal(null)}>Close</button></div>{keywordCards.length ? <div className="keyword-grid">{keywordCards.map((keyword) => <article className="keyword-card" key={keyword.label}><h3>{keyword.label}</h3><ol>{keyword.sources.map((source) => <li key={source.url}><button type="button" className="link-button" onClick={() => { setStudioModal(null); openStoredSummary(source.url); }}>{sourceTitle(source)}</button></li>)}</ol></article>)}</div> : <p className="hint">No retained source summaries with keywords are available for this topic yet.</p>}</section></div>}
       {studioModal === "activity" && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setStudioModal(null)}><section className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="activity-heading" onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{selectedTopic.topic.name}</p><h2 id="activity-heading">Research activity</h2></div><button type="button" className="secondary" onClick={() => setStudioModal(null)}>Close</button></div><p className="hint">Recorded activity for every research question in this topic.</p>{topicActivity.length ? <ol className="audit">{topicActivity.map((event, index) => { const selected = selectedAuditIndex === index; return <li className={selected ? "selected" : ""} key={`${event.run_id}-${event.event_type}-${event.occurred_at}`}><button className="audit-event" type="button" onClick={() => setSelectedAuditIndex(selected ? null : index)}><span><strong>{event.event_type}</strong><small>{event.question}</small></span><span>{new Date(event.occurred_at).toLocaleString()}</span></button>{selected && <pre className="audit-details">{JSON.stringify(event.details, null, 2)}</pre>}</li>; })}</ol> : <p className="hint">No research activity has been recorded for this topic yet.</p>}</section></div>}
-      {studioModal === "history" && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setStudioModal(null)}><section className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="topic-research-heading" onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{selectedTopic.topic.name}</p><h2 id="topic-research-heading">Research history</h2></div><button type="button" className="secondary" onClick={() => setStudioModal(null)}>Close</button></div>{topicQuestions.length ? <ol className="run-library">{topicQuestions.map((item) => <li key={item.run_id}><button type="button" className="run-card" onClick={() => { setStudioModal(null); void reopenRun(item.run_id); }} disabled={busy}><span><strong>{item.question}</strong><small>Asked {new Date(item.created_at).toLocaleString()}</small></span><span className="run-counts">{item.outcome.replaceAll("_", " ")}</span></button></li>)}</ol> : <p className="hint">Questions asked for this topic will appear here.</p>}</section></div>}
+      {studioModal === "history" && <div className="workspace-modal-backdrop" role="presentation" onMouseDown={() => setStudioModal(null)}><section className="workspace-modal" role="dialog" aria-modal="true" aria-labelledby="topic-research-heading" onMouseDown={(event) => event.stopPropagation()}><div className="section-heading"><div><p className="eyebrow">{selectedTopic.topic.name}</p><h2 id="topic-research-heading">Research history</h2></div><button type="button" className="secondary" onClick={() => setStudioModal(null)}>Close</button></div>{topicQuestions.length ? <ol className="run-library">{topicQuestions.map((item) => <li className="history-run" key={item.run_id}><button type="button" className="run-card" onClick={() => { setStudioModal(null); void reopenRun(item.run_id); }} disabled={busy}><span><strong>{item.question}</strong><small>Asked {new Date(item.created_at).toLocaleString()}</small></span></button><button type="button" className={`secondary history-copy${copiedQuestionRunId === item.run_id ? " copied" : ""}`} onClick={() => void copyResearchQuestion(item.run_id, item.question)} aria-label={copiedQuestionRunId === item.run_id ? "Research question copied" : `Copy research question: ${item.question}`} title={copiedQuestionRunId === item.run_id ? "Copied" : "Copy question"}><CopyIcon /></button></li>)}</ol> : <p className="hint">Questions asked for this topic will appear here.</p>}</section></div>}
       </div>}
     </main>
   );

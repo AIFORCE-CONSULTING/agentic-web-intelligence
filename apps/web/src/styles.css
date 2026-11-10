@@ -48,6 +48,11 @@ button:hover { background: #075a76; } button:disabled { cursor: not-allowed; opa
 .workspace-modal .run-card { align-items: start; gap: .5rem; }
 .workspace-modal .run-card > span:first-child { min-width: 0; overflow-wrap: anywhere; }
 .workspace-modal .run-counts { overflow-wrap: anywhere; text-align: right; white-space: normal; }
+.history-run { align-items: stretch; display: flex; gap: .65rem; }
+.history-run .run-card { flex: 1 1 auto; min-width: 0; }
+.history-copy { align-items: center; align-self: center; display: inline-flex; flex: 0 0 auto; height: 2.8rem; justify-content: center; padding: .65rem; width: 2.8rem; }
+.history-copy.copied { background: #dcfce7; color: #166534; }
+.copy-icon { fill: currentColor; height: 1.25rem; width: 1.25rem; }
 .workspace-wiki { grid-column: 2; grid-row: 2 / span 12; min-width: 0; }
 .workspace-studio { grid-column: 3; grid-row: 2 / span 12; align-self: start; position: sticky; top: 1rem; }
 .workspace-wiki .source-summary { max-width: 100%; }
@@ -63,4 +68,4 @@ button:hover { background: #075a76; } button:disabled { cursor: not-allowed; opa
 .workspace-modal .keyword-grid { grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
 @media (min-width: 1180px) { main { max-width: 1720px; padding: 1.75rem 2rem 3rem; } header { max-width: 900px; } }
 @media (max-width: 1179px) { .topic-workspace { grid-template-columns: minmax(250px, .85fr) minmax(0, 1.5fr); }.workspace-wiki { grid-column: 2; }.workspace-studio { grid-column: 1; grid-row: auto; position: static; }.topic-workspace .workspace-studio { order: 20; }.topic-selector-fields { max-width: none; } }
-@media (max-width: 760px) { .topic-selector-fields, .question-form { align-items: stretch; flex-direction: column; }.topic-workspace { display: block; }.topic-workspace > section { margin-top: 1rem; }.workspace-wiki, .workspace-studio { position: static; }.workspace-question .source-count { flex-basis: auto; }.workspace-modal-backdrop { align-items: end; padding: .5rem; }.workspace-modal { max-height: 92vh; } }
+@media (max-width: 760px) { .topic-selector-fields, .question-form, .history-run { align-items: stretch; flex-direction: column; }.topic-workspace { display: block; }.topic-workspace > section { margin-top: 1rem; }.workspace-wiki, .workspace-studio { position: static; }.workspace-question .source-count { flex-basis: auto; }.workspace-modal-backdrop { align-items: end; padding: .5rem; }.workspace-modal { max-height: 92vh; } }

@@ -1009,6 +1009,50 @@ def test_resumed_node_records_required_intermediate_status() -> None:
     assert update["canonical_status"] == "summarizing"
 
 
+def test_exhausted_gap_search_transitions_from_coverage_to_reporting() -> None:
+    """The official status must follow the graph after the final gap round."""
+    workflow_state = initial_state()
+    workflow_state["gap_search_rounds"] = 2
+    now = datetime.now(UTC)
+    current = ResearchRun(
+        id=workflow_state["run_id"],
+        question=workflow_state["question"],
+        status="assessing_coverage",
+        status_version=16,
+        created_at=now,
+        updated_at=now,
+    )
+    transitions: list[tuple[str, str]] = []
+
+    class Store:
+        async def get_run(self, *_):
+            return current
+
+        async def transition_status(self, *args, **_kwargs):
+            nonlocal current
+            transitions.append((args[1], args[3]))
+            current = current.model_copy(
+                update={"status": args[3], "status_version": current.status_version + 1}
+            )
+            return True
+
+    governed = CanonicalResearchWorkflowNodes(
+        nodes(
+            [],
+            coverage={
+                "stage": "coverage_incomplete",
+                "uncovered_topic_ids": ["example-focus"],
+            },
+        ),
+        Store(),
+    ).wrapped()
+
+    update = asyncio.run(governed.assess_topic_coverage(workflow_state))
+
+    assert transitions == [("assessing_coverage", "reporting")]
+    assert update["canonical_status"] == "reporting"
+
+
 def test_complete_coverage_runs_each_research_stage_once() -> None:
     visited: list[str] = []
     workflow = build_research_workflow(

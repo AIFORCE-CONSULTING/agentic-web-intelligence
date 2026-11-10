@@ -68,6 +68,12 @@ product and deployment requirements justify it.
 
 ### Later product and collaboration opportunities
 
+- **Coverage follow-up strategy** — after the current bounded gap-search limit
+  is reached, decide whether an operator should be offered additional targeted
+  research, a different follow-up question, or a clearly labeled partial wiki
+  update. This must remain an explicit product decision: the current workflow
+  performs no more than two automated follow-up searches and then reports from
+  the qualified evidence it has.
 - **Topic-plan feedback** — add optional thumbs-up and thumbs-down feedback to
   the operator's topic-plan view. For negative feedback, record a simple reason
   such as a missing subject, irrelevant topic, overlapping topics, weak search

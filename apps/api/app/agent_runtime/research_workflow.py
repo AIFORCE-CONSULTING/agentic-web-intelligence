@@ -731,7 +731,13 @@ class CanonicalResearchWorkflowNodes:
                 raise ResearchWorkflowUnavailable(
                     "A required local research service is temporarily unavailable."
                 ) from error
-            requested_status = next_status(update)
+            # A node commonly returns only the values it changed.  Status
+            # decisions, however, can depend on context retained by the graph
+            # (for example, the number of completed gap-search rounds).  Make
+            # the decision from the complete post-node state so the official
+            # research record stays aligned with the graph's next route.
+            resolved_state: ResearchWorkflowState = {**state, **update}
+            requested_status = next_status(resolved_state)
             if requested_status is None or requested_status == before.status:
                 return {
                     **update,

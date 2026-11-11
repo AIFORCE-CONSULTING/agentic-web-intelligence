@@ -1,0 +1,24 @@
+# The sole maintainer currently owns all repository paths. Specific entries make
+# the intended review areas clear and can be reassigned to teams as the project
+# grows.
+
+* @ecocarlisle
+
+# Application and platform boundaries
+/apps/api/ @ecocarlisle
+/apps/web/ @ecocarlisle
+/packages/ @ecocarlisle
+
+# Deployment, automation, and supply-chain controls
+/.github/ @ecocarlisle
+/docker/ @ecocarlisle
+/compose.yaml @ecocarlisle
+
+# Public documentation and project governance
+/docs/ @ecocarlisle
+/README.md @ecocarlisle
+/CONTRIBUTING.md @ecocarlisle
+/GOVERNANCE.md @ecocarlisle
+/SECURITY.md @ecocarlisle
+/SUPPORT.md @ecocarlisle
+/ROADMAP.md @ecocarlisle
